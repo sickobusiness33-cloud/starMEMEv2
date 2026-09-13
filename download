@@ -1,0 +1,20 @@
+# Estado en tiempo de ejecución (no debe versionarse)
+state.json
+state.json.tmp
+
+# Secretos locales
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
