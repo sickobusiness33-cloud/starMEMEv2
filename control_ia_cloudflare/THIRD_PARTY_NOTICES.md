@@ -13,7 +13,7 @@ Control IA no incluye código de terceros aparte de sus dependencias npm
 - **DeepSeek R1 Distill Qwen 32B** — DeepSeek, MIT.
 - **gpt-oss 120B** — OpenAI (pesos abiertos), Apache-2.0.
 - **Stable Diffusion XL base 1.0**, **SDXL Lightning** (ByteDance) — CreativeML Open RAIL++-M.
-- **Stable Diffusion 1.5 img2img / inpainting** (Runway), **DreamShaper 8 LCM** (Lykon) — CreativeML Open RAIL-M.
+- **DreamShaper 8 LCM** (Lykon) — CreativeML Open RAIL-M.
 
 Las licencias OpenRAIL permiten uso comercial con restricciones de uso: no se
 pueden usar para generar contenido ilegal, dañino, que suplante a personas o

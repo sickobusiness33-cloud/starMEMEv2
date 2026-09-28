@@ -8,7 +8,7 @@
 
 export type Capability =
   | "chat" | "code" | "reasoning" | "vision" // texto
-  | "t2i" | "i2i" | "inpaint" | "upscale"; // imagen
+  | "t2i" | "i2i" | "inpaint"; // imagen
 
 export type AdapterId = "workers-ai" | "anthropic" | "openai";
 
@@ -24,7 +24,7 @@ export interface ModelInfo {
   source: "free" | "platform" | "user";
   notes?: string;
   /** Formato de llamada en Workers AI. */
-  format?: "chat" | "responses" | "flux" | "sd" | "sd-img2img" | "sd-inpaint";
+  format?: "chat" | "responses" | "flux" | "sd";
   maxSize?: number; // lado máximo (imagen)
 }
 
@@ -48,13 +48,11 @@ export const MODELS: ModelInfo[] = [
   // --- Imagen · Workers AI ---
   { id: "@cf/black-forest-labs/flux-1-schnell", label: "FLUX.1 [schnell]", adapter: "workers-ai", kind: "image", capabilities: ["t2i"], license: "Apache-2.0", attribution: "Black Forest Labs", source: "free", format: "flux", maxSize: 1024 },
   { id: "@cf/bytedance/stable-diffusion-xl-lightning", label: "SDXL Lightning", adapter: "workers-ai", kind: "image", capabilities: ["t2i"], license: "CreativeML Open RAIL++-M", attribution: "ByteDance · Stability AI", source: "free", format: "sd", maxSize: 1024, notes: "Licencia con restricciones de uso (OpenRAIL): prohibido usarla para fines dañinos o ilegales." },
-  { id: "@cf/stabilityai/stable-diffusion-xl-base-1.0", label: "Stable Diffusion XL", adapter: "workers-ai", kind: "image", capabilities: ["t2i", "i2i", "upscale"], license: "CreativeML Open RAIL++-M", attribution: "Stability AI", source: "free", format: "sd", maxSize: 2048, notes: "Licencia con restricciones de uso (OpenRAIL)." },
+  { id: "@cf/stabilityai/stable-diffusion-xl-base-1.0", label: "Stable Diffusion XL", adapter: "workers-ai", kind: "image", capabilities: ["t2i"], license: "CreativeML Open RAIL++-M", attribution: "Stability AI", source: "free", format: "sd", maxSize: 2048, notes: "Licencia con restricciones de uso (OpenRAIL)." },
   { id: "@cf/lykon/dreamshaper-8-lcm", label: "DreamShaper 8 LCM", adapter: "workers-ai", kind: "image", capabilities: ["t2i"], license: "CreativeML Open RAIL-M", attribution: "Lykon", source: "free", format: "sd", maxSize: 1024, notes: "Licencia con restricciones de uso (OpenRAIL)." },
-  { id: "@cf/runwayml/stable-diffusion-v1-5-img2img", label: "SD 1.5 img2img", adapter: "workers-ai", kind: "image", capabilities: ["i2i"], license: "CreativeML Open RAIL-M", attribution: "Runway · Stability AI", source: "free", format: "sd-img2img", maxSize: 1024, notes: "Licencia con restricciones de uso (OpenRAIL)." },
-  { id: "@cf/runwayml/stable-diffusion-v1-5-inpainting", label: "SD 1.5 Inpainting", adapter: "workers-ai", kind: "image", capabilities: ["inpaint"], license: "CreativeML Open RAIL-M", attribution: "Runway · Stability AI", source: "free", format: "sd-inpaint", maxSize: 1024, notes: "Licencia con restricciones de uso (OpenRAIL)." },
 
   // --- Imagen · OpenAI (solo con la API del usuario) ---
-  { id: "gpt-image-1", label: "GPT Image (tu API)", adapter: "openai", kind: "image", capabilities: ["t2i", "i2i"], license: "Servicio comercial (tu cuenta de OpenAI)", source: "user", maxSize: 1536 },
+  { id: "gpt-image-1", label: "GPT Image (tu API)", adapter: "openai", kind: "image", capabilities: ["t2i", "i2i", "inpaint"], license: "Servicio comercial (tu cuenta de OpenAI)", source: "user", maxSize: 1536 },
 ];
 
 export const MODEL_MAP = new Map(MODELS.map((m) => [m.id, m]));
@@ -66,9 +64,11 @@ export const FREE_CHAINS: Record<Capability, string[]> = {
   reasoning: ["@cf/openai/gpt-oss-120b", "@cf/qwen/qwq-32b", "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"],
   vision: ["@cf/mistralai/mistral-small-3.1-24b-instruct"],
   t2i: ["@cf/black-forest-labs/flux-1-schnell", "@cf/bytedance/stable-diffusion-xl-lightning", "@cf/lykon/dreamshaper-8-lcm", "@cf/stabilityai/stable-diffusion-xl-base-1.0"],
-  i2i: ["@cf/runwayml/stable-diffusion-v1-5-img2img", "@cf/stabilityai/stable-diffusion-xl-base-1.0"],
-  inpaint: ["@cf/runwayml/stable-diffusion-v1-5-inpainting"],
-  upscale: ["@cf/stabilityai/stable-diffusion-xl-base-1.0"],
+  // Workers AI no ofrece a esta cuenta modelos imagen→imagen ni inpainting (SD 1.5 img2img/inpainting
+  // devuelven «account not allowed»; SDXL base no acepta imagen de entrada). Sin la API del usuario,
+  // imagen→imagen y variaciones se hacen por reinterpretación (visión + texto→imagen) y el upscale en el navegador.
+  i2i: [],
+  inpaint: [],
 };
 
 export function publicModel(m: ModelInfo) {

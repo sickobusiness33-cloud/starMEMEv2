@@ -105,10 +105,9 @@ MODEL ROUTER     src/ai/router.ts  → ADAPTERS src/ai/adapters/*  → PROVEEDOR
 | Qwen2.5 Coder 32B | código | Apache-2.0 |
 | QwQ 32B · DeepSeek R1 Distill 32B · gpt-oss 120B | razonamiento | Apache-2.0 · MIT · Apache-2.0 |
 | FLUX.1 [schnell] | texto→imagen | Apache-2.0 |
-| SDXL Lightning · Stable Diffusion XL · DreamShaper 8 LCM | texto→imagen, img2img, upscale | CreativeML Open RAIL(++)-M (uso comercial con restricciones de uso) |
-| SD 1.5 img2img · SD 1.5 Inpainting | imagen→imagen, inpainting | CreativeML Open RAIL-M |
+| SDXL Lightning · Stable Diffusion XL · DreamShaper 8 LCM | texto→imagen (respaldo de FLUX) | CreativeML Open RAIL(++)-M (uso comercial con restricciones de uso) |
 | Claude Sonnet 5 / Opus 5 | premium (Pro o tu API) | servicio comercial |
-| GPT-5 mini · GPT Image | solo con tu API de OpenAI | servicio comercial |
+| GPT-5 mini · GPT Image | solo con tu API de OpenAI (GPT Image: edición directa e inpainting) | servicio comercial |
 
 Todos los modelos abiertos corren en **Cloudflare Workers AI** (cuota gratuita
 diaria de la cuenta; sin APIs externas de pago por defecto). Se excluyeron
@@ -117,8 +116,20 @@ geográficas para la UE en visión (Llama 3.2 Vision).
 
 ### Estudio de imágenes (`#/studio`, `src/images.ts`)
 
-Texto→imagen, imagen→imagen, inpainting (máscara pintada en el navegador),
-variaciones y upscale 2× (re-render con SDXL a baja intensidad). Estilos,
+- **Texto→imagen**: FLUX.1 [schnell] con respaldo automático SDXL Lightning →
+  DreamShaper → SDXL (verificado en producción).
+- **Imagen→imagen y variaciones**: Workers AI no ofrece a esta cuenta un modelo
+  imagen→imagen (SD 1.5 img2img/inpainting responden «account not allowed» y
+  SDXL base no acepta imagen de entrada), así que se hace por
+  **reinterpretación**: Mistral Small 3.1 (visión) describe la imagen y escribe
+  un prompt con el cambio, y se genera de nuevo. Se avisa al usuario: no se
+  conservan los píxeles. Con **Usar mi API** + OpenAI se edita directamente con
+  GPT Image.
+- **Inpainting**: máscara pintada en el navegador; requiere la API de OpenAI del
+  usuario (no hay modelo gratuito disponible).
+- **Upscale 2×**: reescalado de alta calidad en el navegador (máx. 2048 px), se
+  guarda como derivada y no consume cuota.
+ Estilos,
 resoluciones, modelo concreto o **AUTO**, semilla, regenerar, guardar y galería.
 Las imágenes se guardan en D1 y solo las ve su dueño (`/api/images/:id/file`);
 las no guardadas se recortan a las 40 más recientes. Límite diario: 20 (Free) /

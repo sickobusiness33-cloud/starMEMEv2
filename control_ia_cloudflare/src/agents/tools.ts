@@ -137,10 +137,10 @@ async function imageQuota(ctx: CallContext) {
   }
 }
 
-async function imageTool(ctx: CallContext, mode: "t2i" | "i2i" | "variation" | "upscale", prompt: string, sourceId?: number): Promise<ToolResult> {
+async function imageTool(ctx: CallContext, mode: "t2i" | "i2i" | "variation", prompt: string, sourceId?: number): Promise<ToolResult> {
   await imageQuota(ctx);
   const out = await createImage(ctx.env, ctx.userId, ctx.plan, { mode, prompt, width: 1024, height: 1024, sourceId }, "agent", ctx.agentId);
-  const verb = { t2i: "Imagen generada", i2i: "Imagen editada", variation: "Variación creada", upscale: "Imagen ampliada" }[mode];
+  const verb = { t2i: "Imagen generada", i2i: "Imagen editada", variation: "Variación creada" }[mode];
   return {
     text: `${verb} con ${out.model}${prompt ? ` a partir de: ${prompt.slice(0, 400)}` : ""}${out.notices.length ? ` (${out.notices.join("; ")})` : ""}`,
     image: bytesToB64(out.bytes),
@@ -164,7 +164,6 @@ export async function runAgentTool(ctx: CallContext, tool: AgentToolId, text: st
   if (!source) return { text: "No hay ninguna imagen adjunta: adjunta una imagen para usar esta herramienta." };
   if (tool === "image_edit") return imageTool(ctx, "i2i", promptFrom(text, userInput), source);
   if (tool === "image_variation") return imageTool(ctx, "variation", promptFrom(text, ""), source);
-  if (tool === "image_upscale") return imageTool(ctx, "upscale", "", source);
   if (tool === "vision_describe") {
     const img = await imageBytes(ctx.env, ctx.userId, source);
     if (!img) return { text: "La imagen adjunta ya no existe." };

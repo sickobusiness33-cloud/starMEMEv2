@@ -11,7 +11,7 @@ import { fail, intIn, jsonBody, reqStr, str, toId } from "./http";
 import { notify } from "./notify";
 import { getSubscription, PLAN_LIMITS, usageToday, type PlanId } from "./plans";
 import { hit } from "./ratelimit";
-import { routeImage, RouterError, type CallContext } from "./ai/router";
+import { generate, routeImage, RouterError, type CallContext } from "./ai/router";
 import { MODELS, publicModel } from "./ai/models";
 
 export const STYLES: Record<string, { label: string; suffix: string }> = {
@@ -31,10 +31,10 @@ export const SIZES: [number, number][] = [
   [512, 512], [768, 768], [1024, 1024], [1024, 768], [768, 1024], [1280, 720], [720, 1280],
 ];
 
-const MAX_UPLOAD_BYTES = 2_500_000;
+const MAX_UPLOAD_BYTES = 4_000_000;
 const KEEP_UNSAVED = 40;
 
-type Mode = "t2i" | "i2i" | "inpaint" | "variation" | "upscale";
+type Mode = "t2i" | "i2i" | "inpaint" | "variation";
 
 export interface StoredImage {
   id: number;
@@ -97,7 +97,7 @@ function dataUrlBytes(dataUrl: string, label: string): { bytes: Uint8Array; mime
   const m = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
   if (!m) return fail(422, `«${label}» debe ser una imagen PNG, JPEG o WebP.`);
   const bytes = b64ToBytes(m[2]);
-  if (bytes.length > MAX_UPLOAD_BYTES) return fail(413, `«${label}» supera 2,5 MB. Redúcela antes de subirla.`);
+  if (bytes.length > MAX_UPLOAD_BYTES) return fail(413, `«${label}» supera 4 MB. Redúcela antes de subirla.`);
   return { bytes, mime: m[1] };
 }
 
@@ -115,6 +115,28 @@ export interface GenerateInput {
   mask?: Uint8Array;
 }
 
+/**
+ * Reinterpretación: un modelo de visión describe la imagen de partida y
+ * escribe un prompt que aplica el cambio pedido; después se genera con
+ * texto→imagen. Es el camino gratuito para imagen→imagen y variaciones
+ * cuando no hay un modelo imagen→imagen disponible (no conserva los píxeles).
+ */
+async function reinterpretPrompt(ctx: CallContext, parent: { bytes: Uint8Array; mime: string }, mode: "i2i" | "variation", instruction: string) {
+  const ask =
+    mode === "i2i"
+      ? `Write an English image-generation prompt (max 80 words) that recreates this image applying this change: "${instruction.slice(0, 500)}". Keep subject and composition. Only the prompt.`
+      : "Write an English image-generation prompt (max 80 words) for a creative variation of this image: same subject and idea, fresh composition. Only the prompt.";
+  const res = await generate(ctx, {
+    system: "You turn images into precise image-generation prompts: subject, composition, style, colors, lighting. No preamble.",
+    messages: [{ role: "user", content: [{ type: "text", text: ask }, { type: "image", mime: parent.mime, b64: bytesToB64(parent.bytes) }] }],
+    maxTokens: 220,
+    prefer: "free",
+    allowFallback: true,
+    capability: "vision",
+  });
+  return res.text.replace(/^["'\s]+|["'\s]+$/g, "").slice(0, 1500);
+}
+
 /** Genera y guarda una imagen. Lo usan el estudio, el orquestador y los agentes. */
 export async function createImage(env: Env, userId: number, plan: PlanId, input: GenerateInput, source: string, agentId?: string | null) {
   const style = STYLES[input.style ?? "none"] ?? STYLES.none;
@@ -124,28 +146,21 @@ export async function createImage(env: Env, userId: number, plan: PlanId, input:
     parent = await imageBytes(env, userId, input.sourceId);
     if (!parent) throw new RouterError("La imagen de partida no existe.", "no_source");
   }
-  let width = input.width;
-  let height = input.height;
-  if (input.mode === "upscale") {
-    width = Math.min(2048, (parent.width || 768) * 2);
-    height = Math.min(2048, (parent.height || 768) * 2);
-  }
+  const { width, height } = input;
   const prompt = [input.prompt || parent?.prompt || "", style.suffix].filter(Boolean).join(", ");
-  const strength = input.strength ?? (input.mode === "upscale" ? 0.25 : input.mode === "variation" ? 0.55 : 0.65);
+  const strength = input.strength ?? (input.mode === "variation" ? 0.55 : 0.65);
   const seed = input.seed ?? Math.floor(Math.random() * 2 ** 31);
   const ctx: CallContext = { env, userId, plan, kind: "image", agentId: agentId ?? null };
-  const out = await routeImage(ctx, {
-    mode: input.mode,
-    prompt: prompt || "high quality image",
-    negative: input.negative,
-    width,
-    height,
-    seed,
-    strength,
-    image: parent?.bytes,
-    mask: input.mask,
-    model: input.model,
-  });
+  const req = { mode: input.mode, prompt: prompt || "high quality image", negative: input.negative, width, height, seed, strength, image: parent?.bytes, mask: input.mask, model: input.model };
+  let out;
+  try {
+    out = await routeImage(ctx, req);
+  } catch (err) {
+    if (!(err instanceof RouterError && err.code === "no_models" && (input.mode === "i2i" || input.mode === "variation"))) throw err;
+    const reprompt = await reinterpretPrompt(ctx, parent, input.mode, input.prompt);
+    out = await routeImage(ctx, { ...req, mode: "t2i", prompt: [reprompt, style.suffix].filter(Boolean).join(", "), image: undefined, model: "auto" });
+    out.notices.unshift("Reinterpretación: un modelo de visión describe tu imagen y se genera una nueva (no se conservan los píxeles). Para edición directa activa tu API de OpenAI.");
+  }
   const id = await storeImage(env, userId, {
     mode: input.mode,
     prompt: input.prompt || parent?.prompt || "",
@@ -229,10 +244,28 @@ imageRoutes.post("/upload", async (c) => {
   const wait = await hit(c.env.DB, `imgup:${user.id}`, 20, 60);
   if (wait) fail(429, `Demasiadas subidas. Espera ${wait} s.`);
   const body = await jsonBody(c.req.raw);
-  const { bytes, mime } = dataUrlBytes(reqStr(body, "data_url", { label: "Imagen", min: 20, max: 3_600_000 }), "Imagen");
+  const { bytes, mime } = dataUrlBytes(reqStr(body, "data_url", { label: "Imagen", min: 20, max: 5_500_000 }), "Imagen");
   const width = intIn(body, "width", "Ancho", 1, 8192, 0) || null;
   const height = intIn(body, "height", "Alto", 1, 8192, 0) || null;
-  const id = await storeImage(c.env, user.id, { mode: "upload", mime, bytes, width: width ?? undefined, height: height ?? undefined, source: "upload", prompt: str(body, "name", { label: "Nombre", max: 200, optional: true }) ?? "" });
+  // kind = "upscale": la imagen se ha reescalado 2× en el navegador y entra en la galería como derivada.
+  const upscale = body.kind === "upscale";
+  let parent: any = null;
+  if (upscale) {
+    parent = await one<any>(c.env.DB, "SELECT id, prompt, style FROM images WHERE id = ? AND user_id = ?", Number(body.parent_id), user.id);
+    if (!parent) fail(422, "La imagen original no existe.");
+  }
+  const id = await storeImage(c.env, user.id, {
+    mode: upscale ? "upscale" : "upload",
+    mime,
+    bytes,
+    width: width ?? undefined,
+    height: height ?? undefined,
+    source: upscale ? "studio" : "upload",
+    model: upscale ? "upscale-navegador (Lanczos)" : null,
+    parentId: parent?.id ?? null,
+    style: parent?.style ?? null,
+    prompt: upscale ? parent.prompt : str(body, "name", { label: "Nombre", max: 200, optional: true }) ?? "",
+  });
   return c.json({ id, mime, size: bytes.length }, 201);
 });
 
@@ -241,7 +274,7 @@ imageRoutes.post("/generate", async (c) => {
   const body = await jsonBody(c.req.raw);
   const sub = await getSubscription(c.env.DB, user.id);
   const limits = PLAN_LIMITS[sub.plan];
-  const mode = reqStr(body, "mode", { label: "Modo", min: 3, max: 10, pattern: /^(t2i|i2i|inpaint|variation|upscale)$/ }) as Mode;
+  const mode = reqStr(body, "mode", { label: "Modo", min: 3, max: 10, pattern: /^(t2i|i2i|inpaint|variation)$/ }) as Mode;
   const prompt = str(body, "prompt", { label: "Prompt", max: 2000, optional: true }) ?? "";
   if (mode === "t2i" && prompt.length < 3) fail(422, "Describe la imagen que quieres (mínimo 3 caracteres).");
   const style = str(body, "style", { label: "Estilo", max: 20, optional: true }) ?? "none";
@@ -266,7 +299,7 @@ imageRoutes.post("/generate", async (c) => {
   } catch (err) {
     if (err instanceof RouterError) {
       await notify(c.env, user.id, { category: "ia", priority: "normal", title: "No se pudo generar la imagen", body: err.message, link: "#/studio", dedupe: "image-failed" });
-      fail(err.code === "no_source" || err.code === "bad_model" ? 422 : 502, err.message);
+      fail(["no_source", "bad_model", "needs_user_api"].includes(err.code) ? 422 : 502, err.message);
     }
     throw err;
   }

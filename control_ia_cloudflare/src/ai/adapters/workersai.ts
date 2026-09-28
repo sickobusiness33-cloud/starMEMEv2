@@ -90,7 +90,8 @@ export async function workersImage(call: ImageCall): Promise<ImageOut> {
   const height = Math.min(round64(call.height), max);
   let input: Record<string, unknown>;
   if (model.format === "flux") {
-    input = { prompt: call.prompt.slice(0, 2048), steps: 6, ...(call.seed !== undefined ? { seed: call.seed } : {}) };
+    // FLUX.1 schnell solo acepta prompt y steps (≤ 8); no admite semilla.
+    input = { prompt: call.prompt.slice(0, 2048), steps: 6 };
   } else {
     input = {
       prompt: call.prompt.slice(0, 2048),
@@ -101,11 +102,6 @@ export async function workersImage(call: ImageCall): Promise<ImageOut> {
       guidance: model.id.includes("lcm") ? 1.5 : 7.5,
       ...(call.seed !== undefined ? { seed: call.seed } : {}),
     };
-    if (call.image) {
-      input.image = Array.from(call.image);
-      input.strength = call.strength ?? 0.6;
-    }
-    if (call.mask) input.mask = Array.from(call.mask);
   }
   const res: any = await env.AI.run(model.id as any, input as any);
   const bytes = await toBytes(res);

@@ -5,9 +5,30 @@
 const STUDIO = { mode: "t2i", style: "none", size: "1024x1024", model: "auto", source: null, strength: 0.6, prompt: "", negative: "" };
 
 const MODES = [
-  ["t2i", "Texto → imagen"], ["i2i", "Imagen → imagen"], ["inpaint", "Inpainting"], ["variation", "Variaciones"], ["upscale", "Upscale 2×"],
+  ["t2i", "Texto → imagen"], ["i2i", "Imagen → imagen"], ["variation", "Variaciones"], ["upscale", "Upscale 2×"], ["inpaint", "Inpainting · tu API"],
 ];
-const MODE_CAP = { t2i: "t2i", i2i: "i2i", variation: "i2i", inpaint: "inpaint", upscale: "upscale" };
+const MODE_CAP = { t2i: "t2i", i2i: "i2i", variation: "i2i", inpaint: "inpaint", upscale: null };
+const MODE_HELP = {
+  t2i: "",
+  i2i: "Gratis: un modelo de visión describe tu imagen y se genera una nueva con tu cambio (reinterpretación). Con tu API de OpenAI activada se edita directamente.",
+  variation: "Nueva versión de la misma idea (reinterpretación con visión + generación).",
+  upscale: "Reescalado 2× de alta calidad hecho en tu navegador (máx. 2048 px). No consume cuota.",
+  inpaint: "Pinta la zona a regenerar. Requiere tu API de OpenAI con «Usar mi API» activado.",
+};
+
+/** Upscale 2× en el navegador (interpolación de alta calidad del canvas). */
+async function upscaleInBrowser(id) {
+  const blob = await (await fetch(imgUrl(id), { credentials: "same-origin" })).blob();
+  const bmp = await createImageBitmap(blob);
+  const scale = Math.min(2, 2048 / Math.max(bmp.width, bmp.height));
+  const w = Math.round(bmp.width * scale), hh = Math.round(bmp.height * scale);
+  const canvas = h("canvas", { width: w, height: hh });
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(bmp, 0, 0, w, hh);
+  const up = await api("POST", "/api/images/upload", { data_url: canvas.toDataURL("image/jpeg", 0.92), width: w, height: hh, kind: "upscale", parent_id: id });
+  return { image: await api("GET", `/api/images/${up.id}`), notices: [] };
+}
 
 async function viewStudio(main) {
   const meta = await api("GET", "/api/images/models");
@@ -28,6 +49,7 @@ async function viewStudio(main) {
   const modeTabs = h("div", { class: "segctl", role: "tablist", "aria-label": "Modo" });
   const renderModes = () => modeTabs.replaceChildren(...MODES.map(([id, label]) => h("button", { type: "button", role: "tab", "aria-selected": STUDIO.mode === id ? "true" : "false",
     onclick: () => { STUDIO.mode = id; renderModes(); renderModels(); renderSource(); } }, label)));
+  const modeHelp = h("p", { class: "small muted", style: "margin:0" });
 
   const styles = h("div", { class: "chips" });
   const renderStyles = () => styles.replaceChildren(...meta.styles.map((s) => h("button", { type: "button", class: "chip-btn", "aria-pressed": STUDIO.style === s.id ? "true" : "false",
@@ -40,7 +62,8 @@ async function viewStudio(main) {
   const model = h("select", { id: "st-model" });
   const renderModels = () => {
     const cap = MODE_CAP[STUDIO.mode];
-    const ok = meta.models.filter((m) => m.capabilities.includes(cap));
+    model.disabled = !cap;
+    const ok = meta.models.filter((m) => cap && m.capabilities.includes(cap));
     model.replaceChildren(h("option", { value: "auto" }, "AUTO · el mejor disponible"), ...ok.map((m) => h("option", { value: m.id }, `${m.label}${m.source === "user" ? " · tu API" : ""}`)));
     if (![...model.options].some((o) => o.value === STUDIO.model)) STUDIO.model = "auto";
     model.value = STUDIO.model;
@@ -62,6 +85,8 @@ async function viewStudio(main) {
     try { const up = await uploadImage(f); STUDIO.source = up.id; renderSource(); } catch (err) { toast(err.message, true); }
   });
   const renderSource = () => {
+    modeHelp.textContent = MODE_HELP[STUDIO.mode];
+    modeHelp.hidden = !MODE_HELP[STUDIO.mode];
     const needs = STUDIO.mode !== "t2i";
     sourceBox.hidden = !needs;
     maskCanvas = null;
@@ -87,7 +112,7 @@ async function viewStudio(main) {
   const genBtn = h("button", { class: "btn primary big st-gen", type: "submit" }, icon("spark", 17), "Generar");
   const form = h("form", { class: "st-controls card", novalidate: true },
     h("div", { class: "card-b stack" },
-      modeTabs, sourceBox,
+      modeTabs, modeHelp, sourceBox,
       field(STUDIO.mode === "upscale" ? "Notas (opcional)" : "Prompt", prompt),
       h("div", {}, h("label", {}, "Estilo"), styles),
       h("div", { class: "st-grid2" }, field("Resolución", size), field("Modelo", model)),
@@ -115,6 +140,7 @@ async function viewStudio(main) {
 
   const run = async (override) => {
     const mode = override.mode || STUDIO.mode;
+    if (mode === "i2i" && prompt.value.trim().length < 3) { toast("Escribe qué quieres cambiar de la imagen.", true); prompt.focus(); return; }
     if (mode === "t2i" && prompt.value.trim().length < 3) { toast("Describe la imagen que quieres.", true); prompt.focus(); return; }
     if (mode !== "t2i" && !STUDIO.source) { toast("Elige una imagen de partida.", true); return; }
     const [w, hh] = STUDIO.size.split("x").map(Number);
@@ -125,10 +151,10 @@ async function viewStudio(main) {
       if (!maskCanvas) { toast("Pinta la zona a regenerar.", true); return; }
       body.mask_data_url = maskCanvas.toDataURL("image/png");
     }
-    out.replaceChildren(h("div", { class: "st-loading" }, kairoLogo(56, "orchestrating"), h("span", { class: "kx-shimmer" }, "Generando con el Model Router…")));
+    out.replaceChildren(h("div", { class: "st-loading" }, kairoLogo(56, "orchestrating"), h("span", { class: "kx-shimmer" }, mode === "upscale" ? "Reescalando en tu navegador…" : "Generando con el Model Router…")));
     genBtn.disabled = true;
     try {
-      const res = await api("POST", "/api/images/generate", body);
+      const res = mode === "upscale" ? await upscaleInBrowser(STUDIO.source) : await api("POST", "/api/images/generate", body);
       show(res);
       loadGallery();
       setUsage((await api("GET", "/api/images/models")).limits.used_today);

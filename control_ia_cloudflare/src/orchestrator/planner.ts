@@ -37,7 +37,7 @@ export function orchestratorPool(agents: RegistryAgent[], plan: PlanId): PoolAge
 /** 0 = análisis/investigación · 1 = producción de contenido · 2 = medios (imagen). */
 export function stageClass(a: RegistryAgent): number {
   const tools = a.stages.filter((s) => s.kind === "tool").map((s) => (s as any).tool as string);
-  if (tools.some((t) => ["image_generate", "image_edit", "image_variation", "image_upscale"].includes(t))) return 2;
+  if (tools.some((t) => ["image_generate", "image_edit", "image_variation"].includes(t))) return 2;
   if (tools.includes("vision_describe") || tools.includes("wikipedia_search") || tools.includes("web_read")) return 0;
   if (["research", "data", "trading", "finance", "security", "browser"].includes(a.category)) return 0;
   return 1;
@@ -82,7 +82,6 @@ export function validatePlan(raw: any, pool: Map<string, PoolAgent>, max: number
 // --- planificador por reglas (respaldo sin modelo) -------------------------------------------
 
 const RULES: [RegExp, string[]][] = [
-  [/\b(upscal|amplía|ampliar|más resolución|mayor resolución|más nitidez|\b4k\b|\bhd\b)/i, ["image-upscaler"]],
   [/\b(variaci[oó]n|variaciones|variante|otra versión)/i, ["image-variations"]],
   [/\b(edita|editar|modifica|cambia (el|la|los|las)? ?(fondo|estilo|color)|conviert[ea]la|retoca)/i, ["image-editor"]],
   [/\b(logo|logotipo|isotipo)/i, ["logo-concepts"]],
@@ -120,8 +119,7 @@ export function planWithRules(request: string, pool: Map<string, PoolAgent>, max
   const hasUrl = /https?:\/\/\S+/.test(request);
   if (hasImages) {
     // Con imagen adjunta: editarla/ampliarla/variarla si se pide; si no, analizarla.
-    if (/\b(upscal|amplía|ampliar|resoluci[oó]n|nitidez|4k|hd)/i.test(request)) add("image-upscaler");
-    else if (/\b(variaci[oó]n|variante|otra versión)/i.test(request)) add("image-variations");
+    if (/\b(variaci[oó]n|variante|otra versión)/i.test(request)) add("image-variations");
     else if (/\b(edita|modifica|cambia|convi[eé]rte|retoca|estilo|transforma)/i.test(request)) add("image-editor");
     else add("vision-analyst");
   }

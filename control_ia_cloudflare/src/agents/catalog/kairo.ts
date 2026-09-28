@@ -1,5 +1,5 @@
 // Agentes añadidos con el orquestador Kairo: visión, edición de imagen,
-// upscaling, variaciones, contenido social con imagen, resúmenes y razonamiento.
+// variaciones, contenido social con imagen, resúmenes y razonamiento.
 import { agent, instructions, S } from "./_helpers";
 
 export default [
@@ -21,7 +21,7 @@ export default [
   agent({
     id: "image-editor",
     name: "Image Editor",
-    description: "Transforma la imagen que adjuntes según tus instrucciones (cambiar estilo, ambiente, colores…).",
+    description: "Crea una nueva versión de la imagen que adjuntes según tus instrucciones (estilo, ambiente, colores…).",
     category: "image",
     color: "morado",
     input: { label: "¿Cómo quieres cambiarla?", placeholder: "Conviértela en acuarela con tonos cálidos", image: "required" },
@@ -31,17 +31,6 @@ export default [
       { id: "generating", label: "Editing", kind: "tool", tool: "image_edit", from: "planning" },
     ],
     capabilities: ["Imagen → imagen", "Cambio de estilo", "Conserva la composición"],
-  }),
-  agent({
-    id: "image-upscaler",
-    name: "Image Upscaler",
-    description: "Re-renderiza la imagen que adjuntes al doble de resolución con más detalle.",
-    category: "image",
-    color: "azul",
-    input: { label: "Notas (opcional)", placeholder: "Más nitidez en la cara", image: "required" },
-    instructions: instructions("Eres especialista en mejora de imagen."),
-    stages: [{ id: "generating", label: "Upscaling", kind: "tool", tool: "image_upscale", from: "input" }],
-    capabilities: ["2× resolución (máx. 2048 px)", "Detalle con SDXL"],
   }),
   agent({
     id: "image-variations",

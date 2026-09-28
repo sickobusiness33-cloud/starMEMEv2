@@ -36,7 +36,6 @@ export type AgentToolId =
   | "image_generate"
   | "image_edit"
   | "image_variation"
-  | "image_upscale"
   | "vision_describe";
 
 export type Stage =
@@ -94,15 +93,11 @@ export const TOOL_INFO: Record<AgentToolId, { label: string; permission: string 
   },
   image_edit: {
     label: "Edición de imágenes",
-    permission: "Transformar la imagen que adjuntes (imagen→imagen); el original no se modifica",
+    permission: "Transformar la imagen que adjuntes (reinterpretación con visión + generación, o tu API de OpenAI); el original no se modifica",
   },
   image_variation: {
     label: "Variaciones de imagen",
     permission: "Crear variaciones de la imagen que adjuntes",
-  },
-  image_upscale: {
-    label: "Upscaling",
-    permission: "Re-renderizar la imagen que adjuntes al doble de resolución (SDXL, fuerza baja)",
   },
   vision_describe: {
     label: "Visión",

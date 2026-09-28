@@ -348,7 +348,7 @@ export interface ImageResult {
   latencyMs: number;
 }
 
-const MODE_CAP: Record<ImageCall["mode"], Capability> = { t2i: "t2i", i2i: "i2i", variation: "i2i", inpaint: "inpaint", upscale: "upscale" };
+const MODE_CAP: Record<ImageCall["mode"], Capability> = { t2i: "t2i", i2i: "i2i", variation: "i2i", inpaint: "inpaint" };
 
 export async function routeImage(ctx: CallContext, req: ImageRequest): Promise<ImageResult> {
   const { env } = ctx;
@@ -371,7 +371,10 @@ export async function routeImage(ctx: CallContext, req: ImageRequest): Promise<I
   if (openaiKey && settings.priority.indexOf("user_api") < settings.priority.indexOf("free")) push("gpt-image-1", openaiKey);
   for (const id of FREE_CHAINS[cap]) if (await healthy(env.DB, modelKey(id))) push(id);
   if (!chain.length) for (const id of FREE_CHAINS[cap]) push(id);
-  if (!chain.length) throw new RouterError("No hay ningún modelo que admita esta operación.", "no_models");
+  if (!chain.length) {
+    if (cap === "inpaint") throw new RouterError("El inpainting necesita tu API de OpenAI con «Usar mi API» activado (no hay un modelo gratuito disponible).", "needs_user_api");
+    throw new RouterError("No hay ningún modelo que admita esta operación.", "no_models");
+  }
 
   let lastError = "";
   for (let i = 0; i < chain.length; i++) {

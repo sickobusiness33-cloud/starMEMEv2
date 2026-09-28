@@ -42,7 +42,7 @@ class Cancelled extends Error {}
 
 /** Agentes que reciben historial del chat (context filtering: el resto solo ve su tarea). */
 const HISTORY_CATEGORIES = new Set(["general", "writing", "productivity", "social", "marketing", "business"]);
-const IMAGE_TOOLS = new Set(["image_edit", "image_variation", "image_upscale", "vision_describe"]);
+const IMAGE_TOOLS = new Set(["image_edit", "image_variation", "vision_describe"]);
 
 function stageStatus(s: Exclude<Stage, { kind: "agents" }>): [AgentStatus, string] {
   if (s.kind === "tool") {
@@ -59,8 +59,6 @@ function stageStatus(s: Exclude<Stage, { kind: "agents" }>): [AgentStatus, strin
         return ["GENERATING", "Editando imagen"];
       case "image_variation":
         return ["GENERATING", "Creando variación"];
-      case "image_upscale":
-        return ["GENERATING", "Ampliando imagen"];
     }
   }
   if (s.id === "planning") return ["THINKING", `Pensando · ${s.label}`];

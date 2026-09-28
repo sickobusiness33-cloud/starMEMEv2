@@ -33,7 +33,7 @@ export interface TextOut {
 export interface ImageCall {
   env: Env;
   model: ModelInfo;
-  mode: "t2i" | "i2i" | "inpaint" | "variation" | "upscale";
+  mode: "t2i" | "i2i" | "inpaint" | "variation";
   prompt: string;
   negative?: string;
   width: number;

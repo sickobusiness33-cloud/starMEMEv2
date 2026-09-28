@@ -123,6 +123,6 @@ export async function usageToday(db: D1Database, userId: number) {
     today,
   );
   const agents = await one<any>(db, "SELECT COUNT(*) AS n FROM agent_runs WHERE user_id = ? AND created_at >= ?", userId, today);
-  const images = await one<any>(db, "SELECT COUNT(*) AS n FROM images WHERE user_id = ? AND mode <> 'upload' AND created_at >= ?", userId, today);
+  const images = await one<any>(db, "SELECT COUNT(*) AS n FROM images WHERE user_id = ? AND mode NOT IN ('upload', 'upscale') AND created_at >= ?", userId, today);
   return { chat: chat?.n ?? 0, agents: agents?.n ?? 0, images: images?.n ?? 0 };
 }

@@ -62,7 +62,7 @@ def test_nuevo_chat_modo_auto_y_todos_los_agentes_disponibles(api):
     assert len(reg["agents"]) >= 55
     assert all(a["category"] != "multi" for a in reg["agents"])  # el orquestador ya es multiagente
     assert any(a["locked"] for a in reg["agents"]) and reg["max_agents_per_message"] == 3
-    assert {"vision-analyst", "image-editor", "image-upscaler", "social-post-creator", "math-solver"} <= {a["id"] for a in reg["agents"]}
+    assert {"vision-analyst", "image-editor", "image-variations", "social-post-creator", "math-solver"} <= {a["id"] for a in reg["agents"]}
     assert reg["models"] and reg["tools"]
 
 
@@ -177,7 +177,7 @@ def test_imagen_adjunta_activa_el_agente_de_vision(api):
 def test_estudio_de_imagenes(api):
     meta = api.get("/api/images/models").json()
     caps = {c for m in meta["models"] for c in m["capabilities"]}
-    assert {"t2i", "i2i", "inpaint", "upscale"} <= caps and meta["limits"]["per_day"] == 20
+    assert {"t2i", "i2i", "inpaint"} <= caps and meta["limits"]["per_day"] == 20
     r = api.post("/api/images/generate", json={"mode": "t2i", "prompt": "Un faro al atardecer", "style": "cinematic", "width": 768, "height": 768, "model": "auto"})
     assert r.status_code == 201, r.text
     img = r.json()["image"]
@@ -185,13 +185,26 @@ def test_estudio_de_imagenes(api):
     f = api.get(f"/api/images/{img['id']}/file")
     assert f.status_code == 200 and f.headers["content-type"] == "image/jpeg"
     assert register().get(f"/api/images/{img['id']}/file").status_code == 404
-    var = api.post("/api/images/generate", json={"mode": "variation", "source_id": img["id"]}).json()["image"]
-    assert var["parent_id"] == img["id"] and var["model"] in ("@cf/runwayml/stable-diffusion-v1-5-img2img", "@cf/stabilityai/stable-diffusion-xl-base-1.0")
-    up = api.post("/api/images/generate", json={"mode": "upscale", "source_id": img["id"]}).json()["image"]
-    assert up["width"] == 1536 and up["model"] == "@cf/stabilityai/stable-diffusion-xl-base-1.0"
+    # Sin modelo imagen→imagen gratuito: reinterpretación (visión + texto→imagen), avisada.
+    r = api.post("/api/images/generate", json={"mode": "variation", "source_id": img["id"]})
+    assert r.status_code == 201, r.text
+    var = r.json()["image"]
+    assert var["parent_id"] == img["id"] and var["mode"] == "variation" and var["model"] == "@cf/black-forest-labs/flux-1-schnell"
+    assert any("Reinterpretación" in n for n in r.json()["notices"])
+    edit = api.post("/api/images/generate", json={"mode": "i2i", "source_id": img["id"], "prompt": "en acuarela"})
+    assert edit.status_code == 201 and edit.json()["image"]["mode"] == "i2i"
+    # Upscale 2× hecho en el navegador: se guarda como derivada en la galería y no consume cuota.
+    up = api.post("/api/images/upload", json={"data_url": PNG_1PX, "width": 1536, "height": 1536, "kind": "upscale", "parent_id": img["id"]})
+    assert up.status_code == 201
+    upm = api.get(f"/api/images/{up.json()['id']}").json()
+    assert upm["mode"] == "upscale" and upm["parent_id"] == img["id"] and upm["width"] == 1536
+    assert api.post("/api/images/upload", json={"data_url": PNG_1PX, "kind": "upscale", "parent_id": 999999}).status_code == 422
+    assert api.post("/api/images/generate", json={"mode": "upscale", "source_id": img["id"]}).status_code == 422
+    # Inpainting: necesita máscara y la API de OpenAI del usuario.
     assert api.post("/api/images/generate", json={"mode": "inpaint", "source_id": img["id"]}).status_code == 422
     inp = api.post("/api/images/generate", json={"mode": "inpaint", "source_id": img["id"], "mask_data_url": PNG_1PX, "prompt": "un barco"})
-    assert inp.status_code == 201 and inp.json()["image"]["model"] == "@cf/runwayml/stable-diffusion-v1-5-inpainting"
+    assert inp.status_code == 422 and "OpenAI" in inp.json()["error"]
+    assert api.get("/api/images/models").json()["limits"]["used_today"] == 3
     assert api.post("/api/images/generate", json={"mode": "i2i", "prompt": "x"}).status_code == 422
     assert api.patch(f"/api/images/{img['id']}", json={"saved": True}).json()["saved"] == 1
     assert [x["id"] for x in api.get("/api/images?saved=1").json()] == [img["id"]]
