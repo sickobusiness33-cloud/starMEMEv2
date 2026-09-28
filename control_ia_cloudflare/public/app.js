@@ -242,6 +242,8 @@ async function boot() {
     return;
   }
   S.user = status.user; S.csrf = status.csrf_token;
+  // /upgrade (ruta directa) → vista #/upgrade conservando ?estado=…
+  if (location.pathname === "/upgrade" && !location.hash) history.replaceState(null, "", `/${location.search}#/upgrade`);
   if (!S.user) return renderAuth(status.allow_signup);
   S.catalog = await api("GET", "/api/catalog");
   S.providers = await api("GET", "/api/providers");
@@ -296,13 +298,13 @@ function renderAuth(allowSignup, mode = allowSignup ? "register" : "login") {
 // ------------------------------------------------------------------ esqueleto
 
 const NAV = [
-  ["panel", "Panel", "◈"], ["proyectos", "Proyectos", "▦"], ["actividad", "Actividad", "≋"],
-  ["conectores", "Conectores", "⇄"], ["configuracion", "Configuración", "⚙"],
+  ["chat", "Chat", "✦"], ["hub", "Agent Hub", "⬡"], ["panel", "Panel", "◈"], ["proyectos", "Proyectos", "▦"],
+  ["actividad", "Actividad", "≋"], ["conectores", "Conectores", "⇄"], ["configuracion", "Ajustes", "⚙"],
 ];
 
 function parseRoute() {
-  const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
-  return { section: parts[0] || "panel", id: parts[1] ? Number(parts[1]) : null, tab: parts[2] || "chat" };
+  const parts = location.hash.replace(/^#\/?/, "").split("?")[0].split("/").filter(Boolean);
+  return { section: parts[0] || "chat", id: parts[1] ? Number(parts[1]) : null, tab: parts[2] || "chat" };
 }
 
 function route() {
@@ -315,13 +317,21 @@ function route() {
   stats.append(fixed, h("span", {}, "T", tEl), h("span", {}, "Frame", fEl));
   startClock(tEl, fEl);
   const pendingBadge = h("span", { class: "count", hidden: true });
+  const planBadge = h("a", { class: "plan-badge", href: "#/upgrade", title: "Tu plan" }, "…");
+  billing(true).then((b) => {
+    const lim = b.plans[b.subscription.plan].limits;
+    planBadge.replaceChildren(h("b", {}, b.subscription.plan.toUpperCase()),
+      h("span", { class: "hide-sm" }, ` ${b.usage_today.chat}/${lim.chatMessagesPerDay} chat · ${b.usage_today.agents}/${lim.agentRunsPerDay} agentes`));
+    planBadge.classList.toggle("pro", b.subscription.plan === "pro");
+  }).catch(() => { planBadge.textContent = "plan"; });
   const nav = h("nav", { class: "nav", "aria-label": "Secciones" }, NAV.map(([key, label, icon]) =>
-    h("a", { href: `#/${key}`, "aria-current": r.section === key ? "page" : null },
+    h("a", { href: `#/${key}`, "aria-current": r.section === key || (key === "hub" && r.section === "hub-runs") ? "page" : null },
       h("span", { "aria-hidden": "true" }, icon), label, key === "actividad" ? pendingBadge : null)));
   const top = h("header", { class: "topbar" },
     h("div", { class: "brand" }, h("span", { class: "k" }, "PANEL"), "control-ia"), stats,
     h("div", { class: "row", style: "margin-left:auto" },
-      h("span", { class: "small muted" }, `${S.user.name} · ${S.user.role === "admin" ? "admin" : "miembro"}`),
+      planBadge,
+      h("span", { class: "small muted hide-sm" }, `${S.user.name} · ${S.user.role === "admin" ? "admin" : "miembro"}`),
       h("button", { class: "btn small", type: "button", onclick: logout }, "Salir")));
   document.getElementById("app").replaceChildren(top, h("div", { class: "layout" }, nav, main));
 
@@ -342,7 +352,8 @@ function route() {
   refreshStats().catch(() => {});
   every(4000, refreshStats);
 
-  const views = { panel: viewPanel, proyectos: viewProjects, actividad: viewActivity, conectores: viewConnectors, configuracion: viewSettings };
+  const views = { chat: viewChat, hub: viewHub, "hub-runs": viewHubRuns, upgrade: viewUpgrade, fuentes: viewSources, metricas: viewMetrics,
+    panel: viewPanel, proyectos: viewProjects, actividad: viewActivity, conectores: viewConnectors, configuracion: viewSettings };
   (views[r.section] || viewProjects)(main, r).catch((err) => main.replaceChildren(h("div", { class: "alert" }, err.message)));
 }
 
@@ -1341,8 +1352,9 @@ async function viewPanel(main) {
   const stats = h("div", { class: "statlist" });
   const workers = h("span", { class: "pill tag-dark" }, "—");
   const foot = h("div", { class: "metrics-foot" });
+  const fleet = h("div", {});
   main.replaceChildren(h("div", { class: "panel-view" },
-    map,
+    map, fleet,
     h("div", { class: "panels" },
       h("section", { class: "card panel-card", style: "--k:0" }, h("div", { class: "card-h spread" }, h("span", { class: "grow" }, "Run log"), h("span", { class: "live" }, "LIVE")), h("div", { class: "card-b" }, runlog)),
       h("section", { class: "card panel-card", style: "--k:1" }, h("div", { class: "card-h spread" }, h("span", { class: "grow" }, "Dispatch"), workers), h("div", { class: "card-b" }, dispatch)),
@@ -1435,7 +1447,12 @@ async function viewPanel(main) {
     firstPaint = false;
   };
 
-  const load = async () => { data = await api("GET", "/api/dashboard"); S.projects = data.projects; render(); };
+  let fleetSig = "";
+  const load = async () => {
+    data = await api("GET", "/api/dashboard"); S.projects = data.projects; render();
+    const sig = JSON.stringify(data.agent_runs);
+    if (sig !== fleetSig) { fleetSig = sig; fleet.replaceChildren(agentFleet(data.agent_runs)); }
+  };
   await load();
   every(3000, load);
   if (window.__panelResize) window.removeEventListener("resize", window.__panelResize);

@@ -1,0 +1,53 @@
+// Agentes de programación.
+import { agent, instructions, method, S } from "./_helpers";
+
+export default [
+  agent({
+    id: "code-assistant",
+    name: "Code Assistant",
+    description: "Explica, escribe o corrige código. Pega tu código o describe lo que necesitas.",
+    category: "coding",
+    color: "azul",
+    input: { label: "¿Qué necesitas programar o arreglar?", placeholder: "Pega el código o describe la función que quieres" },
+    instructions: instructions("Eres un ingeniero de software senior. Das código correcto, explicado y con casos límite considerados."),
+    stages: [S.plan("resolver la petición de código"), S.generate("la solución: código completo en bloques ``` con el lenguaje indicado, explicación breve y cómo probarlo", "{{stage.planning}}")],
+    capabilities: ["Escribe código", "Explica errores", "Sugiere tests"],
+    source: method("Aider", "Aider-AI/aider", "Apache-2.0"),
+  }),
+  agent({
+    id: "advanced-coding",
+    name: "Advanced Coding",
+    description: "Diseño de arquitectura, refactorizaciones complejas y revisión profunda. Prefiere Claude.",
+    category: "coding",
+    color: "morado",
+    tier: "pro",
+    model: { prefer: "premium", advanced: true, allowFallback: true },
+    input: { label: "Problema o código a mejorar", placeholder: "Describe el sistema o pega el código" },
+    instructions: instructions("Eres un arquitecto de software. Razonas sobre diseño, rendimiento, seguridad y mantenibilidad."),
+    stages: [S.plan("diseñar la solución"), S.analyze("el diseño propuesto: riesgos, alternativas y compromisos", "{{stage.planning}}"), S.generate("la propuesta final con código, justificación de decisiones y plan de migración")],
+    capabilities: ["Arquitectura", "Refactorización", "Revisión profunda"],
+  }),
+  agent({
+    id: "code-reviewer",
+    name: "Code Reviewer",
+    description: "Revisa código buscando bugs, problemas de seguridad y mejoras de legibilidad.",
+    category: "coding",
+    color: "rosa",
+    input: { label: "Pega el código a revisar", placeholder: "function ..." },
+    instructions: instructions("Eres un revisor de código exigente pero constructivo."),
+    stages: [S.generate("una revisión ordenada por gravedad: bugs, seguridad, rendimiento y estilo, con la línea o fragmento afectado y el cambio propuesto", "(sin trabajo previo)")],
+    capabilities: ["Bugs", "Seguridad", "Legibilidad"],
+    source: method("AutoGen", "microsoft/autogen", "MIT"),
+  }),
+  agent({
+    id: "sql-helper",
+    name: "SQL Helper",
+    description: "Convierte preguntas en consultas SQL y explica consultas existentes.",
+    category: "coding",
+    color: "turquesa",
+    input: { label: "Pregunta o consulta SQL", placeholder: "Tablas: users(id, email, created_at)… ¿cuántos usuarios por mes?" },
+    instructions: instructions("Eres un experto en SQL (PostgreSQL, MySQL, SQLite)."),
+    stages: [S.generate("la consulta SQL en un bloque ```sql, explicación paso a paso y advertencias de rendimiento", "(sin trabajo previo)")],
+    capabilities: ["Genera SQL", "Explica consultas"],
+  }),
+];

@@ -4,9 +4,8 @@
 // - `vars` en wrangler.jsonc: configuración pública (se puede mostrar en la UI).
 // - Secretos (`wrangler secret put`): ENCRYPTION_KEY. Nunca salen del Worker.
 
-export interface RunMessage {
-  runId: number;
-}
+/** Mensajes de la cola: tareas de proyecto, ejecuciones de agentes o verificación de fuentes. */
+export type RunMessage = { runId: number } | { agentRunId: number } | { sourceCheck: string[] };
 
 export interface Env {
   DB: D1Database;
@@ -26,6 +25,24 @@ export interface Env {
   MAX_FILE_BYTES: string;
   ENABLE_DEMO_PROVIDER: string;
   OPENAI_BASE_URL: string;
+  // --- Plataforma de IA ---
+  AI?: Ai; // Cloudflare Workers AI (modelos gratuitos)
+  ANTHROPIC_API_KEY?: string; // SECRETO: créditos Claude de la plataforma (Pro)
+  ANTHROPIC_BASE_URL?: string; // solo para pruebas locales
+  AI_MODE?: string; // "mock" solo en tests locales; en producción no se define
+  FREE_MODEL: string;
+  FREE_MODEL_FALLBACK: string;
+  IMAGE_MODEL: string;
+  CLAUDE_MODEL: string;
+  CLAUDE_MODEL_ADVANCED: string;
+  // --- Suscripción ---
+  PRO_MONTHLY_PRICE: string;
+  PRO_CURRENCY: string;
+  PAYMENT_PROVIDER: string; // none | stripe
+  STRIPE_SECRET_KEY?: string; // SECRETO
+  STRIPE_WEBHOOK_SECRET?: string; // SECRETO
+  STRIPE_PRICE_ID?: string;
+  PUBLIC_URL?: string;
 }
 
 export interface Settings {

@@ -83,7 +83,15 @@ dashboardRoutes.get("/", async (c) => {
     return sum + Number(us.input_tokens ?? 0) + Number(us.output_tokens ?? 0);
   }, 0);
 
+  // Robots del Agent Hub: últimas ejecuciones de agentes del usuario (datos reales).
+  const agentRuns = await all<any>(
+    db,
+    "SELECT id, agent_id, status, stage, stages_json, created_at, finished_at FROM agent_runs WHERE user_id = ? ORDER BY id DESC LIMIT 8",
+    u.id,
+  );
+
   return c.json({
+    agent_runs: agentRuns.map((r) => ({ ...r, stages: loads(r.stages_json, []), stages_json: undefined })),
     projects: projects.map((p) => ({
       ...p,
       is_demo: Boolean(p.is_demo),

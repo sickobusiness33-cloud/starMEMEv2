@@ -41,6 +41,70 @@ plataforma trabaja con Claude sobre **su repositorio** mediante herramientas
 (leer código, proponer PRs). Es el mismo flujo de «hacer avanzar el producto»,
 pero siempre con aprobación humana y sin push directo.
 
+## Plataforma de IA: AI Chat, Agent Hub y Control IA Pro
+
+```
+AGENT HUB (catálogo) → AGENT REGISTRY → AGENT ADAPTER (runtime) → AI ROUTER → Claude | Cloudflare Workers AI
+```
+
+- **AI Router** (`src/ai/router.ts`): único punto que llama a un modelo. Orden:
+  Claude con la clave propia del usuario → Claude de la plataforma (solo Pro,
+  si `ANTHROPIC_API_KEY` existe y no está en enfriamiento) → modelo gratuito
+  (`FREE_MODEL`) → respaldo gratuito (`FREE_MODEL_FALLBACK`). Si Claude falla
+  por créditos, clave, límite o caída, se aparta un tiempo (tabla
+  `provider_health`) y se usa el respaldo mostrando «Modelo premium no
+  disponible · usando el modelo gratuito de respaldo». Al acabar el
+  enfriamiento (o con *Métricas → reintentar claude ya*) vuelve a usar Claude
+  sin tocar código. Cada llamada queda en `usage_events` (latencia, tokens,
+  coste estimado, fallback, error).
+- **Agent Registry** (`src/agents/registry.ts`): 56 agentes integrados en 18
+  categorías (`src/agents/catalog/*.ts`) + agentes añadidos como manifiesto
+  (tabla `hub_agents`). Un agente es un **manifiesto declarativo** (metadatos,
+  instrucciones, etapas, herramientas permitidas, modelo preferido, respaldo,
+  límites, versión, origen y licencia): nunca código de terceros.
+- **Runtime** (`src/agents/runtime.ts`): ejecuta las etapas (PLANNING →
+  RESEARCHING → ANALYZING → GENERATING → COMPLETED) en la cola, guarda el
+  progreso para la interfaz y admite multiagente (maestro → subagentes en
+  paralelo → síntesis final, profundidad 1).
+- **Herramientas de agentes** (`src/agents/tools.ts`): Wikipedia (solo
+  lectura, cita CC BY-SA), lector de páginas públicas cuya URL escribe el
+  usuario, y generación de imágenes con FLUX.1 [schnell] (Apache-2.0). Ningún
+  agente accede a secretos, base de datos, archivos, cuentas ni wallets, ni
+  hace operaciones financieras reales.
+- **AI Chat** (`src/chat.ts`): modos *auto*, *solo Claude*, *solo gratis* o
+  *agente del Hub*; cada respuesta muestra proveedor, modelo y si hubo fallback.
+
+### Añadir agentes
+
+1. **En código** (revisado): crea o edita un archivo en `src/agents/catalog/`
+   con `agent({...})` y, si sigue la metodología de un proyecto open source,
+   `source: method("Nombre", "owner/repo", "MIT")`. Solo licencias de
+   `COMPATIBLE_LICENSES`; nunca copies código ni prompts de otro repositorio.
+2. **Como manifiesto** (admin, sin desplegar): *Agent Hub → fuentes y
+   licencias → Añadir agente*. Pasa LICENSE → SECURITY → DEPENDENCY →
+   COMPATIBILITY CHECK; queda *validado* y un admin lo *publica*.
+3. **Update Checker**: la tabla `hub_sources` contiene ~5.700 repositorios
+   descubiertos en listas awesome (solo el nombre). *Verificar licencias*
+   descarga únicamente su archivo LICENSE y los clasifica (compatible,
+   restringida, incompatible, no verificable). Nada se incorpora solo.
+
+### Planes FREE / PRO y pagos
+
+- Límites de cada plan: `src/plans.ts` (`PLAN_LIMITS`, `PRO_FEATURES`).
+- Precio: **solo** en `wrangler.jsonc` → `PRO_MONTHLY_PRICE` (20) y
+  `PRO_CURRENCY` (EUR). La web lo lee de `/api/billing/plans`.
+- Página: `/upgrade`. Las ventajas aún inexistentes se marcan «Coming soon».
+- Pagos: **desactivados** (`PAYMENT_PROVIDER=none`). `src/billing.ts` define
+  la interfaz `PaymentProvider` y un `StripeProvider` (Checkout + webhook con
+  firma verificada). Para activarlo: crea en Stripe un precio mensual de 20 €,
+  `wrangler secret put STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, pon
+  `STRIPE_PRICE_ID` y `PAYMENT_PROVIDER=stripe`, y registra el webhook
+  `https://<tu-dominio>/api/billing/webhook/stripe` con los eventos
+  `checkout.session.completed` y `customer.subscription.*`. Hasta entonces un
+  admin puede dar Pro a mano (*Métricas → asignar plan*, sin cobro).
+- Claude de la plataforma: `wrangler secret put ANTHROPIC_API_KEY`. Sin él,
+  todo funciona con los modelos gratuitos.
+
 ## Desplegar en tu cuenta de Cloudflare
 
 Requisitos: Node 20+ y una cuenta de Cloudflare (el plan gratuito sirve para
@@ -89,8 +153,13 @@ Pública (`vars` en `wrangler.jsonc`): `ALLOW_SIGNUP`, `ADMIN_EMAILS`,
 `LOGIN_ATTEMPTS_PER_MINUTE`, `PROVIDER_TIMEOUT_SECONDS`, `PROVIDER_MAX_RETRIES`,
 `MAX_FILE_BYTES`, `ENABLE_DEMO_PROVIDER`, `OPENAI_BASE_URL`.
 
-Secreta (`wrangler secret put`): `ENCRYPTION_KEY`. Nada más: las claves de IA
-y de GitHub las pone cada usuario desde la web.
+Plataforma de IA (`vars`): `FREE_MODEL`, `FREE_MODEL_FALLBACK`, `IMAGE_MODEL`,
+`CLAUDE_MODEL`, `CLAUDE_MODEL_ADVANCED`, `PRO_MONTHLY_PRICE`, `PRO_CURRENCY`,
+`PAYMENT_PROVIDER`, `PUBLIC_URL`. Binding `AI` (Workers AI).
+
+Secretas (`wrangler secret put`): `ENCRYPTION_KEY` (obligatoria),
+`ANTHROPIC_API_KEY` (opcional, Claude para Pro), `STRIPE_SECRET_KEY` y
+`STRIPE_WEBHOOK_SECRET` (solo al activar pagos). Nunca llegan al navegador.
 
 ## Desarrollo local
 
@@ -107,6 +176,13 @@ Wrangler):
 
 ```bash
 pip install pytest httpx
+# en .dev.vars, para no gastar Workers AI ni Claude en los tests:
+#   AI_MODE=mock
+#   ADMIN_EMAILS=admin-tests@example.com
+#   ANTHROPIC_API_KEY=sk-ant-mock
+#   ANTHROPIC_BASE_URL=http://127.0.0.1:8799
+python tests/mock_anthropic.py &    # imita Claude con y sin créditos
+npx wrangler dev --local &
 npm test
 ```
 
@@ -140,3 +216,10 @@ npm test
 - Archivos del proyecto: solo texto UTF-8 (hasta 256 KB por defecto).
 - Sin recuperación de contraseña por email (haría falta un servicio de correo).
 - Ollama (IA local) no está disponible: un Worker no puede llegar a tu equipo.
+- Workers AI cobra por uso a partir de la cuota gratuita diaria de la cuenta
+  de Cloudflare (10.000 «neurons»/día); los límites FREE lo contienen.
+- Los agentes «inspirados en» proyectos open source siguen su metodología
+  pública con prompts propios: no ejecutan esos proyectos (son Python y no
+  corren en Workers).
+- Los pagos no están conectados: no se puede contratar Pro todavía.
+- La salida de los agentes es texto plano (sin render Markdown).

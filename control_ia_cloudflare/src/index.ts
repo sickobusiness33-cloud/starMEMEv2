@@ -10,6 +10,14 @@ import { dashboardRoutes } from "./dashboard";
 import { type AppEnv, type Env, type RunMessage, publicSettings, settingsFrom } from "./env";
 import { processRun } from "./executor";
 import { HttpError } from "./http";
+import { hubRoutes } from "./hub";
+import { chatRoutes } from "./chat";
+import { billingRoutes } from "./billing";
+import { metricsRoutes } from "./metrics";
+import { processAgentRun } from "./agents/runtime";
+import { checkRepoLicense } from "./agents/license";
+import { getSubscription, PLAN_LIMITS } from "./plans";
+import { nowIso, run } from "./db";
 import { COLORS, projectRoutes } from "./projects";
 import { providerRoutes } from "./providers";
 import { runRoutes } from "./runs";
@@ -45,6 +53,10 @@ app.route("/projects", projectRoutes);
 app.route("/connectors", connectorRoutes);
 app.route("/providers", providerRoutes);
 app.route("/dashboard", dashboardRoutes);
+app.route("/hub", hubRoutes);
+app.route("/chat", chatRoutes);
+app.route("/billing", billingRoutes);
+app.route("/", metricsRoutes);
 app.route("/", runRoutes);
 
 app.get("/activity", requireUser, async (c) => {
@@ -53,25 +65,47 @@ app.get("/activity", requireUser, async (c) => {
 });
 
 // Configuración pública + catálogos. Sin secretos.
-app.get("/catalog", requireUser, (c) =>
-  c.json({
+app.get("/catalog", requireUser, async (c) => {
+  const sub = await getSubscription(c.env.DB, c.get("user").id);
+  return c.json({
+    plan: sub.plan,
+    plan_limits: PLAN_LIMITS[sub.plan],
     settings: publicSettings(c.get("settings")),
     tools: Object.values(TOOLS).map(toolOut),
     risk_labels: RISK_LABELS,
     connector_types: Object.values(CONNECTORS).map((C) => C.type),
     colors: COLORS,
-  }),
-);
+  });
+});
+
+/** Update Checker: verifica la licencia de repositorios (solo lee el archivo LICENSE). */
+async function checkSources(env: Env, repos: string[]) {
+  for (const repo of repos.slice(0, 8)) {
+    const r = await checkRepoLicense(repo);
+    await run(
+      env.DB,
+      "UPDATE hub_sources SET license = ?, license_status = ?, license_flags = ?, checked_at = ? WHERE repo = ?",
+      r.license,
+      r.status,
+      r.flags.join(", ") || null,
+      nowIso(),
+      repo,
+    );
+  }
+}
 
 export default {
   fetch: app.fetch,
   async queue(batch: MessageBatch<RunMessage>, env: Env) {
     const settings = settingsFrom(env);
     for (const msg of batch.messages) {
+      const body = msg.body;
       try {
-        await processRun(env, settings, msg.body.runId);
+        if ("runId" in body) await processRun(env, settings, body.runId);
+        else if ("agentRunId" in body) await processAgentRun(env, body.agentRunId);
+        else if ("sourceCheck" in body) await checkSources(env, body.sourceCheck);
       } catch (err) {
-        console.error("Fallo procesando la ejecución", msg.body.runId, redact(String(err)));
+        console.error("Fallo procesando el mensaje de la cola", JSON.stringify(body).slice(0, 200), redact(String(err)));
       }
       msg.ack();
     }
