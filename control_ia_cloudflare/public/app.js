@@ -11,7 +11,7 @@
 
 const S = {
   user: null, csrf: null, catalog: null, providers: null, projects: [],
-  filter: { q: "", status: "active" }, timers: [], dialogResolve: null,
+  filter: { q: "", status: "active" }, timers: [], cleanups: [], dialogResolve: null,
 };
 
 function h(tag, attrs, ...children) {
@@ -78,7 +78,10 @@ const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString("es-ES") : "—"
 const trunc = (s, n) => (s || "").length > n ? s.slice(0, n - 1) + "…" : (s || "");
 const fmtBytes = (n) => n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`;
 
-function clearTimers() { S.timers.forEach(clearInterval); S.timers = []; }
+function clearTimers() {
+  S.timers.forEach(clearInterval); S.timers = [];
+  S.cleanups.forEach((fn) => { try { fn(); } catch { /* ya cerrado */ } }); S.cleanups = [];
+}
 function every(ms, fn) { const id = setInterval(() => fn().catch(() => {}), ms); S.timers.push(id); return id; }
 
 async function withBusy(button, fn) {
@@ -297,10 +300,16 @@ function renderAuth(allowSignup, mode = allowSignup ? "register" : "login") {
 
 // ------------------------------------------------------------------ esqueleto
 
+// [clave, etiqueta, icono, visible en la barra inferior del móvil]
 const NAV = [
-  ["chat", "Chat", "✦"], ["hub", "Agent Hub", "⬡"], ["panel", "Panel", "◈"], ["proyectos", "Proyectos", "▦"],
-  ["actividad", "Actividad", "≋"], ["conectores", "Conectores", "⇄"], ["configuracion", "Ajustes", "⚙"],
+  ["chat", "Kairo", "kairo", true], ["hub", "Agentes", "agents", true], ["studio", "Estudio", "studio", true],
+  ["panel", "Panel", "panel", false], ["proyectos", "Proyectos", "projects", false], ["notificaciones", "Avisos", "bell", true],
+  ["actividad", "Actividad", "activity", false], ["conectores", "Conectores", "connectors", false], ["configuracion", "Ajustes", "settings", false],
 ];
+const SECTION_TITLE = {
+  chat: "Kairo", hub: "Agent Hub", "hub-runs": "Agent Hub", studio: "Estudio", panel: "Panel", proyectos: "Proyectos", notificaciones: "Notificaciones",
+  actividad: "Actividad", conectores: "Conectores", configuracion: "Ajustes", upgrade: "Control IA Pro", fuentes: "Modelos y licencias", metricas: "Métricas",
+};
 
 function parseRoute() {
   const parts = location.hash.replace(/^#\/?/, "").split("?")[0].split("/").filter(Boolean);
@@ -310,51 +319,80 @@ function parseRoute() {
 function route() {
   clearTimers();
   const r = parseRoute();
-  const main = h("main", { id: "main", tabindex: "-1" });
-  const stats = h("div", { class: "stats", "aria-label": "Resumen" });
-  const fixed = h("span", { class: "stats-fixed" });
-  const tEl = h("b", {}, "00.00"), fEl = h("b", {}, "0000");
-  stats.append(fixed, h("span", {}, "T", tEl), h("span", {}, "Frame", fEl));
-  startClock(tEl, fEl);
+  const main = h("main", { id: "main", tabindex: "-1", class: `sec-${r.section}` });
   const pendingBadge = h("span", { class: "count", hidden: true });
   const planBadge = h("a", { class: "plan-badge", href: "#/upgrade", title: "Tu plan" }, "…");
   billing(true).then((b) => {
     const lim = b.plans[b.subscription.plan].limits;
     planBadge.replaceChildren(h("b", {}, b.subscription.plan.toUpperCase()),
-      h("span", { class: "hide-sm" }, ` ${b.usage_today.chat}/${lim.chatMessagesPerDay} chat · ${b.usage_today.agents}/${lim.agentRunsPerDay} agentes`));
+      h("span", { class: "hide-sm" }, ` ${b.usage_today.chat}/${lim.chatMessagesPerDay} mensajes`));
     planBadge.classList.toggle("pro", b.subscription.plan === "pro");
   }).catch(() => { planBadge.textContent = "plan"; });
-  const nav = h("nav", { class: "nav", "aria-label": "Secciones" }, NAV.map(([key, label, icon]) =>
-    h("a", { href: `#/${key}`, "aria-current": r.section === key || (key === "hub" && r.section === "hub-runs") ? "page" : null },
-      h("span", { "aria-hidden": "true" }, icon), label, key === "actividad" ? pendingBadge : null)));
-  const top = h("header", { class: "topbar" },
-    h("div", { class: "brand" }, h("span", { class: "k" }, "PANEL"), "control-ia"), stats,
-    h("div", { class: "row", style: "margin-left:auto" },
-      planBadge,
-      h("span", { class: "small muted hide-sm" }, `${S.user.name} · ${S.user.role === "admin" ? "admin" : "miembro"}`),
-      h("button", { class: "btn small", type: "button", onclick: logout }, "Salir")));
-  document.getElementById("app").replaceChildren(top, h("div", { class: "layout" }, nav, main));
 
-  const refreshStats = async () => {
-    const [runs, actions] = await Promise.all([api("GET", "/api/runs?active=true"), api("GET", "/api/actions?status=pending")]);
-    const running = runs.filter((x) => x.status === "running").length;
-    const d = S.dash || {};
-    fixed.replaceChildren(
-      h("span", {}, "Files", h("b", {}, d.files ?? (S.projects.length ? "·" : 0))),
-      h("span", { class: "hl" }, "Edges", h("b", {}, d.edges ?? "·")),
-      h("span", {}, "Bus readers", h("b", {}, d.readers ?? "·")),
-      h("span", {}, "Depth", h("b", {}, running)),
-      h("span", { class: actions.length ? "hl" : null }, "Confirm", h("b", {}, actions.length)));
-    pendingBadge.hidden = !actions.length;
-    pendingBadge.textContent = actions.length;
-    pendingBadge.setAttribute("aria-label", `${actions.length} acciones por confirmar`);
-  };
-  refreshStats().catch(() => {});
-  every(4000, refreshStats);
+  const isCurrent = (key) => r.section === key || (key === "hub" && ["hub-runs", "fuentes"].includes(r.section));
+  const navLink = ([key, label, ic, primary]) => h("a", { href: `#/${key}`, class: primary ? "primary" : "secondary", "aria-current": isCurrent(key) ? "page" : null },
+    h("span", { class: "nav-ico" }, icon(ic, 19)), h("span", { class: "nav-label" }, label), key === "actividad" ? pendingBadge : null);
+  const moreSheet = h("div", { class: "more-sheet", hidden: true },
+    NAV.filter((n) => !n[3]).map(navLink), h("a", { href: "#/upgrade", class: "secondary" }, h("span", { class: "nav-ico" }, icon("star", 19)), h("span", { class: "nav-label" }, "Pro")));
+  const moreBtn = h("button", { class: "nav-more", type: "button", "aria-expanded": "false", onclick: (e) => {
+    e.stopPropagation(); moreSheet.hidden = !moreSheet.hidden; moreBtn.setAttribute("aria-expanded", String(!moreSheet.hidden)); } },
+    h("span", { class: "nav-ico" }, icon("more", 19)), h("span", { class: "nav-label" }, "Más"));
+  document.addEventListener("click", () => { moreSheet.hidden = true; }, { once: true });
+  const nav = h("nav", { class: "nav", "aria-label": "Secciones" },
+    h("a", { class: "side-brand", href: "#/chat" }, kairoLogo(30), h("span", {}, h("b", {}, "Control IA"), h("small", {}, `${BRAND_NAME} Intelligence`))),
+    h("div", { class: "nav-group" }, NAV.slice(0, 3).map(navLink)),
+    h("div", { class: "nav-sep" }, "Trabajo"),
+    h("div", { class: "nav-group" }, NAV.slice(3, 6).map(navLink)),
+    h("div", { class: "nav-sep" }, "Sistema"),
+    h("div", { class: "nav-group" }, NAV.slice(6).map(navLink)),
+    moreBtn, moreSheet,
+    h("a", { class: "side-pro", href: "#/upgrade" }, icon("star", 16), h("span", {}, "Control IA Pro")));
+
+  // Métricas del grafo (estética del panel): solo en la vista Panel.
+  let stats = null;
+  if (r.section === "panel") {
+    stats = h("div", { class: "stats", "aria-label": "Resumen" });
+    const fixed = h("span", { class: "stats-fixed" });
+    const tEl = h("b", {}, "00.00"), fEl = h("b", {}, "0000");
+    stats.append(fixed, h("span", {}, "T", tEl), h("span", {}, "Frame", fEl));
+    startClock(tEl, fEl);
+    const refreshStats = async () => {
+      const [runs, actions] = await Promise.all([api("GET", "/api/runs?active=true"), api("GET", "/api/actions?status=pending")]);
+      const running = runs.filter((x) => x.status === "running").length;
+      const d = S.dash || {};
+      fixed.replaceChildren(
+        h("span", {}, "Files", h("b", {}, d.files ?? (S.projects.length ? "·" : 0))),
+        h("span", { class: "hl" }, "Edges", h("b", {}, d.edges ?? "·")),
+        h("span", {}, "Bus readers", h("b", {}, d.readers ?? "·")),
+        h("span", {}, "Depth", h("b", {}, running)),
+        h("span", { class: actions.length ? "hl" : null }, "Confirm", h("b", {}, actions.length)));
+      setPending(actions.length);
+    };
+    refreshStats().catch(() => {});
+    every(6000, refreshStats);
+  }
+  const setPending = (n) => { pendingBadge.hidden = !n; pendingBadge.textContent = n; pendingBadge.setAttribute("aria-label", `${n} acciones por confirmar`); };
+  if (r.section !== "panel") {
+    const refreshPending = async () => setPending((await api("GET", "/api/actions?status=pending")).length);
+    refreshPending().catch(() => {});
+    every(30_000, refreshPending);
+  }
+
+  const initials = (S.user.name || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+  const top = h("header", { class: "topbar" },
+    h("a", { class: "top-brand", href: "#/chat", "aria-label": "Control IA" }, kairoLogo(26)),
+    h("div", { class: "top-title" }, SECTION_TITLE[r.section] || "Control IA"),
+    stats,
+    h("div", { class: "top-actions" },
+      planBadge, notifBell(),
+      h("span", { class: "avatar", title: `${S.user.name} · ${S.user.role === "admin" ? "admin" : "miembro"}` }, initials),
+      h("button", { class: "btn small ghost", type: "button", onclick: logout }, "Salir")));
+  document.getElementById("app").replaceChildren(h("div", { class: "layout" }, nav, h("div", { class: "workspace" }, top, main)));
 
   const views = { chat: viewChat, hub: viewHub, "hub-runs": viewHubRuns, upgrade: viewUpgrade, fuentes: viewSources, metricas: viewMetrics,
+    studio: viewStudio, notificaciones: viewNotifications,
     panel: viewPanel, proyectos: viewProjects, actividad: viewActivity, conectores: viewConnectors, configuracion: viewSettings };
-  (views[r.section] || viewProjects)(main, r).catch((err) => main.replaceChildren(h("div", { class: "alert" }, err.message)));
+  (views[r.section] || viewChat)(main, r).catch((err) => main.replaceChildren(h("div", { class: "alert" }, err.message)));
 }
 
 async function logout() {
@@ -1170,10 +1208,12 @@ async function viewSettings(main) {
   } }, "Eliminar mi cuenta");
 
   main.replaceChildren(h("div", { class: "stack" },
-    h("h1", {}, "Configuración"),
+    h("h1", {}, "Ajustes"),
     h("h2", {}, "Mis IAs"),
-    h("p", { class: "muted" }, "Conecta tus propias claves. Se guardan cifradas, nunca vuelven al navegador y solo se usan en TUS proyectos. El consumo lo factura cada proveedor en tu cuenta."),
+    h("p", { class: "muted" }, "Conecta tus propias claves. Se guardan cifradas, nunca vuelven al navegador y solo se usan en tus proyectos y, si activas «Usar mi API», en Kairo. El consumo lo factura cada proveedor en tu cuenta."),
     providers,
+    await aiPrefsCard(),
+    await notifPrefsCard(),
     h("div", { class: "dash" },
       h("div", { class: "card" }, h("div", { class: "card-h" }, "Mi cuenta"), h("div", { class: "card-b stack" }, h("p", { class: "small" }, `${S.user.name} · ${S.user.email}`), pwForm,
         h("hr", { style: "border:none;border-top:2px dashed var(--soft)" }), deleteAccount)),

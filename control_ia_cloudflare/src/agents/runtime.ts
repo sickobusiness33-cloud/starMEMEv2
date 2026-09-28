@@ -13,11 +13,13 @@
 import { redact } from "../crypto";
 import { dumps, loads, nowIso, one, update } from "../db";
 import type { Env } from "../env";
-import { PLAN_LIMITS, type PlanId } from "../plans";
-import { generate, RouterError, type CallContext } from "../ai/router";
+import type { PlanId } from "../plans";
+import { RouterError, type CallContext } from "../ai/router";
+import { notify } from "../notify";
+import { render, runStage } from "./pipeline";
 import { getAgent, type RegistryAgent } from "./registry";
-import { runAgentTool } from "./tools";
 import type { AgentManifest, Stage } from "./types";
+
 
 export interface SubProgress {
   id: string;
@@ -45,14 +47,6 @@ export interface StageProgress {
 
 class Cancelled extends Error {}
 
-const EMPTY = "(sin trabajo previo)";
-
-export function render(template: string, input: string, outputs: Record<string, string>): string {
-  return template
-    .replace(/\{\{input\}\}/g, input)
-    .replace(/\{\{stage\.([a-z][a-z0-9_]*)\}\}/g, (_, id) => outputs[id]?.trim() || EMPTY);
-}
-
 export function initialStages(agent: AgentManifest): StageProgress[] {
   return agent.stages.map((s) => ({
     id: s.id,
@@ -69,15 +63,11 @@ interface Runner {
   userId: number;
   plan: PlanId;
   input: string;
+  images: number[];
   notices: string[];
   stages: StageProgress[];
   save: () => Promise<void>;
   checkCancelled: () => Promise<void>;
-}
-
-function maxTokens(r: Runner, agent: AgentManifest, stage?: number) {
-  const cap = Math.min(PLAN_LIMITS[r.plan].maxOutputTokens, agent.limits?.maxOutputTokens ?? 4000);
-  return Math.max(50, Math.min(stage ?? cap, cap));
 }
 
 function ctxFor(r: Runner, agentId: string): CallContext {
@@ -88,17 +78,11 @@ function note(r: Runner, list: string[]) {
   for (const n of list) if (!r.notices.includes(n)) r.notices.push(n);
 }
 
-async function llm(r: Runner, agent: AgentManifest, prompt: string, tokens?: number) {
-  const res = await generate(ctxFor(r, agent.id), {
-    system: agent.instructions,
-    messages: [{ role: "user", content: prompt }],
-    maxTokens: maxTokens(r, agent, tokens),
-    prefer: agent.model.prefer,
-    allowFallback: agent.model.allowFallback,
-    advanced: agent.model.advanced,
+function stage(r: Runner, agent: AgentManifest, s: Exclude<Stage, { kind: "agents" }>, input: string, outputs: Record<string, string>) {
+  return runStage({ ctx: ctxFor(r, agent.id), agent, input, userInput: input, outputs, tools: { images: r.images } }, s).then((res) => {
+    note(r, res.notices);
+    return res;
   });
-  note(r, res.notices);
-  return res;
 }
 
 /** Ejecuta un subagente completo (sin subagentes propios) y devuelve su texto. */
@@ -111,18 +95,17 @@ async function runSub(r: Runner, sub: RegistryAgent, prompt: string, p: SubProgr
     await r.checkCancelled();
     p.stage = s.label;
     await r.save();
+    if (s.kind === "agents") continue;
+    if (s.kind === "tool" && s.tool.startsWith("image_")) {
+      outputs[s.id] = "(la generación de imágenes no se usa dentro de un flujo multiagente)";
+      continue;
+    }
+    const res = await stage(r, sub, s, prompt, outputs);
+    outputs[s.id] = res.text;
     if (s.kind === "llm") {
-      const res = await llm(r, sub, render(s.prompt, prompt, outputs), s.maxTokens);
-      outputs[s.id] = last = res.text;
+      last = res.text;
       p.provider = res.provider;
       p.model = res.model;
-    } else if (s.kind === "tool") {
-      if (s.tool === "image_generate") {
-        outputs[s.id] = "(la generación de imágenes no se usa dentro de un flujo multiagente)";
-        continue;
-      }
-      const from = s.from === "input" ? prompt : outputs[s.from] ?? "";
-      outputs[s.id] = (await runAgentTool(ctxFor(r, sub.id), s.tool, from, prompt)).text;
     }
   }
   p.status = "completed";
@@ -144,18 +127,15 @@ export async function executeAgent(r: Runner, agent: AgentManifest): Promise<{ o
     await update(r.env.DB, "agent_runs", r.runId, { stage: s.id, stages_json: dumps(r.stages) });
     try {
       if (s.kind === "llm") {
-        const res = await llm(r, agent, render(s.prompt, r.input, outputs), s.maxTokens);
+        const res = await stage(r, agent, s, r.input, outputs);
         outputs[s.id] = res.text;
         Object.assign(sp, { provider: res.provider, model: res.model, fallback: res.fallback });
         final = { output: res.text, kind: "text" };
       } else if (s.kind === "tool") {
-        const from = s.from === "input" ? r.input : outputs[s.from] ?? "";
-        const res = await runAgentTool(ctxFor(r, agent.id), s.tool, from, r.input);
+        const res = await stage(r, agent, s, r.input, outputs);
         outputs[s.id] = res.text;
-        if (res.image) {
-          final = { output: res.image, kind: "image" };
-          Object.assign(sp, { provider: "workers-ai", model: r.env.IMAGE_MODEL });
-        }
+        if (res.provider) Object.assign(sp, { provider: res.provider, model: res.model });
+        if (res.image) final = { output: res.image.b64, kind: "image" };
       } else {
         const subs: RegistryAgent[] = [];
         for (const id of s.agents) {
@@ -206,6 +186,7 @@ export async function processAgentRun(env: Env, runId: number) {
     userId: row.user_id,
     plan: row.plan === "pro" ? "pro" : "free",
     input: row.input,
+    images: loads<number[]>(row.images_json, []),
     notices: [],
     stages,
     save: async () => update(env.DB, "agent_runs", runId, { stages_json: dumps(stages), notices_json: dumps(r.notices) }),
@@ -229,6 +210,7 @@ export async function processAgentRun(env: Env, runId: number) {
     )
       .bind(out.output, out.kind, dumps(stages), dumps(r.notices), nowIso(), runId)
       .run();
+    await notify(env, r.userId, { category: "ia", title: `${agent.name} ha terminado`, body: row.input.slice(0, 120), link: `#/hub/run/${runId}`, dedupe: `agent-run-${runId}` });
   } catch (err) {
     if (err instanceof Cancelled) {
       await update(env.DB, "agent_runs", runId, { stages_json: dumps(stages), notices_json: dumps(r.notices), finished_at: nowIso() });
@@ -240,5 +222,6 @@ export async function processAgentRun(env: Env, runId: number) {
     )
       .bind(msg, dumps(stages), dumps(r.notices), nowIso(), runId)
       .run();
+    await notify(env, r.userId, { category: "ia", title: `${agent.name} no pudo terminar`, body: msg, link: `#/hub/run/${runId}`, dedupe: `agent-run-${runId}` });
   }
 }

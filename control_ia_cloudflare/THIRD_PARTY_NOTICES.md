@@ -8,6 +8,16 @@ Control IA no incluye código de terceros aparte de sus dependencias npm
 - **Llama 3.3 70B Instruct** y **Llama 3.1 8B Instruct** — Meta,
   Llama 3.3 / Llama 3.1 Community License. *Built with Llama.*
 - **FLUX.1 [schnell]** — Black Forest Labs, Apache-2.0.
+- **Mistral Small 3.1 24B Instruct** — Mistral AI, Apache-2.0.
+- **Qwen2.5 Coder 32B Instruct**, **QwQ 32B** — Qwen (Alibaba Cloud), Apache-2.0.
+- **DeepSeek R1 Distill Qwen 32B** — DeepSeek, MIT.
+- **gpt-oss 120B** — OpenAI (pesos abiertos), Apache-2.0.
+- **Stable Diffusion XL base 1.0**, **SDXL Lightning** (ByteDance) — CreativeML Open RAIL++-M.
+- **Stable Diffusion 1.5 img2img / inpainting** (Runway), **DreamShaper 8 LCM** (Lykon) — CreativeML Open RAIL-M.
+
+Las licencias OpenRAIL permiten uso comercial con restricciones de uso: no se
+pueden usar para generar contenido ilegal, dañino, que suplante a personas o
+que infrinja derechos. Esas restricciones se trasladan a los usuarios de Control IA.
 
 ## Servicio comercial
 

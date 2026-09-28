@@ -16,6 +16,8 @@ export interface PlanLimits {
   multiAgent: boolean; // flujos multiagente
   claude: boolean; // Claude con los créditos de la plataforma (cuando haya)
   maxOutputTokens: number;
+  imagesPerDay: number; // estudio de imágenes (generar, editar, variaciones, upscale)
+  maxAgentsPerMessage: number; // agentes que el orquestador puede usar por mensaje
 }
 
 export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
@@ -27,6 +29,8 @@ export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
     multiAgent: false,
     claude: false,
     maxOutputTokens: 1_500,
+    imagesPerDay: 20,
+    maxAgentsPerMessage: 3,
   },
   pro: {
     chatMessagesPerDay: 600,
@@ -36,6 +40,8 @@ export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
     multiAgent: true,
     claude: true,
     maxOutputTokens: 4_000,
+    imagesPerDay: 200,
+    maxAgentsPerMessage: 5,
   },
 };
 
@@ -45,6 +51,8 @@ export const PRO_FEATURES: { id: string; label: string; status: "available" | "c
   { id: "claude", label: "Claude como modelo preferente cuando la plataforma tenga créditos", status: "available" },
   { id: "limits", label: "Límites de uso mucho mayores (chat, agentes y contexto)", status: "available" },
   { id: "multi_agent", label: "Flujos multiagente (varios robots colaborando)", status: "available" },
+  { id: "orchestrator", label: "Kairo usa hasta 5 agentes por mensaje (Free: 3)", status: "available" },
+  { id: "images", label: "200 imágenes al día en el estudio (Free: 20)", status: "available" },
   { id: "advanced", label: "Análisis avanzado: investigación profunda, estrategia, código", status: "available" },
   { id: "priority", label: "Prioridad de ejecución en la cola", status: "coming_soon" },
   { id: "hub_advanced", label: "Agentes personalizados y funciones avanzadas del Agent Hub", status: "coming_soon" },
@@ -115,5 +123,6 @@ export async function usageToday(db: D1Database, userId: number) {
     today,
   );
   const agents = await one<any>(db, "SELECT COUNT(*) AS n FROM agent_runs WHERE user_id = ? AND created_at >= ?", userId, today);
-  return { chat: chat?.n ?? 0, agents: agents?.n ?? 0 };
+  const images = await one<any>(db, "SELECT COUNT(*) AS n FROM images WHERE user_id = ? AND mode <> 'upload' AND created_at >= ?", userId, today);
+  return { chat: chat?.n ?? 0, agents: agents?.n ?? 0, images: images?.n ?? 0 };
 }

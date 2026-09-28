@@ -15,6 +15,9 @@ import { chatRoutes } from "./chat";
 import { billingRoutes } from "./billing";
 import { metricsRoutes } from "./metrics";
 import { processAgentRun } from "./agents/runtime";
+import { imageRoutes } from "./images";
+import { notificationRoutes } from "./notifications";
+import { processChatRun } from "./orchestrator/executor";
 import { checkRepoLicense } from "./agents/license";
 import { getSubscription, PLAN_LIMITS } from "./plans";
 import { nowIso, run } from "./db";
@@ -55,6 +58,8 @@ app.route("/providers", providerRoutes);
 app.route("/dashboard", dashboardRoutes);
 app.route("/hub", hubRoutes);
 app.route("/chat", chatRoutes);
+app.route("/images", imageRoutes);
+app.route("/notifications", notificationRoutes);
 app.route("/billing", billingRoutes);
 app.route("/", metricsRoutes);
 app.route("/", runRoutes);
@@ -103,6 +108,7 @@ export default {
       try {
         if ("runId" in body) await processRun(env, settings, body.runId);
         else if ("agentRunId" in body) await processAgentRun(env, body.agentRunId);
+        else if ("chatRunId" in body) await processChatRun(env, body.chatRunId);
         else if ("sourceCheck" in body) await checkSources(env, body.sourceCheck);
       } catch (err) {
         console.error("Fallo procesando el mensaje de la cola", JSON.stringify(body).slice(0, 200), redact(String(err)));

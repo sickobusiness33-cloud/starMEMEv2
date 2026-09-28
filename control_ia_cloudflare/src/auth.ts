@@ -12,6 +12,7 @@ import { hashPassword, randomToken, safeEqual, sha256, verifyPassword } from "./
 import { all, nowIso, one, run } from "./db";
 import type { AppEnv, User } from "./env";
 import { EMAIL, fail, jsonBody, reqStr } from "./http";
+import { notify } from "./notify";
 import { hit, reset } from "./ratelimit";
 
 const COOKIE = "cia_session";
@@ -114,6 +115,7 @@ authRoutes.post("/register", async (c) => {
   );
   const csrf = await startSession(c, id);
   await record(c.env.DB, { actor: email, userId: id, action: "auth.registro", detail: `rol=${role}` });
+  await notify(c.env, id, { category: "cuenta", title: `Bienvenido a Control IA, ${name}`, body: "Escribe lo que necesites en el chat: Kairo elegirá los agentes adecuados por ti.", link: "#/chat" });
   const user = (await one<User>(c.env.DB, "SELECT * FROM users WHERE id = ?", id))!;
   return c.json({ user: publicUser(user), csrf_token: csrf });
 });
@@ -135,6 +137,7 @@ authRoutes.post("/login", async (c) => {
   await reset(c.env.DB, key);
   const csrf = await startSession(c, user!.id);
   await record(c.env.DB, { actor: user!.email, userId: user!.id, action: "auth.login" });
+  await notify(c.env, user!.id, { category: "seguridad", priority: "low", title: "Nuevo inicio de sesión", body: "Si no has sido tú, cambia tu contraseña en Ajustes.", link: "#/configuracion", dedupe: `login-${new Date().toISOString().slice(0, 10)}` });
   return c.json({ user: publicUser(user!), csrf_token: csrf });
 });
 
@@ -158,6 +161,7 @@ authRoutes.post("/password", requireUser, async (c) => {
   const token = getCookie(c, COOKIE) || "";
   await run(c.env.DB, "DELETE FROM sessions WHERE user_id = ? AND token_hash != ?", u.id, await sha256(token));
   await record(c.env.DB, { actor: u.email, userId: u.id, action: "auth.cambiar_contraseña" });
+  await notify(c.env, u.id, { category: "seguridad", priority: "high", title: "Contraseña cambiada", body: "Se han cerrado tus otras sesiones. Si no has sido tú, contacta con el administrador.", link: "#/configuracion" });
   return c.json({ ok: true });
 });
 

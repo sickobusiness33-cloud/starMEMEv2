@@ -8,6 +8,7 @@
 // (lo publica un administrador). Nunca se ejecuta código de terceros: el
 // manifiesto solo contiene texto, etapas declarativas y herramientas permitidas.
 
+import { MODEL_MAP } from "../ai/models";
 import { all, loads } from "../db";
 import automation from "./catalog/automation";
 import browser from "./catalog/browser";
@@ -27,6 +28,7 @@ import trading from "./catalog/trading";
 import video from "./catalog/video";
 import web from "./catalog/web";
 import writing from "./catalog/writing";
+import kairo from "./catalog/kairo";
 import { CATEGORIES, COMPATIBLE_LICENSES, TOOL_INFO, type AgentManifest } from "./types";
 
 export const BUILTIN: AgentManifest[] = [
@@ -48,6 +50,7 @@ export const BUILTIN: AgentManifest[] = [
   ...general,
   ...multi,
   ...browser,
+  ...kairo,
 ];
 
 const BUILTIN_MAP = new Map(BUILTIN.map((a) => [a.id, a]));
@@ -144,7 +147,9 @@ export function validateManifest(m: any, known: Set<string>): { ok: boolean; che
   if (!["free", "pro"].includes(m?.tier)) problems.push("tier");
   if (!["azul", "rosa", "morado", "verde", "turquesa", "naranja"].includes(m?.color)) problems.push("color");
   if (!["free", "premium"].includes(m?.model?.prefer) || typeof m?.model?.allowFallback !== "boolean") problems.push("model");
-  if (!isStr(m?.input?.label, 1, 80) || !isStr(m?.input?.placeholder, 0, 200)) problems.push("input");
+  if (!isStr(m?.input?.label, 1, 80) || !isStr(m?.input?.placeholder, 0, 200) || ![undefined, "required", "optional"].includes(m?.input?.image)) problems.push("input");
+  if (m?.model?.capability !== undefined && !["chat", "code", "reasoning", "vision"].includes(m.model.capability)) problems.push("model.capability");
+  if (m?.model?.id !== undefined && !MODEL_MAP.has(m.model.id)) problems.push("model.id (debe existir en el catálogo de modelos)");
   if (!isStr(m?.instructions, 10, 6000)) problems.push("instructions (10–6000 caracteres)");
   if (!Array.isArray(m?.capabilities) || m.capabilities.length > 10 || m.capabilities.some((c: unknown) => !isStr(c, 1, 60))) problems.push("capabilities");
   if (!stages.length || stages.length > 6) problems.push("stages (1–6)");

@@ -79,9 +79,4 @@ export const FRAMEWORKS: FrameworkSource[] = [
 ];
 
 /** Modelos que usa la plataforma y sus licencias (atribución obligatoria donde aplica). */
-export const MODELS = [
-  { id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", name: "Llama 3.3 70B (Meta)", license: "Llama 3.3 Community License", use: "Modelo gratuito principal", attribution: "Built with Llama" },
-  { id: "@cf/meta/llama-3.1-8b-instruct-fp8", name: "Llama 3.1 8B (Meta)", license: "Llama 3.1 Community License", use: "Respaldo gratuito", attribution: "Built with Llama" },
-  { id: "@cf/black-forest-labs/flux-1-schnell", name: "FLUX.1 [schnell]", license: "Apache-2.0", use: "Generación de imágenes", attribution: "Black Forest Labs" },
-  { id: "claude", name: "Claude (Anthropic)", license: "Servicio comercial (API)", use: "Premium cuando haya créditos o clave propia", attribution: "Anthropic" },
-];
+

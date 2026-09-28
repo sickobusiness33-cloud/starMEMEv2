@@ -5,7 +5,7 @@
 // - Secretos (`wrangler secret put`): ENCRYPTION_KEY. Nunca salen del Worker.
 
 /** Mensajes de la cola: tareas de proyecto, ejecuciones de agentes o verificación de fuentes. */
-export type RunMessage = { runId: number } | { agentRunId: number } | { sourceCheck: string[] };
+export type RunMessage = { runId: number } | { agentRunId: number } | { chatRunId: number } | { sourceCheck: string[] };
 
 export interface Env {
   DB: D1Database;

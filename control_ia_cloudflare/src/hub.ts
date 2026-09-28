@@ -14,7 +14,8 @@ import { getSubscription, PLAN_LIMITS, usageToday } from "./plans";
 import { hit } from "./ratelimit";
 import { getAgent, listAgents, validateManifest, type RegistryAgent } from "./agents/registry";
 import { initialStages } from "./agents/runtime";
-import { FRAMEWORKS, MODELS, VERIFIED_AT } from "./agents/sources";
+import { FRAMEWORKS, VERIFIED_AT } from "./agents/sources";
+import { MODELS } from "./ai/models";
 import { CATEGORIES, TOOL_INFO } from "./agents/types";
 
 export const hubRoutes = new Hono<AppEnv>();
@@ -108,10 +109,24 @@ hubRoutes.get("/agents/:id", async (c) => {
   return c.json({ ...out, sub_agents_info: subs });
 });
 
+/** Valida que las imágenes adjuntas son del usuario. Devuelve sus ids (máx. 4). */
+export async function ownedImages(db: D1Database, userId: number, raw: unknown): Promise<number[]> {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw) || raw.length > 4) fail(422, "Puedes adjuntar hasta 4 imágenes.");
+  const ids: number[] = [];
+  for (const v of raw as unknown[]) {
+    const row = await one<any>(db, "SELECT id FROM images WHERE id = ? AND user_id = ?", Number(v), userId);
+    if (!row) fail(422, "Una de las imágenes adjuntas no existe.");
+    ids.push(row.id);
+  }
+  return ids;
+}
+
 function runOut(row: any, full = false) {
-  const { stages_json, notices_json, output, ...rest } = row;
+  const { stages_json, notices_json, output, images_json, ...rest } = row;
   return {
     ...rest,
+    images: loads(images_json, []),
     stages: loads(stages_json, []),
     notices: loads(notices_json, []),
     ...(full || row.output_kind !== "image" ? { output } : { output: "" }),
@@ -137,17 +152,20 @@ hubRoutes.post("/agents/:id/run", async (c) => {
   if (used.agents >= limits.agentRunsPerDay) {
     fail(429, `Has usado las ${limits.agentRunsPerDay} ejecuciones de agentes de hoy.${sub.plan === "free" ? " Pro amplía el límite." : " Vuelve mañana."}`);
   }
+  const images = await ownedImages(c.env.DB, user.id, body.image_ids);
+  if (a.input.image === "required" && !images.length) fail(422, `«${a.name}» necesita que adjuntes una imagen.`);
   const wait = await hit(c.env.DB, `agent:${user.id}`, 6, 60);
   if (wait) fail(429, `Demasiadas ejecuciones seguidas. Espera ${wait} s.`);
   const now = nowIso();
   const id = await run(
     c.env.DB,
-    "INSERT INTO agent_runs (user_id, agent_id, status, stage, stages_json, input, plan, created_at) VALUES (?, ?, 'pending', 'queued', ?, ?, ?, ?)",
+    "INSERT INTO agent_runs (user_id, agent_id, status, stage, stages_json, input, plan, images_json, created_at) VALUES (?, ?, 'pending', 'queued', ?, ?, ?, ?, ?)",
     user.id,
     a.id,
     dumps(initialStages(a)),
     input,
     sub.plan,
+    dumps(images),
     now,
   );
   await c.env.RUNS.send({ agentRunId: id });
@@ -206,7 +224,13 @@ hubRoutes.get("/sources", async (c) => {
     counts: Object.fromEntries(counts.map((r) => [r.status, r.n])),
     repos: rows,
     frameworks: FRAMEWORKS,
-    models: MODELS,
+    models: MODELS.map((m) => ({
+      id: m.id,
+      name: m.label,
+      license: m.license,
+      use: `${m.kind === "image" ? "Imagen" : "Texto"}: ${m.capabilities.join(", ")}${m.source === "user" ? " (tu API)" : m.source === "platform" ? " (Pro)" : ""}`,
+      attribution: [m.attribution, m.notes].filter(Boolean).join(" · ") || "—",
+    })),
   });
 });
 

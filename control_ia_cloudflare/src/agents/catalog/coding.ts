@@ -4,6 +4,7 @@ import { agent, instructions, method, S } from "./_helpers";
 export default [
   agent({
     id: "code-assistant",
+    model: { prefer: "free", allowFallback: true, capability: "code" },
     name: "Code Assistant",
     description: "Explica, escribe o corrige código. Pega tu código o describe lo que necesitas.",
     category: "coding",
@@ -21,7 +22,7 @@ export default [
     category: "coding",
     color: "morado",
     tier: "pro",
-    model: { prefer: "premium", advanced: true, allowFallback: true },
+    model: { prefer: "premium", advanced: true, allowFallback: true, capability: "code" },
     input: { label: "Problema o código a mejorar", placeholder: "Describe el sistema o pega el código" },
     instructions: instructions("Eres un arquitecto de software. Razonas sobre diseño, rendimiento, seguridad y mantenibilidad."),
     stages: [S.plan("diseñar la solución"), S.analyze("el diseño propuesto: riesgos, alternativas y compromisos", "{{stage.planning}}"), S.generate("la propuesta final con código, justificación de decisiones y plan de migración")],
@@ -29,6 +30,7 @@ export default [
   }),
   agent({
     id: "code-reviewer",
+    model: { prefer: "free", allowFallback: true, capability: "code" },
     name: "Code Reviewer",
     description: "Revisa código buscando bugs, problemas de seguridad y mejoras de legibilidad.",
     category: "coding",
@@ -41,6 +43,7 @@ export default [
   }),
   agent({
     id: "sql-helper",
+    model: { prefer: "free", allowFallback: true, capability: "code" },
     name: "SQL Helper",
     description: "Convierte preguntas en consultas SQL y explica consultas existentes.",
     category: "coding",

@@ -9,6 +9,7 @@ import { decryptJson, encryptJson, redact } from "../crypto";
 import { nowIso, one, run } from "../db";
 import type { AppEnv, Env, Settings } from "../env";
 import { fail, jsonBody, reqStr } from "../http";
+import { notify } from "../notify";
 import { AnthropicProvider } from "./anthropic";
 import { type Provider, ProviderError, ProviderNotConfigured } from "./base";
 import { DemoProvider } from "./demo";
@@ -27,7 +28,7 @@ export function availableProviderIds(settings: Settings): string[] {
   return Object.keys(PROVIDERS).filter((id) => id !== "demo" || settings.enableDemoProvider);
 }
 
-async function storedKey(env: Env, userId: number, providerId: string): Promise<string> {
+export async function storedKey(env: Env, userId: number, providerId: string): Promise<string> {
   const row = await one<{ secret_enc: string }>(
     env.DB,
     "SELECT secret_enc FROM user_provider_keys WHERE user_id = ? AND provider = ?",
@@ -106,6 +107,7 @@ providerRoutes.put("/:id/key", async (c) => {
   );
   modelsCache.delete(`${u.id}:${id}`);
   await record(c.env.DB, { actor: u.email, userId: u.id, action: "ia.conectar_clave", target: id });
+  await notify(c.env, u.id, { category: "seguridad", title: `API key de ${id} guardada`, body: "Se guarda cifrada y nunca se muestra. Actívala en Ajustes → Usar mi API.", link: "#/configuracion" });
   return c.json(await statusRow(c.env, s, u.id, id));
 });
 
@@ -117,6 +119,7 @@ providerRoutes.delete("/:id/key", async (c) => {
   await run(c.env.DB, "DELETE FROM user_provider_keys WHERE user_id = ? AND provider = ?", u.id, id);
   modelsCache.delete(`${u.id}:${id}`);
   await record(c.env.DB, { actor: u.email, userId: u.id, action: "ia.borrar_clave", target: id });
+  await notify(c.env, u.id, { category: "seguridad", title: `API key de ${id} eliminada`, link: "#/configuracion" });
   return c.json(await statusRow(c.env, s, u.id, id));
 });
 

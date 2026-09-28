@@ -1,14 +1,27 @@
-// Herramientas de los agentes del Hub. Todas son de solo lectura o generan
-// contenido nuevo; ninguna accede a secretos, a la base de datos, al sistema
-// de archivos, a cuentas ni a wallets. El resultado externo se marca como datos.
+// Herramientas de los agentes. Todas son de solo lectura o generan contenido
+// nuevo; ninguna accede a secretos, a la base de datos de otros usuarios, al
+// sistema de archivos, a cuentas ni a wallets. El resultado externo se marca como datos.
 
-import { generateImage, type CallContext } from "../ai/router";
+import { generate, RouterError, type CallContext } from "../ai/router";
+import { bytesToB64 } from "../b64";
+import { createImage, imageBytes } from "../images";
+import { PLAN_LIMITS, usageToday } from "../plans";
 import { untrusted } from "../tools";
 import type { AgentToolId } from "./types";
 
 export interface ToolResult {
   text: string;
-  image?: string; // base64 JPEG
+  image?: string; // base64
+  imageId?: number;
+  mime?: string;
+  provider?: string;
+  model?: string;
+}
+
+/** Datos del contexto que una herramienta puede usar (filtrados por el orquestador). */
+export interface ToolContext {
+  /** Imágenes adjuntas por el usuario (ids de su galería). */
+  images?: number[];
 }
 
 const PRIVATE_HOST = /^(localhost|127\.|10\.|192\.168\.|169\.254\.|0\.|\[?::1\]?$|.*\.local$|.*\.internal$)|^172\.(1[6-9]|2\d|3[01])\./i;
@@ -111,19 +124,59 @@ async function webRead(urls: string[]): Promise<string> {
   return parts.join("\n\n");
 }
 
-export async function runAgentTool(ctx: CallContext, tool: AgentToolId, text: string, userInput: string): Promise<ToolResult> {
+/** Si la etapa anterior terminó con una línea «PROMPT: …», solo se usa esa parte. */
+function promptFrom(text: string, fallback: string) {
+  const idx = text.lastIndexOf("PROMPT:");
+  return (idx >= 0 ? text.slice(idx + 7) : text).trim() || fallback;
+}
+
+async function imageQuota(ctx: CallContext) {
+  const used = await usageToday(ctx.env.DB, ctx.userId);
+  if (used.images >= PLAN_LIMITS[ctx.plan].imagesPerDay) {
+    throw new RouterError(`Has usado las ${PLAN_LIMITS[ctx.plan].imagesPerDay} imágenes de hoy.`, "image_quota");
+  }
+}
+
+async function imageTool(ctx: CallContext, mode: "t2i" | "i2i" | "variation" | "upscale", prompt: string, sourceId?: number): Promise<ToolResult> {
+  await imageQuota(ctx);
+  const out = await createImage(ctx.env, ctx.userId, ctx.plan, { mode, prompt, width: 1024, height: 1024, sourceId }, "agent", ctx.agentId);
+  const verb = { t2i: "Imagen generada", i2i: "Imagen editada", variation: "Variación creada", upscale: "Imagen ampliada" }[mode];
+  return {
+    text: `${verb} con ${out.model}${prompt ? ` a partir de: ${prompt.slice(0, 400)}` : ""}${out.notices.length ? ` (${out.notices.join("; ")})` : ""}`,
+    image: bytesToB64(out.bytes),
+    imageId: out.id,
+    mime: out.mime,
+    provider: "workers-ai",
+    model: out.model,
+  };
+}
+
+export async function runAgentTool(ctx: CallContext, tool: AgentToolId, text: string, userInput: string, tc: ToolContext = {}): Promise<ToolResult> {
   if (tool === "wikipedia_search" && ctx.env.AI_MODE === "mock") {
     // Solo tests locales: sin red, resultado determinista.
     return { text: untrusted("wikipedia", `### Artículo de prueba\nFuente: https://es.wikipedia.org/wiki/Prueba (Wikipedia, CC BY-SA)\nBúsquedas: ${queriesFrom(text, userInput).join(" | ")}`) };
   }
   if (tool === "wikipedia_search") return { text: untrusted("wikipedia", await wikipedia(queriesFrom(text, userInput))) };
   if (tool === "web_read") return { text: await webRead(userUrls(userInput)) };
-  if (tool === "image_generate") {
-    // Si la etapa anterior terminó con una línea «PROMPT: …», solo se usa esa parte.
-    const idx = text.lastIndexOf("PROMPT:");
-    const prompt = (idx >= 0 ? text.slice(idx + 7) : text).trim() || userInput;
-    const img = await generateImage(ctx, prompt);
-    return { text: `Imagen generada con ${img.model} a partir de: ${prompt.slice(0, 500)}`, image: img.b64 };
+  if (tool === "image_generate") return imageTool(ctx, "t2i", promptFrom(text, userInput));
+
+  const source = tc.images?.[0];
+  if (!source) return { text: "No hay ninguna imagen adjunta: adjunta una imagen para usar esta herramienta." };
+  if (tool === "image_edit") return imageTool(ctx, "i2i", promptFrom(text, userInput), source);
+  if (tool === "image_variation") return imageTool(ctx, "variation", promptFrom(text, ""), source);
+  if (tool === "image_upscale") return imageTool(ctx, "upscale", "", source);
+  if (tool === "vision_describe") {
+    const img = await imageBytes(ctx.env, ctx.userId, source);
+    if (!img) return { text: "La imagen adjunta ya no existe." };
+    const res = await generate(ctx, {
+      system: "Describes imágenes con precisión: contenido, texto visible, estilo, colores, composición y cualquier detalle relevante para la petición. No inventes lo que no se ve.",
+      messages: [{ role: "user", content: [{ type: "text", text: `Petición del usuario: ${userInput.slice(0, 1500)}\n\nDescribe la imagen.` }, { type: "image", mime: img.mime, b64: bytesToB64(img.bytes) }] }],
+      maxTokens: 700,
+      prefer: "free",
+      allowFallback: true,
+      capability: "vision",
+    });
+    return { text: untrusted("vision", res.text), provider: res.provider, model: res.model };
   }
   throw new Error(`Herramienta desconocida: ${tool}`);
 }

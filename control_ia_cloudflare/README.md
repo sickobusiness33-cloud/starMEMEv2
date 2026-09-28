@@ -41,7 +41,130 @@ plataforma trabaja con Claude sobre **su repositorio** mediante herramientas
 (leer código, proponer PRs). Es el mismo flujo de «hacer avanzar el producto»,
 pero siempre con aprobación humana y sin push directo.
 
-## Plataforma de IA: AI Chat, Agent Hub y Control IA Pro
+## Kairo: orquestador multiagente y multimodelo
+
+**Kairo** es la inteligencia propia de Control IA. Cada chat nuevo arranca en
+**modo AUTO** con **todos los agentes disponibles** (59 en el plan Free/Pro sin
+contar los flujos multiagente del Hub). El usuario solo escribe.
+
+```
+NUEVO CHAT (modo AUTO, todos los agentes registrados)
+   ↓
+AI ORCHESTRATOR  src/orchestrator/planner.ts
+   · planificador con modelo (JSON validado) → si falla, planificador por reglas
+   · decide 0..N agentes (máx. 3 Free / 5 Pro), orden y dependencias
+   ↓
+EJECUCIÓN        src/orchestrator/executor.ts  (cola de Cloudflare)
+   · pasos sin dependencias → en PARALELO; con depends_on → esperan (QUEUED)
+   · context filtering: cada agente recibe su tarea, la petición y SOLO los
+     resultados de los que depende (+ historial solo si su categoría lo usa)
+   · resultado estructurado {agent, status, confidence, result, metadata, executionTime}
+   ↓
+AGREGADOR        una única respuesta coherente (+ imágenes adjuntas)
+   ↓
+MODEL ROUTER     src/ai/router.ts  → ADAPTERS src/ai/adapters/*  → PROVEEDORES
+```
+
+- **Activity Panel en tiempo real**: `GET /api/chat/runs/:id/stream` (Server-Sent
+  Events). El servidor lee la versión de la ejecución cada 400 ms y solo envía el
+  estado cuando cambia; el navegador no hace polling. Estados reales por agente:
+  `IDLE · QUEUED · ANALYZING · THINKING · SEARCHING · PROCESSING · GENERATING ·
+  EXECUTING · COMPLETED · ERROR`, con modelo usado, tiempo, progreso por etapas,
+  acción actual y dependencias. En móvil es una hoja inferior.
+- **Modo manual** (opcional): el usuario elige agentes, modelo de texto y
+  herramientas permitidas (`PATCH /api/chat/threads/:id` con `auto_mode:false`
+  y `manual:{agents, model, tools_off}`).
+- **Confianza**: heurística verificable (baja si hubo respaldo, si una
+  herramienta no encontró datos o si el resultado es muy corto); se indica como
+  tal en la interfaz.
+- **Cancelar**: `POST /api/chat/runs/:id/cancel`. Una petición activa por chat.
+- **Modos directos** (sin orquestador, compatibles con lo anterior): `router`,
+  `claude`, `free`, `agent:<id>`.
+
+### Model Router, fallback y API propia
+
+- Catálogo en `src/ai/models.ts` (texto e imagen), cada modelo con adapter,
+  capacidades, licencia y atribución. Estado real (enfriamiento tras errores) en
+  `GET /api/ai/models`.
+- Orden de fuentes configurable por usuario (`PUT /api/ai/settings`):
+  `platform` (Claude con créditos de la plataforma, solo Pro) → `user_api`
+  (claves del usuario, solo con **Usar mi API** activado) → `free` (Workers AI).
+- **Fallback**: si un modelo falla se prueba el siguiente de la cadena de su
+  capacidad (`FREE_CHAINS`), el fallo aparta ese modelo un tiempo
+  (`provider_health`) y la respuesta muestra el aviso. Todo intento queda en
+  `usage_events`.
+- Las claves del usuario (Anthropic, OpenAI) se guardan cifradas (AES-GCM) en
+  D1, solo se descifran en el Worker y nunca vuelven al navegador ni a los logs.
+
+### Modelos integrados
+
+| Modelo | Uso | Licencia |
+|---|---|---|
+| Llama 3.3 70B / Llama 3.1 8B (Meta) | chat | Llama Community License · *Built with Llama* |
+| Mistral Small 3.1 24B | chat + **visión** | Apache-2.0 |
+| Qwen2.5 Coder 32B | código | Apache-2.0 |
+| QwQ 32B · DeepSeek R1 Distill 32B · gpt-oss 120B | razonamiento | Apache-2.0 · MIT · Apache-2.0 |
+| FLUX.1 [schnell] | texto→imagen | Apache-2.0 |
+| SDXL Lightning · Stable Diffusion XL · DreamShaper 8 LCM | texto→imagen, img2img, upscale | CreativeML Open RAIL(++)-M (uso comercial con restricciones de uso) |
+| SD 1.5 img2img · SD 1.5 Inpainting | imagen→imagen, inpainting | CreativeML Open RAIL-M |
+| Claude Sonnet 5 / Opus 5 | premium (Pro o tu API) | servicio comercial |
+| GPT-5 mini · GPT Image | solo con tu API de OpenAI | servicio comercial |
+
+Todos los modelos abiertos corren en **Cloudflare Workers AI** (cuota gratuita
+diaria de la cuenta; sin APIs externas de pago por defecto). Se excluyeron
+modelos con licencia no comercial (p. ej. FLUX.1 [dev]) o con restricciones
+geográficas para la UE en visión (Llama 3.2 Vision).
+
+### Estudio de imágenes (`#/studio`, `src/images.ts`)
+
+Texto→imagen, imagen→imagen, inpainting (máscara pintada en el navegador),
+variaciones y upscale 2× (re-render con SDXL a baja intensidad). Estilos,
+resoluciones, modelo concreto o **AUTO**, semilla, regenerar, guardar y galería.
+Las imágenes se guardan en D1 y solo las ve su dueño (`/api/images/:id/file`);
+las no guardadas se recortan a las 40 más recientes. Límite diario: 20 (Free) /
+200 (Pro).
+
+### Notificaciones (`#/notificaciones`, `src/notify.ts`, `src/notifications.ts`)
+
+Categorías IA, Sistema, Seguridad, Cuenta, Suscripción y Alertas; leídas/no
+leídas, filtros, enlaces profundos, preferencias por categoría (seguridad no se
+puede silenciar), deduplicación de 10 min y máximo 20 por hora. Avisos del
+navegador (Notification API) cuando la web está abierta en segundo plano y el
+usuario los activa. *No hay Web Push con la web cerrada* (necesitaría claves
+VAPID y un service worker; queda como mejora).
+
+### Cómo añadir un agente
+
+1. Crea `agent({...})` en un archivo de `src/agents/catalog/` (o añade uno y
+   regístralo en `src/agents/registry.ts`). Define etapas `llm`/`tool`,
+   `model.capability` (`chat`, `code`, `reasoning`, `vision`) y, si trabaja
+   sobre una imagen, `input.image: "required"`.
+2. El orquestador lo tendrá disponible en todos los chats automáticamente. Si
+   quieres que el planificador por reglas también lo elija sin modelo, añade una
+   entrada a `RULES` en `src/orchestrator/planner.ts`.
+3. Sin desplegar: *Agent Hub → fuentes y licencias → Añadir agente* (admin).
+
+### Cómo añadir un modelo
+
+1. Añade una entrada a `MODELS` en `src/ai/models.ts` (id, adapter,
+   capacidades, licencia, atribución) y, si procede, a su cadena `FREE_CHAINS`.
+2. Si es de un proveedor nuevo, crea `src/ai/adapters/<proveedor>.ts` con
+   `callText`/`callImage` siguiendo `adapters/types.ts` y enlázalo en
+   `router.ts`.
+
+### APIs nuevas
+
+`GET /api/chat/agents` · `POST /api/chat/threads` · `PATCH /api/chat/threads/:id`
+· `POST /api/chat/threads/:id/messages` (202 + run) · `GET /api/chat/runs/:id` ·
+`GET /api/chat/runs/:id/stream` (SSE) · `POST /api/chat/runs/:id/cancel` ·
+`GET|PUT /api/ai/settings` · `GET /api/ai/models` · `GET /api/images/models` ·
+`POST /api/images/generate` · `POST /api/images/upload` · `GET /api/images` ·
+`GET /api/images/:id/file` · `PATCH|DELETE /api/images/:id` ·
+`GET /api/notifications` · `GET /api/notifications/summary` ·
+`POST /api/notifications/read-all` · `POST /api/notifications/:id/read` ·
+`GET|PUT /api/notifications/prefs`.
+
+## Agent Hub y Control IA Pro
 
 ```
 AGENT HUB (catálogo) → AGENT REGISTRY → AGENT ADAPTER (runtime) → AI ROUTER → Claude | Cloudflare Workers AI

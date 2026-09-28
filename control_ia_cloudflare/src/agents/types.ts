@@ -5,6 +5,8 @@
 // través del AI Router. Así el catálogo puede crecer a cientos o miles de
 // agentes sin cambiar la arquitectura y sin ejecutar código de terceros.
 
+import type { Capability } from "../ai/models";
+
 export const CATEGORIES = [
   { id: "trading", label: "Trading" },
   { id: "research", label: "Research" },
@@ -28,7 +30,14 @@ export const CATEGORIES = [
 export type CategoryId = (typeof CATEGORIES)[number]["id"];
 
 /** Herramientas que un agente puede declarar. Ninguna da acceso a secretos, BD ni sistema de archivos. */
-export type AgentToolId = "wikipedia_search" | "web_read" | "image_generate";
+export type AgentToolId =
+  | "wikipedia_search"
+  | "web_read"
+  | "image_generate"
+  | "image_edit"
+  | "image_variation"
+  | "image_upscale"
+  | "vision_describe";
 
 export type Stage =
   | { id: string; label: string; kind: "llm"; prompt: string; maxTokens?: number }
@@ -56,8 +65,11 @@ export interface AgentManifest {
     prefer: "free" | "premium"; // premium = Claude primero si está disponible
     advanced?: boolean; // usa el modelo avanzado de Claude
     allowFallback: boolean; // si no hay Claude, ¿puede usar el modelo gratuito?
+    capability?: Capability; // chat (por defecto) | code | reasoning | vision → elige la cadena de modelos gratuitos
+    id?: string; // modelo concreto preferido del catálogo (opcional)
   };
-  input: { label: string; placeholder: string };
+  /** image = el agente trabaja sobre una imagen adjunta. */
+  input: { label: string; placeholder: string; image?: "required" | "optional" };
   instructions: string;
   stages: Stage[];
   tools: AgentToolId[];
@@ -78,7 +90,23 @@ export const TOOL_INFO: Record<AgentToolId, { label: string; permission: string 
   },
   image_generate: {
     label: "Generación de imágenes",
-    permission: "Generar imágenes con un modelo abierto en Cloudflare (FLUX.1 schnell, Apache-2.0)",
+    permission: "Generar imágenes con modelos abiertos en Cloudflare (FLUX.1 schnell, SDXL…) y guardarlas en tu galería",
+  },
+  image_edit: {
+    label: "Edición de imágenes",
+    permission: "Transformar la imagen que adjuntes (imagen→imagen); el original no se modifica",
+  },
+  image_variation: {
+    label: "Variaciones de imagen",
+    permission: "Crear variaciones de la imagen que adjuntes",
+  },
+  image_upscale: {
+    label: "Upscaling",
+    permission: "Re-renderizar la imagen que adjuntes al doble de resolución (SDXL, fuerza baja)",
+  },
+  vision_describe: {
+    label: "Visión",
+    permission: "Analizar la imagen que adjuntes con un modelo de visión (solo lectura)",
   },
 };
 

@@ -149,7 +149,7 @@ def test_premium_sin_creditos_usa_respaldo_y_vuelve_solo(api):
     assert status["claude"]["platform_available"] is False and status["claude"]["retry_after"]
     # Mientras dura el enfriamiento no se vuelve a llamar a Claude.
     before = mock_calls()
-    t = api.post("/api/chat/threads", json={"mode": "auto"}).json()
+    t = api.post("/api/chat/threads", json={"mode": "router"}).json()
     m = api.post(f"/api/chat/threads/{t['id']}/messages", json={"content": "hola"}).json()["message"]
     assert m["provider"] == "workers-ai" and m["fallback"] == 1 and "Modelo premium no disponible" in m["notice"]
     assert mock_calls() == before

@@ -67,135 +67,6 @@ function robot(color, state = "idle", size = 64, seed = 0) {
 }
 const seedOf = (id) => [...String(id)].reduce((a, ch) => a + ch.charCodeAt(0), 0);
 
-/* ================================================================ AI CHAT */
-
-async function viewChat(main) {
-  const parts = hashParts();
-  const threadId = parts[1] ? Number(parts[1]) : null;
-  const [threads, status, hub] = await Promise.all([
-    api("GET", "/api/chat/threads"), api("GET", "/api/ai/status"), api("GET", "/api/hub/agents?sort=name"),
-  ]);
-  const list = h("ul", { class: "convs" });
-  const renderList = (items) => list.replaceChildren(...items.map((t) => h("li", {},
-    h("button", { type: "button", "aria-current": t.id === threadId ? "true" : null, onclick: () => { location.hash = `#/chat/${t.id}`; } },
-      h("div", { class: "small", style: "font-weight:700" }, trunc(t.title, 40)),
-      h("div", { class: "small muted" }, modeLabel(t.mode, hub.agents))))));
-  renderList(threads);
-  const newChat = async (mode = "auto") => {
-    const t = await api("POST", "/api/chat/threads", { mode });
-    location.hash = `#/chat/${t.id}`;
-  };
-
-  const claudeLine = status.claude.usable_by_you
-    ? h("span", { class: "pill st-ok" }, status.claude.own_key ? "Claude disponible · tu clave" : "Claude disponible")
-    : h("span", { class: "pill st-idle", title: status.claude.reason || "" },
-      status.plan === "pro" ? "Claude sin créditos ahora · usando modelo gratuito" : "Claude: con Pro o con tu propia clave");
-  const b = await billing(true);
-  const lim = b.plans[b.subscription.plan].limits;
-  const header = h("div", { class: "row spread chat-status" },
-    h("div", { class: "row" }, claudeLine, h("span", { class: "pill st-ok" }, "Cloudflare AI gratis activo")),
-    h("span", { class: "small muted" }, `Hoy: ${b.usage_today.chat}/${lim.chatMessagesPerDay} mensajes`));
-
-  const side = h("aside", { class: "card" },
-    h("div", { class: "card-h" }, "Conversaciones"),
-    h("div", { class: "card-b stack" },
-      h("button", { class: "btn primary", type: "button", onclick: () => newChat() }, "+ nueva conversación"),
-      threads.length ? list : h("p", { class: "small muted" }, "Aún no tienes conversaciones.")));
-
-  const box = h("section", { class: "card chat-main" });
-  main.replaceChildren(h("div", { class: "stack" },
-    h("div", { class: "row spread" }, h("h1", {}, "AI Chat"), h("a", { class: "btn small", href: "#/hub" }, "⬡ Agent Hub")),
-    header,
-    h("div", { class: "chat" }, side, box)));
-
-  if (!threadId) {
-    box.replaceChildren(h("div", { class: "card-b" }, h("div", { class: "chat-hero" },
-      h("div", { class: "robots-row" }, robot("naranja", "running", 58, 0), robot("azul", "idle", 58, 1), robot("verde", "idle", 58, 2)),
-      h("h2", {}, "Habla con Claude, con modelos gratuitos o con un agente"),
-      h("p", { class: "muted" }, "En modo automático se usa Claude si está disponible y, si no, un modelo gratuito de Cloudflare. Siempre verás qué modelo respondió."),
-      h("div", { class: "row", style: "justify-content:center" },
-        h("button", { class: "btn primary", type: "button", onclick: () => newChat("auto") }, "empezar (auto)"),
-        h("button", { class: "btn", type: "button", onclick: () => newChat("free") }, "solo gratis"),
-        h("button", { class: "btn", type: "button", onclick: () => newChat("claude") }, "solo claude")))));
-    return;
-  }
-
-  let thread;
-  try { thread = await api("GET", `/api/chat/threads/${threadId}`); }
-  catch (err) { box.replaceChildren(h("div", { class: "card-b" }, empty("Conversación no encontrada", err.message))); return; }
-
-  const modeSel = h("select", { "aria-label": "Modelo o agente" },
-    h("optgroup", { label: "Modelos" },
-      h("option", { value: "auto" }, "Auto · Claude → gratis"),
-      h("option", { value: "claude" }, "Solo Claude"),
-      h("option", { value: "free" }, "Solo gratis (Cloudflare AI)")),
-    h("optgroup", { label: "Agentes del Hub" }, hub.agents.filter((a) => !a.multi_agent).map((a) =>
-      h("option", { value: `agent:${a.id}`, disabled: a.tier === "pro" && hub.plan !== "pro" ? true : null },
-        `${a.name}${a.tier === "pro" ? " (PRO)" : ""}`))));
-  modeSel.value = thread.mode;
-  modeSel.addEventListener("change", async () => {
-    await api("PATCH", `/api/chat/threads/${thread.id}`, { mode: modeSel.value }).catch((e) => toast(e.message, true));
-  });
-
-  const msgs = h("div", { class: "msgs", "aria-live": "polite" });
-  const msgNode = (m) => h("div", { class: "msg " + m.role },
-    m.role === "assistant" ? h("div", { class: "meta" },
-      providerBadge(m.provider, m.model, m.fallback),
-      m.agent_id ? h("span", { class: "pill tag-dark" }, m.agent_id) : null,
-      h("span", {}, hhmm(m.created_at))) : null,
-    m.notice ? h("div", { class: "note small" }, "⚠ ", m.notice) : null,
-    h("div", { class: "pre" }, m.content));
-  msgs.replaceChildren(...(thread.messages.length ? thread.messages.map(msgNode)
-    : [h("p", { class: "small muted" }, "Escribe tu primer mensaje. Enter envía · Mayús+Enter salto de línea.")]));
-  const scroll = () => { msgs.scrollTop = msgs.scrollHeight; };
-
-  const input = h("textarea", { rows: 3, maxlength: lim.maxInputChars, placeholder: "Pregunta lo que quieras…", "aria-label": "Mensaje" });
-  const counter = h("span", { class: "small muted" }, `0/${lim.maxInputChars}`);
-  input.addEventListener("input", () => { counter.textContent = `${input.value.length}/${lim.maxInputChars}`; });
-  const sendBtn = h("button", { class: "btn primary", type: "submit" }, "enviar ↵");
-  const form = h("form", { class: "composer" }, h("div", { class: "grow" }, input, counter), sendBtn);
-  const send = async () => {
-    const content = input.value.trim();
-    if (!content) return;
-    if (!thread.messages.length) msgs.replaceChildren();
-    msgs.append(msgNode({ role: "user", content }));
-    const thinking = h("div", { class: "msg assistant thinking" }, h("div", { class: "row" }, robot("azul", "running", 30, 1), h("span", {}, "pensando"), h("span", { class: "dots" }, h("i"), h("i"), h("i"))));
-    msgs.append(thinking); scroll();
-    input.value = ""; counter.textContent = `0/${lim.maxInputChars}`;
-    sendBtn.disabled = true;
-    try {
-      const res = await api("POST", `/api/chat/threads/${thread.id}/messages`, { content, mode: modeSel.value });
-      thread.messages.push({ role: "user", content }, res.message);
-      thinking.replaceWith(msgNode(res.message));
-      threads.find((t) => t.id === thread.id) || threads.unshift(thread);
-    } catch (err) {
-      thinking.replaceWith(h("div", { class: "alert small" }, err.message,
-        err.status === 402 || err.status === 429 ? h("span", {}, " ", h("a", { href: "#/upgrade" }, "Ver Pro")) : null));
-      input.value = content;
-    } finally { sendBtn.disabled = false; scroll(); input.focus(); }
-  };
-  form.addEventListener("submit", (e) => { e.preventDefault(); send(); });
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
-
-  box.replaceChildren(
-    h("div", { class: "card-h spread" }, h("span", { class: "grow" }, trunc(thread.title, 60)),
-      h("button", { class: "btn small danger", type: "button", onclick: async () => {
-        if (!(await confirmDialog({ title: "Borrar conversación", body: "Se borrará con todos sus mensajes.", confirmLabel: "Borrar", danger: true }))) return;
-        await api("DELETE", `/api/chat/threads/${thread.id}`); location.hash = "#/chat";
-      } }, "borrar")),
-    h("div", { class: "card-b" }, h("div", { class: "row", style: "margin-bottom:10px" }, h("label", { style: "margin:0" }, "Responde:"), h("div", { class: "grow" }, modeSel)), msgs, form));
-  scroll();
-  input.focus();
-}
-
-function modeLabel(mode, agents) {
-  if (mode === "auto") return "auto · claude → gratis";
-  if (mode === "claude") return "solo claude";
-  if (mode === "free") return "solo gratis";
-  const a = agents.find((x) => `agent:${x.id}` === mode);
-  return a ? `agente · ${a.name}` : mode;
-}
-
 /* ============================================================== AGENT HUB */
 
 const HUB = { q: "", category: "", tier: "", compat: "", sort: "popular" };
@@ -293,8 +164,23 @@ async function viewAgentDetail(main, id) {
   input.addEventListener("input", () => { counter.textContent = `${input.value.length}/${maxChars}`; });
   const err = h("div", { class: "alert", hidden: true, role: "alert" });
   const runBtn = h("button", { class: "btn primary big", type: "submit", disabled: locked ? true : null }, "▶ USE AGENT");
+  // Agentes que trabajan sobre una imagen: se sube reducida y se adjunta a la ejecución.
+  let imageId = null;
+  const imgPreview = h("div", { class: "att-chips" });
+  const imgPicker = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp", hidden: true });
+  imgPicker.addEventListener("change", async () => {
+    const f = imgPicker.files[0]; imgPicker.value = "";
+    if (!f) return;
+    try {
+      const up = await uploadImage(f); imageId = up.id;
+      imgPreview.replaceChildren(h("span", { class: "att-chip" }, h("img", { class: "att-thumb", src: imgUrl(up.id), alt: "" }), h("span", { class: "att-name" }, trunc(f.name, 26)),
+        h("button", { class: "att-x", type: "button", "aria-label": "Quitar imagen", onclick: () => { imageId = null; imgPreview.replaceChildren(); } }, "×")));
+    } catch (e2) { toast(e2.message, true); }
+  });
+  const imageField = a.input.image ? h("div", { class: "row" },
+    h("button", { class: "btn small", type: "button", onclick: () => imgPicker.click() }, icon("image", 15), a.input.image === "required" ? "Adjuntar imagen (obligatoria)" : "Adjuntar imagen"), imgPreview, imgPicker) : null;
   const form = h("form", { class: "stack", novalidate: true },
-    field(a.input.label, input), counter, err,
+    field(a.input.label, input), counter, imageField, err,
     h("div", { class: "row" }, runBtn,
       h("button", { class: "btn", type: "button", disabled: locked || a.multi_agent ? true : null, onclick: async () => {
         const t = await api("POST", "/api/chat/threads", { mode: `agent:${a.id}`, title: a.name });
@@ -307,7 +193,8 @@ async function viewAgentDetail(main, id) {
     err.hidden = true;
     await withBusy(runBtn, async () => {
       try {
-        const r = await api("POST", `/api/hub/agents/${a.id}/run`, { input: input.value });
+        if (a.input.image === "required" && !imageId) throw new Error("Adjunta una imagen para este agente.");
+        const r = await api("POST", `/api/hub/agents/${a.id}/run`, { input: input.value, image_ids: imageId ? [imageId] : undefined });
         location.hash = `#/hub/run/${r.id}`;
       } catch (e2) { err.textContent = e2.message; err.hidden = false; }
     });

@@ -1,48 +1,56 @@
-// AI ROUTER — único punto por el que los agentes y el chat llaman a un modelo.
+// MODEL ROUTER — único punto por el que agentes, orquestador, chat e imágenes
+// llaman a un modelo.
 //
-//   Agente / Chat
-//        ↓
-//   AI Router ── ¿Claude disponible (Pro + créditos, o clave propia)? ── sí → Claude
-//        │                                                              no ↓
-//        └──────────────────────────────────────────→ Cloudflare Workers AI (gratis)
+//   AI ORCHESTRATOR → MODEL ROUTER → ADAPTERS (workers-ai | anthropic | openai) → PROVEEDORES
 //
-// - Nadie llama a Claude directamente: todo pasa por generate().
-// - Si Claude falla por créditos, clave, límite o caída, se marca un
-//   enfriamiento en D1 y se usa el respaldo. Al expirar, Claude vuelve a ser el
-//   preferido sin tocar código (p. ej. después de recargar créditos).
-// - Cada intento (bien o mal) se registra en usage_events con latencia,
-//   tokens y coste estimado reales.
+// Orden de fuentes (configurable por usuario, tabla user_ai_settings):
+//   modelo elegido (modo manual) → PLATFORM (Claude, solo Pro) → USER API → FREE (Workers AI)
+// Con «USE MY API» activado, la API del usuario pasa a ser la primera.
+// Si un modelo falla se prueba el siguiente de la cadena (fallback), y los
+// fallos repetidos apartan ese modelo un tiempo (provider_health) para que la
+// siguiente petición no pierda tiempo con él. Todo intento queda en usage_events.
 
 import Anthropic from "@anthropic-ai/sdk";
-import { decryptJson, redact } from "../crypto";
-import { nowIso, one, run } from "../db";
+import { redact } from "../crypto";
+import { loads, nowIso, one, run } from "../db";
 import type { Env } from "../env";
 import { PLAN_LIMITS, type PlanId } from "../plans";
+import { storedKey } from "../providers";
+import { anthropicText } from "./adapters/anthropic";
+import { openaiImage, openaiText } from "./adapters/openai";
+import { hasImages, type ChatMsg, type ImageCall, type TextOut } from "./adapters/types";
+import { workersImage, workersText } from "./adapters/workersai";
+import { RouterError } from "./errors";
+import { FREE_CHAINS, MODEL_MAP, type Capability, type ModelInfo } from "./models";
 
-export type ProviderKind = "claude" | "claude-byok" | "workers-ai";
+export { RouterError };
+export type { ChatMsg };
 
-export interface ChatMsg {
-  role: "user" | "assistant";
-  content: string;
-}
+export type ProviderKind = "claude" | "claude-byok" | "openai-byok" | "workers-ai";
+export type Source = "platform" | "user_api" | "free";
+export const DEFAULT_PRIORITY: Source[] = ["platform", "user_api", "free"];
 
 export interface GenerateRequest {
   system: string;
   messages: ChatMsg[];
   maxTokens: number;
-  /** premium = intentar Claude primero; free = modelos gratuitos primero. */
+  /** premium = intentar Claude/API primero; free = modelos gratuitos primero. */
   prefer: "premium" | "free";
-  /** Si no hay Claude, ¿se permite el modelo gratuito? */
+  /** Si no hay premium, ¿se permite el modelo gratuito? */
   allowFallback: boolean;
   /** Usa CLAUDE_MODEL_ADVANCED en vez de CLAUDE_MODEL. */
   advanced?: boolean;
+  /** Capacidad que necesita la tarea (elige la cadena gratuita adecuada). */
+  capability?: Capability;
+  /** Modelo concreto pedido (modo manual o manifiesto del agente). Va primero si está disponible. */
+  model?: string;
 }
 
 export interface CallContext {
   env: Env;
   userId: number;
   plan: PlanId;
-  kind: "chat" | "agent" | "project";
+  kind: "chat" | "agent" | "project" | "orchestrator" | "image";
   agentId?: string | null;
   agentRunId?: number | null;
   signal?: AbortSignal;
@@ -57,14 +65,7 @@ export interface GenerateResult {
   latencyMs: number;
 }
 
-export class RouterError extends Error {
-  constructor(message: string, public code: string) {
-    super(message);
-  }
-}
-
-// Precio público por millón de tokens (USD) para estimar coste. Modelos sin
-// precio verificado cuentan 0 y se marcan como no estimados.
+// Precio público por millón de tokens (USD) para estimar coste. Sin precio verificado = 0.
 const PRICES: Record<string, [number, number]> = {
   "claude-opus-5-5": [4, 20],
   "claude-opus-5": [5, 25],
@@ -74,12 +75,16 @@ const PRICES: Record<string, [number, number]> = {
 };
 
 const CLAUDE_HEALTH_KEY = "claude-platform";
+const modelKey = (id: string) => `model:${id}`;
 
 interface Candidate {
   provider: ProviderKind;
-  model: string;
+  model: ModelInfo;
+  modelId: string;
   apiKey?: string;
 }
+
+// --- salud de proveedores -----------------------------------------------------------
 
 async function healthy(db: D1Database, key: string): Promise<boolean> {
   const row = await one<any>(db, "SELECT available_after FROM provider_health WHERE provider = ?", key);
@@ -103,9 +108,19 @@ async function markHealthy(db: D1Database, key: string) {
   await run(db, "UPDATE provider_health SET available_after = NULL, updated_at = ? WHERE provider = ? AND available_after IS NOT NULL", nowIso(), key);
 }
 
-async function userClaudeKey(env: Env, userId: number): Promise<string> {
-  const row = await one<any>(env.DB, "SELECT secret_enc FROM user_provider_keys WHERE user_id = ? AND provider = 'anthropic'", userId);
-  return row ? (await decryptJson(env.ENCRYPTION_KEY, row.secret_enc)).api_key ?? "" : "";
+// --- ajustes del usuario ----------------------------------------------------------------
+
+export interface AiSettings {
+  use_my_api: boolean;
+  priority: Source[];
+}
+
+export async function getAiSettings(db: D1Database, userId: number): Promise<AiSettings> {
+  const row = await one<any>(db, "SELECT * FROM user_ai_settings WHERE user_id = ?", userId);
+  const raw = loads<string[]>(row?.priority_json, DEFAULT_PRIORITY);
+  const priority = [...new Set(raw.filter((s): s is Source => DEFAULT_PRIORITY.includes(s as Source)))];
+  for (const s of DEFAULT_PRIORITY) if (!priority.includes(s)) priority.push(s);
+  return { use_my_api: Boolean(row?.use_my_api), priority };
 }
 
 /** Estado público de Claude para la UI (sin secretos). */
@@ -123,91 +138,99 @@ export async function claudeStatus(env: Env) {
   };
 }
 
-async function candidates(ctx: CallContext, req: GenerateRequest, notices: string[]): Promise<Candidate[]> {
+// --- cadena de candidatos ------------------------------------------------------------------
+
+function claudeInfo(id: string): ModelInfo {
+  return MODEL_MAP.get(id) ?? { id, label: id, adapter: "anthropic", kind: "text", capabilities: ["chat", "code", "reasoning", "vision"], license: "Servicio comercial", source: "platform" };
+}
+
+async function buildCandidates(ctx: CallContext, req: GenerateRequest, notices: string[]): Promise<Candidate[]> {
   const { env } = ctx;
-  const claudeModel = req.advanced ? env.CLAUDE_MODEL_ADVANCED : env.CLAUDE_MODEL;
-  const premium: Candidate[] = [];
-  const byok = await userClaudeKey(env, ctx.userId);
-  if (byok) premium.push({ provider: "claude-byok", model: claudeModel, apiKey: byok });
+  const settings = await getAiSettings(env.DB, ctx.userId);
+  const capability: Capability = req.capability ?? (hasImages(req.messages) ? "vision" : "chat");
+  const claudeId = req.advanced ? env.CLAUDE_MODEL_ADVANCED : env.CLAUDE_MODEL;
+
+  const platform: Candidate[] = [];
   if (PLAN_LIMITS[ctx.plan].claude && env.ANTHROPIC_API_KEY && (await healthy(env.DB, CLAUDE_HEALTH_KEY))) {
-    premium.push({ provider: "claude", model: claudeModel, apiKey: env.ANTHROPIC_API_KEY });
+    platform.push({ provider: "claude", model: claudeInfo(claudeId), modelId: claudeId, apiKey: env.ANTHROPIC_API_KEY });
   }
-  const free: Candidate[] = [
-    { provider: "workers-ai", model: env.FREE_MODEL },
-    { provider: "workers-ai", model: env.FREE_MODEL_FALLBACK },
-  ];
+  // La API del usuario solo se usa con «USE MY API» activado; si no, configuración de la plataforma.
+  const user: Candidate[] = [];
+  const [anthropicKey, openaiKey] = settings.use_my_api
+    ? await Promise.all([storedKey(env, ctx.userId, "anthropic"), storedKey(env, ctx.userId, "openai")])
+    : ["", ""];
+  if (anthropicKey) user.push({ provider: "claude-byok", model: claudeInfo(claudeId), modelId: claudeId, apiKey: anthropicKey });
+  if (openaiKey) {
+    const m = MODEL_MAP.get("gpt-5-mini")!;
+    user.push({ provider: "openai-byok", model: m, modelId: m.id, apiKey: openaiKey });
+  }
+  const free: Candidate[] = [];
+  const chain = FREE_CHAINS[capability] ?? FREE_CHAINS.chat;
+  for (const id of [...chain, ...FREE_CHAINS.chat]) {
+    const m = MODEL_MAP.get(id);
+    if (m && !free.some((c) => c.modelId === id) && (await healthy(env.DB, modelKey(id)))) free.push({ provider: "workers-ai", model: m, modelId: id });
+  }
+  if (!free.length) {
+    // Si todo está en enfriamiento se vuelve a intentar el modelo principal.
+    const m = MODEL_MAP.get(env.FREE_MODEL) ?? MODEL_MAP.get(chain[0])!;
+    free.push({ provider: "workers-ai", model: m, modelId: m.id });
+  }
+
+  // Orden de fuentes: el del usuario; «USE MY API» adelanta su API.
+  // Orden de fuentes configurable por el usuario (por defecto: plataforma → su API → gratis).
+  const order: Source[] = settings.priority;
+  const bySource: Record<Source, Candidate[]> = { platform, user_api: user, free };
+  const premiumSources = order.filter((s) => s !== "free");
+  const premium = premiumSources.flatMap((s) => bySource[s]);
+
+  let list: Candidate[];
   if (req.prefer === "premium") {
     if (!premium.length) {
       if (!req.allowFallback) {
         throw new RouterError(
-          "Modelo premium no disponible: esta tarea necesita Claude y ahora mismo no hay créditos o no tienes Control IA Pro.",
+          "Modelo premium no disponible: esta tarea necesita Claude y ahora mismo no hay créditos, no tienes Control IA Pro o no has añadido tu propia API.",
           "premium_unavailable",
         );
       }
-      notices.push("Modelo premium no disponible · usando el modelo gratuito de respaldo");
+      // Solo se avisa si el usuario esperaba premium (Pro o su API activada), no en cada respuesta del plan gratuito.
+      if (PLAN_LIMITS[ctx.plan].claude || settings.use_my_api) notices.push("Modelo premium no disponible · usando el modelo gratuito de respaldo");
     }
-    return req.allowFallback ? [...premium, ...free] : premium;
+    // Se respeta el orden configurado por el usuario (si pone «gratis» primero, va primero).
+    list = req.allowFallback ? order.flatMap((s) => bySource[s]) : premium;
+  } else {
+    // La tarea prefiere modelos gratuitos: gratis primero, salvo que el usuario ponga su API delante.
+    list = order.indexOf("user_api") < order.indexOf("free") ? [...user, ...free] : [...free, ...user];
   }
-  // Preferencia gratuita: Claude solo como último recurso si el usuario tiene su propia clave.
-  return [...free, ...premium.filter((c) => c.provider === "claude-byok")];
-}
 
-function estimateTokens(text: string) {
-  return Math.ceil(text.length / 4);
-}
-
-async function callClaude(ctx: CallContext, c: Candidate, req: GenerateRequest) {
-  const client = new Anthropic({
-    apiKey: c.apiKey,
-    baseURL: ctx.env.ANTHROPIC_BASE_URL || undefined,
-    timeout: 120_000,
-    maxRetries: 1,
-  });
-  const msg = await client.messages.create(
-    { model: c.model, max_tokens: req.maxTokens, system: req.system, messages: req.messages },
-    { signal: ctx.signal },
-  );
-  if (msg.stop_reason === "refusal") throw new RouterError("Claude declinó responder a esta petición.", "refusal");
-  const text = msg.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
-  return { text, input: msg.usage.input_tokens, output: msg.usage.output_tokens, estimated: false };
-}
-
-async function callWorkersAI(ctx: CallContext, c: Candidate, req: GenerateRequest) {
-  const { env } = ctx;
-  const messages = [{ role: "system", content: req.system }, ...req.messages];
-  if (env.AI_MODE === "mock") {
-    // Solo en tests locales (AI_MODE=mock en .dev.vars). Respuesta determinista.
-    const last = req.messages[req.messages.length - 1]?.content ?? "";
-    if (last.includes("[forzar-error-gratis]")) throw new Error("Workers AI no disponible (simulado en test)");
-    if (last.includes("[lento]")) await new Promise((r) => setTimeout(r, 1500));
-    const text = `[modelo de prueba ${c.model}] ${last.slice(0, 400)}`;
-    return { text, input: estimateTokens(JSON.stringify(messages)), output: estimateTokens(text), estimated: true };
+  // Modelo pedido explícitamente (modo manual / manifiesto): primero, si es accesible.
+  if (req.model) {
+    const idx = list.findIndex((c) => c.modelId === req.model || (req.model!.startsWith("claude") && c.model.adapter === "anthropic"));
+    if (idx > 0) list.unshift(...list.splice(idx, 1));
+    else if (idx < 0) {
+      const m = MODEL_MAP.get(req.model);
+      if (m?.adapter === "workers-ai" && m.kind === "text") list.unshift({ provider: "workers-ai", model: m, modelId: m.id });
+      else if (m) notices.push(`${m.label} no está disponible para tu cuenta · se usa otro modelo`);
+    }
   }
-  if (!env.AI) throw new Error("El binding de Workers AI no está configurado.");
-  const res: any = await env.AI.run(c.model as any, { messages, max_tokens: req.maxTokens } as any);
-  const text =
-    typeof res === "string" ? res
-    : typeof res?.response === "string" ? res.response
-    : res?.choices?.[0]?.message?.content ?? (res?.response ? JSON.stringify(res.response) : "");
-  if (!text) throw new Error("Workers AI devolvió una respuesta vacía.");
-  const u = res?.usage ?? {};
-  const input = Number(u.prompt_tokens ?? u.input_tokens ?? 0);
-  const output = Number(u.completion_tokens ?? u.output_tokens ?? 0);
-  return input || output
-    ? { text, input, output, estimated: false }
-    : { text, input: estimateTokens(JSON.stringify(messages)), output: estimateTokens(text), estimated: true };
+  // Sin visión en el candidato: se le pasa solo el texto (el adapter lo gestiona).
+  return list;
+}
+
+// --- llamadas ------------------------------------------------------------------------------
+
+async function callText(ctx: CallContext, c: Candidate, req: GenerateRequest): Promise<TextOut> {
+  const call = { env: ctx.env, model: c.model, modelId: c.modelId, system: req.system, messages: req.messages, maxTokens: req.maxTokens, apiKey: c.apiKey, signal: ctx.signal };
+  if (c.model.adapter === "anthropic") return anthropicText(call);
+  if (c.model.adapter === "openai") return openaiText(call);
+  return workersText(call);
 }
 
 /** Clasifica un error de Claude y decide cuánto tiempo apartarlo. */
 function claudeFailure(err: unknown): { message: string; cooldown: number } {
   const m = err instanceof Error ? err.message : String(err);
   const low = m.toLowerCase();
-  if (low.includes("credit") || low.includes("billing") || low.includes("balance")) {
-    return { message: "Claude sin créditos disponibles.", cooldown: 15 * 60 };
-  }
-  if (err instanceof Anthropic.AuthenticationError || err instanceof Anthropic.PermissionDeniedError) {
-    return { message: "La clave de Claude de la plataforma no es válida.", cooldown: 30 * 60 };
-  }
+  if (low.includes("credit") || low.includes("billing") || low.includes("balance")) return { message: "Claude sin créditos disponibles.", cooldown: 15 * 60 };
+  if (err instanceof Anthropic.AuthenticationError || err instanceof Anthropic.PermissionDeniedError) return { message: "La clave de Claude no es válida.", cooldown: 30 * 60 };
   if (err instanceof Anthropic.RateLimitError) return { message: "Claude alcanzó su límite de uso.", cooldown: 60 };
   if (err instanceof Anthropic.NotFoundError) return { message: "El modelo de Claude configurado no existe.", cooldown: 30 * 60 };
   if (err instanceof Anthropic.APIError && (err.status ?? 0) >= 500) return { message: "Claude no está disponible temporalmente.", cooldown: 30 };
@@ -215,8 +238,26 @@ function claudeFailure(err: unknown): { message: string; cooldown: number } {
   return { message: `Error de Claude: ${redact(m).slice(0, 160)}`, cooldown: 0 };
 }
 
-async function recordUsage(ctx: CallContext, c: Candidate, fallback: boolean, ok: boolean, error: string | null, ms: number, u?: { input: number; output: number; estimated: boolean }) {
-  const price = PRICES[c.model];
+/** Errores de un modelo gratuito que indican que no merece la pena reintentarlo enseguida. */
+function freeCooldown(message: string): number {
+  const low = message.toLowerCase();
+  if (low.includes("not found") || low.includes("no such model") || low.includes("invalid model") || low.includes("unknown model")) return 30 * 60;
+  if (low.includes("capacity") || low.includes("overloaded") || low.includes("429") || low.includes("rate")) return 60;
+  if (low.includes("simulado")) return 0; // tests
+  return 20;
+}
+
+async function recordUsage(
+  ctx: CallContext,
+  provider: string,
+  model: string,
+  fallback: boolean,
+  ok: boolean,
+  error: string | null,
+  ms: number,
+  u?: { input: number; output: number; estimated: boolean },
+) {
+  const price = PRICES[model];
   const cost = price && u ? (u.input * price[0] + u.output * price[1]) / 1_000_000 : 0;
   await run(
     ctx.env.DB,
@@ -227,8 +268,8 @@ async function recordUsage(ctx: CallContext, c: Candidate, fallback: boolean, ok
     ctx.kind,
     ctx.agentId ?? null,
     ctx.agentRunId ?? null,
-    c.provider,
-    c.model,
+    provider,
+    model,
     fallback ? 1 : 0,
     ok ? 1 : 0,
     error ? redact(error).slice(0, 300) : null,
@@ -243,36 +284,38 @@ async function recordUsage(ctx: CallContext, c: Candidate, fallback: boolean, ok
 
 export async function generate(ctx: CallContext, req: GenerateRequest): Promise<GenerateResult> {
   const notices: string[] = [];
-  const list = await candidates(ctx, req, notices);
+  const list = await buildCandidates(ctx, req, notices);
   if (!list.length) throw new RouterError("No hay ningún modelo disponible ahora mismo.", "no_models");
   let lastError = "";
   for (let i = 0; i < list.length; i++) {
     const c = list[i];
     const t0 = Date.now();
     try {
-      const out = c.provider === "workers-ai" ? await callWorkersAI(ctx, c, req) : await callClaude(ctx, c, req);
+      const out = await callText(ctx, c, req);
+      if (!out.text.trim()) throw new Error("respuesta vacía");
       const ms = Date.now() - t0;
-      // fallback = se usó un proveedor distinto del preferido.
-      const fallback = notices.length > 0 || i > 0;
-      await recordUsage(ctx, c, fallback, true, null, ms, out);
+      const fallback = notices.some((n) => n.startsWith("Modelo premium")) || i > 0;
+      await recordUsage(ctx, c.provider, c.modelId, fallback, true, null, ms, out);
       if (c.provider === "claude") await markHealthy(ctx.env.DB, CLAUDE_HEALTH_KEY);
-      return { text: out.text, provider: c.provider, model: c.model, fallback, notices, latencyMs: ms };
+      return { text: out.text, provider: c.provider, model: c.modelId, fallback, notices, latencyMs: ms };
     } catch (err) {
       if (ctx.signal?.aborted) throw err;
       const ms = Date.now() - t0;
       const raw = err instanceof Error ? err.message : String(err);
-      await recordUsage(ctx, c, i > 0, false, raw, ms);
-      if (c.provider === "claude") {
+      await recordUsage(ctx, c.provider, c.modelId, i > 0, false, raw, ms);
+      const more = i + 1 < list.length;
+      if (c.provider === "claude" || c.provider === "claude-byok") {
         const f = claudeFailure(err);
-        if (f.cooldown) await coolDown(ctx.env.DB, CLAUDE_HEALTH_KEY, f.cooldown, f.message);
-        if (i + 1 < list.length) notices.push(`${f.message} · usando modelo de respaldo`);
+        if (c.provider === "claude" && f.cooldown) await coolDown(ctx.env.DB, CLAUDE_HEALTH_KEY, f.cooldown, f.message);
+        if (more) notices.push(c.provider === "claude" ? `${f.message} · usando modelo de respaldo` : `Tu clave de Claude falló (${f.message}) · usando respaldo`);
         lastError = f.message;
-      } else if (c.provider === "claude-byok") {
-        const f = claudeFailure(err);
-        if (i + 1 < list.length) notices.push(`Tu clave de Claude falló (${f.message}) · usando respaldo`);
-        lastError = f.message;
+      } else if (c.provider === "openai-byok") {
+        if (more) notices.push(`Tu API de OpenAI falló · usando respaldo`);
+        lastError = redact(raw).slice(0, 200);
       } else {
-        if (i + 1 < list.length) notices.push(`${c.model} no respondió · probando otro modelo gratuito`);
+        const cd = freeCooldown(raw);
+        if (cd) await coolDown(ctx.env.DB, modelKey(c.modelId), cd, raw);
+        if (more) notices.push(`${c.model.label} no respondió · probando otro modelo`);
         lastError = redact(raw).slice(0, 200);
       }
     }
@@ -280,26 +323,77 @@ export async function generate(ctx: CallContext, req: GenerateRequest): Promise<
   throw new RouterError(`Ningún modelo pudo responder. Último error: ${lastError}`, "all_failed");
 }
 
-/** Generación de imagen con Workers AI (FLUX.1 schnell, Apache-2.0). Devuelve base64 JPEG. */
-export async function generateImage(ctx: CallContext, prompt: string): Promise<{ b64: string; model: string }> {
+// --- imágenes --------------------------------------------------------------------------------
+
+export interface ImageRequest {
+  mode: ImageCall["mode"];
+  prompt: string;
+  negative?: string;
+  width: number;
+  height: number;
+  seed?: number;
+  strength?: number;
+  image?: Uint8Array;
+  mask?: Uint8Array;
+  /** "auto" o id del catálogo. */
+  model?: string;
+}
+
+export interface ImageResult {
+  bytes: Uint8Array;
+  mime: string;
+  model: string;
+  fallback: boolean;
+  notices: string[];
+  latencyMs: number;
+}
+
+const MODE_CAP: Record<ImageCall["mode"], Capability> = { t2i: "t2i", i2i: "i2i", variation: "i2i", inpaint: "inpaint", upscale: "upscale" };
+
+export async function routeImage(ctx: CallContext, req: ImageRequest): Promise<ImageResult> {
   const { env } = ctx;
-  const model = env.IMAGE_MODEL;
-  const t0 = Date.now();
-  const c: Candidate = { provider: "workers-ai", model };
-  try {
-    let b64: string;
-    if (env.AI_MODE === "mock") {
-      b64 = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==";
-    } else {
-      if (!env.AI) throw new Error("El binding de Workers AI no está configurado.");
-      const res: any = await env.AI.run(model as any, { prompt: prompt.slice(0, 2000), steps: 4 } as any);
-      b64 = res?.image;
-      if (!b64) throw new Error("El modelo de imagen no devolvió ninguna imagen.");
-    }
-    await recordUsage(ctx, c, false, true, null, Date.now() - t0, { input: estimateTokens(prompt), output: 0, estimated: true });
-    return { b64, model };
-  } catch (err) {
-    await recordUsage(ctx, c, false, false, err instanceof Error ? err.message : String(err), Date.now() - t0);
-    throw new RouterError(`No se pudo generar la imagen: ${redact(err instanceof Error ? err.message : err).slice(0, 160)}`, "image_failed");
+  const cap = MODE_CAP[req.mode];
+  const settings = await getAiSettings(env.DB, ctx.userId);
+  const openaiKey = settings.use_my_api ? await storedKey(env, ctx.userId, "openai") : "";
+  const chain: { model: ModelInfo; apiKey?: string }[] = [];
+  const push = (id: string, apiKey?: string) => {
+    const m = MODEL_MAP.get(id);
+    if (m && m.capabilities.includes(cap) && !chain.some((c) => c.model.id === id)) chain.push({ model: m, apiKey });
+  };
+  const notices: string[] = [];
+  if (req.model && req.model !== "auto") {
+    const m = MODEL_MAP.get(req.model);
+    if (!m || m.kind !== "image") throw new RouterError("Ese modelo de imagen no existe.", "bad_model");
+    if (!m.capabilities.includes(cap)) notices.push(`${m.label} no admite este modo · se usa otro modelo compatible`);
+    else if (m.source === "user" && !openaiKey) notices.push(`${m.label} necesita tu API de OpenAI con «Usar mi API» activado · se usa un modelo gratuito`);
+    else push(m.id, m.source === "user" ? openaiKey : undefined);
   }
+  if (openaiKey && settings.priority.indexOf("user_api") < settings.priority.indexOf("free")) push("gpt-image-1", openaiKey);
+  for (const id of FREE_CHAINS[cap]) if (await healthy(env.DB, modelKey(id))) push(id);
+  if (!chain.length) for (const id of FREE_CHAINS[cap]) push(id);
+  if (!chain.length) throw new RouterError("No hay ningún modelo que admita esta operación.", "no_models");
+
+  let lastError = "";
+  for (let i = 0; i < chain.length; i++) {
+    const { model, apiKey } = chain[i];
+    const t0 = Date.now();
+    const provider = model.adapter === "openai" ? "openai-byok" : "workers-ai";
+    try {
+      const call: ImageCall = { env, model, mode: req.mode, prompt: req.prompt, negative: req.negative, width: req.width, height: req.height, seed: req.seed, strength: req.strength, image: req.image, mask: req.mask, apiKey };
+      const out = model.adapter === "openai" ? await openaiImage(call) : await workersImage(call);
+      const ms = Date.now() - t0;
+      await recordUsage(ctx, provider, model.id, i > 0, true, null, ms, { input: Math.ceil(req.prompt.length / 4), output: 0, estimated: true });
+      return { ...out, model: model.id, fallback: i > 0, notices, latencyMs: ms };
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      await recordUsage(ctx, provider, model.id, i > 0, false, raw, Date.now() - t0);
+      if (provider === "workers-ai") {
+        const cd = freeCooldown(raw);
+        if (cd) await coolDown(env.DB, modelKey(model.id), cd, raw);
+      }
+      if (i + 1 < chain.length) notices.push(`${model.label} no respondió · probando ${chain[i + 1].model.label}`);
+      lastError = redact(raw).slice(0, 200);
+    }
+  }
+  throw new RouterError(`No se pudo generar la imagen. Último error: ${lastError}`, "image_failed");
 }

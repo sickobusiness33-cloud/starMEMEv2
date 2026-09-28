@@ -15,6 +15,7 @@ export default [
   }),
   agent({
     id: "script-generator",
+    model: { prefer: "free", allowFallback: true, capability: "code" },
     name: "Script Generator",
     description: "Genera scripts (Python, Bash, Apps Script) para automatizar tareas repetitivas. Tú los revisas y ejecutas.",
     category: "automation",
@@ -26,6 +27,7 @@ export default [
   }),
   agent({
     id: "regex-builder",
+    model: { prefer: "free", allowFallback: true, capability: "code" },
     name: "Regex & Formula Builder",
     description: "Crea expresiones regulares y fórmulas de Excel/Sheets explicadas.",
     category: "automation",

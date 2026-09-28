@@ -14,6 +14,7 @@ import { safeEqual } from "./crypto";
 import { one } from "./db";
 import type { AppEnv, Env, User } from "./env";
 import { EMAIL, fail, intIn, jsonBody, reqStr } from "./http";
+import { notify } from "./notify";
 import { getSubscription, PLAN_LIMITS, PRO_FEATURES, priceConfig, setSubscription, usageToday, type PlanId } from "./plans";
 
 export interface PaymentProvider {
@@ -91,6 +92,7 @@ export class StripeProvider implements PaymentProvider {
       const userId = Number(obj.client_reference_id || obj.metadata?.user_id);
       if (!userId) return { handled: false, detail: "Sin usuario" };
       await setSubscription(env.DB, userId, { plan: "pro", status: "active", provider: "stripe", customerId: obj.customer, externalId: obj.subscription });
+      await notify(env, userId, { category: "suscripcion", priority: "high", title: "¡Ya eres Control IA Pro!", body: "Agentes premium, más límites y Kairo con hasta 5 agentes por mensaje.", link: "#/upgrade" });
       return { handled: true, detail: `pro activado para ${userId}` };
     }
     if (event.type?.startsWith("customer.subscription.")) {
@@ -103,6 +105,7 @@ export class StripeProvider implements PaymentProvider {
       const status = deleted ? "canceled" : String(obj.status);
       const plan: PlanId = !deleted && ["active", "trialing"].includes(status) ? "pro" : "free";
       await setSubscription(env.DB, userId, { plan, status, renewal, provider: "stripe", customerId: obj.customer, externalId: obj.id });
+      if (plan === "free") await notify(env, userId, { category: "suscripcion", priority: "high", title: "Tu suscripción Pro ha terminado", body: `Estado: ${status}. Sigues teniendo el plan gratuito.`, link: "#/upgrade", dedupe: `sub-${status}` });
       return { handled: true, detail: `${status} para ${userId}` };
     }
     return { handled: false, detail: `Evento ignorado: ${event.type}` };
@@ -164,6 +167,13 @@ billingRoutes.post("/admin/set-plan", requireAdmin, async (c) => {
   if (!target) fail(404, "No existe ningún usuario con ese email.");
   const renewal = plan === "pro" && months ? new Date(Date.now() + months * 30 * 86_400_000).toISOString() : null;
   await setSubscription(c.env.DB, target.id, { plan, status: plan === "pro" ? "manual" : "none", renewal, provider: "manual" });
+  await notify(c.env, target.id, {
+    category: "suscripcion",
+    priority: "high",
+    title: plan === "pro" ? "Tienes Control IA Pro" : "Tu plan ha cambiado a Free",
+    body: plan === "pro" ? `Activado por un administrador${renewal ? ` hasta el ${renewal.slice(0, 10)}` : ""}.` : "",
+    link: "#/upgrade",
+  });
   const u = c.get("user");
   await record(c.env.DB, { actor: u.email, userId: u.id, action: "billing.set_plan", target: email, detail: `${plan} ${months} meses (manual, sin cobro)` });
   return c.json(await getSubscription(c.env.DB, target.id));

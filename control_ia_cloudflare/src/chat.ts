@@ -1,29 +1,42 @@
-// AI CHAT central: conversa con Claude, con los modelos gratuitos de Cloudflare
-// o con la personalidad de un agente del Hub. Todo pasa por el AI Router.
+// AI CHAT central con Kairo.
 //
-// Modos: auto (Claude si está disponible, si no gratuito) · claude (solo Claude)
-//        · free (solo modelos gratuitos) · agent:<id> (instrucciones del agente)
+// Modo por defecto (thread.mode = "auto"): cada mensaje lo procesa el AI
+// ORCHESTRATOR en la cola; todos los agentes están disponibles y él decide
+// cuáles usar. El progreso se sigue en tiempo real por SSE
+// (/api/chat/runs/:id/stream). Con auto_mode = 0 el usuario elige agentes,
+// modelo y herramientas (modo manual).
+//
+// Modos directos (sin orquestador, respuesta síncrona): router (Claude → gratis),
+// claude (solo Claude), free (solo gratis) y agent:<id> (personalidad de un agente).
 
 import { Hono, type Context } from "hono";
+import { streamSSE } from "hono/streaming";
 import { requireUser } from "./auth";
-import { all, nowIso, one, run } from "./db";
+import { all, dumps, loads, nowIso, one, run } from "./db";
 import type { AppEnv } from "./env";
-import { fail, jsonBody, reqStr, str, toId } from "./http";
+import { fail, jsonBody, objOf, reqStr, str, toId } from "./http";
+import { ownedImages } from "./hub";
 import { getSubscription, PLAN_LIMITS, usageToday } from "./plans";
 import { hit } from "./ratelimit";
 import { generate, RouterError } from "./ai/router";
-import { getAgent } from "./agents/registry";
+import { MODEL_MAP, MODELS, publicModel } from "./ai/models";
+import { getAgent, listAgents } from "./agents/registry";
+import { CATEGORIES, TOOL_INFO } from "./agents/types";
+import { BRAND } from "./orchestrator/brand";
+import { runState, type ManualConfig } from "./orchestrator/executor";
+import { orchestratorPool } from "./orchestrator/planner";
 
 export const chatRoutes = new Hono<AppEnv>();
 chatRoutes.use("*", requireUser);
 
 const SYSTEM =
-  "Eres el asistente del chat de Control IA, un centro de control de agentes de IA. Responde en el idioma del usuario, " +
-  "de forma clara y útil, con formato Markdown sencillo cuando ayude. No inventes datos ni fuentes: si no lo sabes, dilo. " +
-  "No puedes ejecutar acciones externas desde este chat; para tareas de varios pasos el usuario puede usar los agentes del Agent Hub.";
+  `Eres ${BRAND.name}, el asistente de Control IA. Responde en el idioma del usuario, ` +
+  "de forma clara y útil, con formato Markdown sencillo cuando ayude. No inventes datos ni fuentes: si no lo sabes, dilo.";
 
-const MODE = /^(auto|claude|free|agent:[a-z0-9][a-z0-9-]{1,59})$/;
+const MODE = /^(auto|router|claude|free|agent:[a-z0-9][a-z0-9-]{1,59})$/;
 const HISTORY = 12;
+const ACTIVE = ["queued", "planning", "running", "aggregating"];
+const CAT_LABEL = Object.fromEntries(CATEGORIES.map((c) => [c.id, c.label]));
 
 async function ownThread(c: Context<AppEnv>) {
   const row = await one<any>(c.env.DB, "SELECT * FROM chat_threads WHERE id = ? AND user_id = ?", toId(c.req.param("id")), c.get("user").id);
@@ -31,8 +44,39 @@ async function ownThread(c: Context<AppEnv>) {
   return row;
 }
 
+function threadOut(t: any) {
+  const { manual_json, ...rest } = t;
+  return { ...rest, auto_mode: Boolean(t.auto_mode), manual: loads<ManualConfig>(manual_json, {}) };
+}
+
+/** Todos los agentes que el orquestador tiene a su disposición (se registran en cada chat). */
+chatRoutes.get("/agents", async (c) => {
+  const sub = await getSubscription(c.env.DB, c.get("user").id);
+  const pool = orchestratorPool(await listAgents(c.env.DB), sub.plan);
+  return c.json({
+    brand: BRAND,
+    plan: sub.plan,
+    max_agents_per_message: PLAN_LIMITS[sub.plan].maxAgentsPerMessage,
+    agents: pool.map((a) => ({
+      id: a.id,
+      name: a.name,
+      description: a.description,
+      category: a.category,
+      category_label: CAT_LABEL[a.category],
+      color: a.color,
+      tier: a.tier,
+      locked: a.locked,
+      needs_image: a.input.image === "required",
+      tools: a.tools,
+      capability: a.model.capability ?? "chat",
+    })),
+    models: MODELS.filter((m) => m.kind === "text").map(publicModel),
+    tools: Object.entries(TOOL_INFO).map(([id, t]) => ({ id, ...t })),
+  });
+});
+
 chatRoutes.get("/threads", async (c) =>
-  c.json(await all(c.env.DB, "SELECT * FROM chat_threads WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50", c.get("user").id)),
+  c.json((await all(c.env.DB, "SELECT * FROM chat_threads WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50", c.get("user").id)).map(threadOut)),
 );
 
 chatRoutes.post("/threads", async (c) => {
@@ -40,14 +84,22 @@ chatRoutes.post("/threads", async (c) => {
   const mode = str(body, "mode", { label: "Modo", max: 70, pattern: MODE, optional: true }) ?? "auto";
   const title = str(body, "title", { label: "Título", max: 80, optional: true }) || "Nueva conversación";
   const now = nowIso();
-  const id = await run(c.env.DB, "INSERT INTO chat_threads (user_id, title, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", c.get("user").id, title, mode, now, now);
-  return c.json(await one(c.env.DB, "SELECT * FROM chat_threads WHERE id = ?", id), 201);
+  // Nuevo chat: modo AUTO activado y todos los agentes disponibles (no hay que activarlos).
+  const id = await run(c.env.DB, "INSERT INTO chat_threads (user_id, title, mode, auto_mode, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)", c.get("user").id, title, mode, now, now);
+  return c.json(threadOut(await one(c.env.DB, "SELECT * FROM chat_threads WHERE id = ?", id)), 201);
 });
 
 chatRoutes.get("/threads/:id", async (c) => {
   const t = await ownThread(c);
-  const messages = await all(c.env.DB, "SELECT * FROM chat_messages WHERE thread_id = ? ORDER BY id DESC LIMIT 200", t.id);
-  return c.json({ ...t, messages: messages.reverse() });
+  const messages = await all<any>(c.env.DB, "SELECT * FROM chat_messages WHERE thread_id = ? ORDER BY id DESC LIMIT 200", t.id);
+  const active = await one<any>(c.env.DB, `SELECT id FROM chat_runs WHERE thread_id = ? AND status IN (${ACTIVE.map(() => "?").join(",")}) ORDER BY id DESC LIMIT 1`, t.id, ...ACTIVE);
+  const lastRun = await one<any>(c.env.DB, "SELECT id FROM chat_runs WHERE thread_id = ? ORDER BY id DESC LIMIT 1", t.id);
+  return c.json({
+    ...threadOut(t),
+    messages: messages.reverse().map((m) => ({ ...m, images: loads(m.images_json, []), images_json: undefined })),
+    active_run_id: active?.id ?? null,
+    last_run_id: lastRun?.id ?? null,
+  });
 });
 
 chatRoutes.patch("/threads/:id", async (c) => {
@@ -55,8 +107,26 @@ chatRoutes.patch("/threads/:id", async (c) => {
   const body = await jsonBody(c.req.raw);
   const mode = str(body, "mode", { label: "Modo", max: 70, pattern: MODE, optional: true }) ?? t.mode;
   const title = str(body, "title", { label: "Título", min: 1, max: 80, optional: true }) ?? t.title;
-  await run(c.env.DB, "UPDATE chat_threads SET mode = ?, title = ?, updated_at = ? WHERE id = ?", mode, title, nowIso(), t.id);
-  return c.json(await one(c.env.DB, "SELECT * FROM chat_threads WHERE id = ?", t.id));
+  const autoMode = body.auto_mode === undefined ? t.auto_mode : body.auto_mode ? 1 : 0;
+  let manual = loads<ManualConfig>(t.manual_json, {});
+  if (body.manual !== undefined) {
+    const m = objOf(body, "manual") as any;
+    const sub = await getSubscription(c.env.DB, c.get("user").id);
+    const pool = new Map(orchestratorPool(await listAgents(c.env.DB), sub.plan).map((a) => [a.id, a]));
+    const agents: string[] = Array.isArray(m.agents) ? [...new Set<string>(m.agents.map(String))] : [];
+    if (agents.length > PLAN_LIMITS[sub.plan].maxAgentsPerMessage) fail(422, `Tu plan permite hasta ${PLAN_LIMITS[sub.plan].maxAgentsPerMessage} agentes por mensaje.`);
+    for (const id of agents) {
+      const a = pool.get(id);
+      if (!a) fail(422, `El agente «${id}» no existe.`);
+      if (a!.locked) fail(402, `«${a!.name}» es un agente premium: requiere Control IA Pro.`);
+    }
+    const model = m.model ? String(m.model) : null;
+    if (model && MODEL_MAP.get(model)?.kind !== "text") fail(422, "Modelo no válido.");
+    const toolsOff: string[] = Array.isArray(m.tools_off) ? [...new Set<string>(m.tools_off.map(String))].filter((x) => x in TOOL_INFO) : [];
+    manual = { agents, model, tools_off: toolsOff };
+  }
+  await run(c.env.DB, "UPDATE chat_threads SET mode = ?, title = ?, auto_mode = ?, manual_json = ?, updated_at = ? WHERE id = ?", mode, title, autoMode, dumps(manual), nowIso(), t.id);
+  return c.json(threadOut(await one(c.env.DB, "SELECT * FROM chat_threads WHERE id = ?", t.id)));
 });
 
 chatRoutes.delete("/threads/:id", async (c) => {
@@ -74,13 +144,40 @@ chatRoutes.post("/threads/:id/messages", async (c) => {
   const limits = PLAN_LIMITS[sub.plan];
   const content = reqStr(body, "content", { label: "Mensaje", min: 1, max: 40_000 });
   if (content.length > limits.maxInputChars) fail(413, `Tu plan permite mensajes de hasta ${limits.maxInputChars.toLocaleString("es-ES")} caracteres.`);
+  const images = await ownedImages(c.env.DB, user.id, body.image_ids);
   const used = await usageToday(c.env.DB, user.id);
   if (used.chat >= limits.chatMessagesPerDay) {
     fail(429, `Has usado los ${limits.chatMessagesPerDay} mensajes de chat de hoy.${sub.plan === "free" ? " Pro amplía el límite." : ""}`);
   }
   const wait = await hit(c.env.DB, `chat:${user.id}`, 20, 60);
   if (wait) fail(429, `Vas muy rápido. Espera ${wait} s.`);
+  const now = nowIso();
+  const title = t.title === "Nueva conversación" ? content.replace(/\s+/g, " ").slice(0, 60) : t.title;
 
+  // --- Kairo: orquestador multiagente ---
+  if (mode === "auto") {
+    const busy = await one<any>(c.env.DB, `SELECT id FROM chat_runs WHERE thread_id = ? AND status IN (${ACTIVE.map(() => "?").join(",")})`, t.id, ...ACTIVE);
+    if (busy) fail(409, `${BRAND.name} aún está trabajando en tu mensaje anterior.`);
+    const mid = await run(c.env.DB, "INSERT INTO chat_messages (thread_id, role, content, images_json, created_at) VALUES (?, 'user', ?, ?, ?)", t.id, content, dumps(images), now);
+    const manual = t.auto_mode ? null : loads<ManualConfig>(t.manual_json, {});
+    const runId = await run(
+      c.env.DB,
+      "INSERT INTO chat_runs (thread_id, user_id, message_id, status, mode, plan_json, plan, created_at) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)",
+      t.id,
+      user.id,
+      mid,
+      manual ? "manual" : "auto",
+      dumps(manual ? { manual } : {}),
+      sub.plan,
+      now,
+    );
+    await run(c.env.DB, "UPDATE chat_threads SET mode = ?, title = ?, updated_at = ? WHERE id = ?", mode, title, now, t.id);
+    await c.env.RUNS.send({ chatRunId: runId });
+    const message = await one<any>(c.env.DB, "SELECT * FROM chat_messages WHERE id = ?", mid);
+    return c.json({ message: { ...message, images: images, images_json: undefined }, run: (await runState(c.env.DB, runId))!.run }, 202);
+  }
+
+  // --- Modos directos (síncronos) ---
   let system = SYSTEM;
   let agentId: string | null = null;
   let prefer: "premium" | "free" = "premium";
@@ -98,11 +195,8 @@ chatRoutes.post("/threads/:id/messages", async (c) => {
     allowFallback = a!.model.allowFallback;
     advanced = Boolean(a!.model.advanced);
   }
-
-  const now = nowIso();
-  await run(c.env.DB, "INSERT INTO chat_messages (thread_id, role, content, agent_id, created_at) VALUES (?, 'user', ?, ?, ?)", t.id, content, agentId, now);
+  await run(c.env.DB, "INSERT INTO chat_messages (thread_id, role, content, agent_id, images_json, created_at) VALUES (?, 'user', ?, ?, ?, ?)", t.id, content, agentId, dumps(images), now);
   const history = (await all<any>(c.env.DB, "SELECT role, content FROM chat_messages WHERE thread_id = ? ORDER BY id DESC LIMIT ?", t.id, HISTORY)).reverse();
-  // El historial también respeta el límite de contexto del plan.
   let budget = limits.maxInputChars * 3;
   const messages: { role: "user" | "assistant"; content: string }[] = [];
   for (let i = history.length - 1; i >= 0; i--) {
@@ -111,8 +205,6 @@ chatRoutes.post("/threads/:id/messages", async (c) => {
     messages.unshift({ role: history[i].role, content: history[i].content });
   }
   while (messages.length && messages[0].role !== "user") messages.shift();
-
-  const title = t.title === "Nueva conversación" ? content.replace(/\s+/g, " ").slice(0, 60) : t.title;
   await run(c.env.DB, "UPDATE chat_threads SET mode = ?, title = ?, updated_at = ? WHERE id = ?", mode, title, now, t.id);
   try {
     const res = await generate(
@@ -137,4 +229,51 @@ chatRoutes.post("/threads/:id/messages", async (c) => {
     if (err instanceof RouterError) fail(err.code === "premium_unavailable" ? 409 : 502, err.message);
     throw err;
   }
+});
+
+// --- Ejecuciones del orquestador (Activity Panel) -----------------------------------------------
+
+async function ownRun(c: Context<AppEnv>) {
+  const r = await one<any>(c.env.DB, "SELECT id, status FROM chat_runs WHERE id = ? AND user_id = ?", toId(c.req.param("id")), c.get("user").id);
+  if (!r) fail(404, "Ejecución no encontrada.");
+  return r;
+}
+
+chatRoutes.get("/runs/:id", async (c) => {
+  const r = await ownRun(c);
+  return c.json(await runState(c.env.DB, r.id));
+});
+
+chatRoutes.post("/runs/:id/cancel", async (c) => {
+  const r = await ownRun(c);
+  if (!ACTIVE.includes(r.status)) fail(409, "Esta ejecución ya terminó.");
+  await run(c.env.DB, `UPDATE chat_runs SET status = 'cancelled', finished_at = ?, version = version + 1 WHERE id = ? AND status IN (${ACTIVE.map(() => "?").join(",")})`, nowIso(), r.id, ...ACTIVE);
+  return c.json(await runState(c.env.DB, r.id));
+});
+
+/**
+ * Tiempo real: Server-Sent Events. El servidor comprueba la versión de la
+ * ejecución cada 400 ms (una lectura ligera en D1) y solo envía el estado
+ * completo cuando cambia. El navegador no hace polling.
+ */
+chatRoutes.get("/runs/:id/stream", async (c) => {
+  const r = await ownRun(c);
+  const db = c.env.DB;
+  return streamSSE(c, async (stream) => {
+    let version = -1;
+    const t0 = Date.now();
+    while (!stream.aborted && Date.now() - t0 < 180_000) {
+      const v = await one<any>(db, "SELECT version, status FROM chat_runs WHERE id = ?", r.id);
+      if (!v) break;
+      if (v.version !== version) {
+        version = v.version;
+        await stream.writeSSE({ event: "state", data: JSON.stringify(await runState(db, r.id)), id: String(version) });
+      }
+      if (!ACTIVE.includes(v.status)) {
+        await stream.writeSSE({ event: "done", data: v.status });
+        break;
+      }
+      await stream.sleep(400);
+    }
+  });
 });
