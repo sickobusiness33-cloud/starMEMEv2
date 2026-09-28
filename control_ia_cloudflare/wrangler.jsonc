@@ -1,0 +1,51 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "control-ia",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // La web (public/) se sirve como estáticos; /api/* pasa por el Worker.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "control-ia",
+      // Sustituye por el id que devuelve `npx wrangler d1 create control-ia`.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Las tareas de IA se ejecutan en segundo plano con una cola.
+  "queues": {
+    "producers": [{ "binding": "RUNS", "queue": "control-ia-runs" }],
+    "consumers": [
+      {
+        "queue": "control-ia-runs",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 0,
+        "max_concurrency": 5
+      }
+    ]
+  },
+  // Configuración pública. Los secretos van con `wrangler secret put` (ver README).
+  "vars": {
+    "ALLOW_SIGNUP": "true",
+    "ADMIN_EMAILS": "",
+    "COOKIE_SECURE": "true",
+    "SESSION_HOURS": "72",
+    "RUNS_PER_MINUTE": "10",
+    "SIGNUPS_PER_HOUR_PER_IP": "5",
+    "LOGIN_ATTEMPTS_PER_MINUTE": "5",
+    "PROVIDER_TIMEOUT_SECONDS": "300",
+    "PROVIDER_MAX_RETRIES": "2",
+    "MAX_FILE_BYTES": "262144",
+    "ENABLE_DEMO_PROVIDER": "true",
+    "OPENAI_BASE_URL": "https://api.openai.com/v1"
+  },
+  "observability": { "enabled": true }
+}
