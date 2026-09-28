@@ -1,7 +1,7 @@
 // Proveedor OpenAI (o API compatible) por HTTP.
 
 import { redact } from "../crypto";
-import { MAX_TOKENS, type ParamSpec, Provider, ProviderError, type StepArgs, type StepResult, type ToolOutcome } from "./base";
+import { type Attachment, MAX_TOKENS, type ParamSpec, wrapUntrusted, Provider, ProviderError, type StepArgs, type StepResult, type ToolOutcome } from "./base";
 
 const TEMPERATURE: ParamSpec = {
   name: "temperature",
@@ -66,6 +66,17 @@ export class OpenAIProvider extends Provider {
 
   paramsFor(): ParamSpec[] {
     return [MAX_TOKENS, TEMPERATURE];
+  }
+
+  userMessage(text: string, atts: Attachment[]) {
+    const content: any[] = [];
+    for (const a of atts) {
+      if (a.text !== undefined) content.push({ type: "text", text: wrapUntrusted(`adjunto:${a.name}`, a.text) });
+      else if (a.mime.startsWith("image/")) content.push({ type: "image_url", image_url: { url: `data:${a.mime};base64,${a.b64}` } });
+      else if (a.mime === "application/pdf") content.push({ type: "file", file: { filename: a.name, file_data: `data:application/pdf;base64,${a.b64}` } });
+    }
+    content.push({ type: "text", text: text || "(sin texto)" });
+    return { role: "user", content };
   }
 
   async test() {

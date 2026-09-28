@@ -1,7 +1,7 @@
 // Proveedor de demostración: NO es IA. Sirve para probar la plataforma sin claves.
 // Comandos: /herramienta <nombre> {json} · /lento <segundos> · /fallar
 
-import { Provider, ProviderError, type StepArgs, type StepResult, type ToolOutcome } from "./base";
+import { type Attachment, Provider, ProviderError, type StepArgs, type StepResult, type ToolOutcome } from "./base";
 
 const LABEL = "[DEMO — no generado por IA]";
 
@@ -32,6 +32,11 @@ export class DemoProvider extends Provider {
 
   suggestedModels() {
     return ["demo-eco"];
+  }
+
+  userMessage(text: string, atts: Attachment[]) {
+    const list = atts.map((a) => `${a.name} (${a.mime}, ${Math.round(a.size / 1024)} KB)`).join(", ");
+    return { role: "user", content: text, demo_attachments: list };
   }
 
   async test() {
@@ -66,6 +71,7 @@ export class DemoProvider extends Provider {
       const note = `${LABEL}\nSolicito la herramienta \`${name}\`.`;
       return { text: note, toolCalls: [call], assistantMessages: [{ role: "assistant", content: note }], usage: {}, stopReason: "tool_use" };
     }
+    const adj = last?.demo_attachments ? `\nAdjuntos recibidos: ${last.demo_attachments}` : "";
     const previous = transcript.slice(0, -1).filter((m: any) => m.role === "user").length;
     const instr = (system.split("## Instrucciones del proyecto")[1] ?? "").trim().split("\n")[0]?.slice(0, 120) || "(ninguna)";
     const text = [
@@ -74,7 +80,7 @@ export class DemoProvider extends Provider {
       `Modelo: ${model} · mensajes previos del usuario en esta conversación: ${previous}`,
       `Instrucciones activas del proyecto: ${instr}`,
       `Herramientas habilitadas: ${tools.map((t) => t.name).join(", ") || "ninguna"}`,
-    ].join("\n");
+    ].join("\n") + adj;
     return { text, toolCalls: [], assistantMessages: [{ role: "assistant", content: text }], usage: { input_tokens: 0, output_tokens: 0 }, stopReason: "end_turn" };
   }
 

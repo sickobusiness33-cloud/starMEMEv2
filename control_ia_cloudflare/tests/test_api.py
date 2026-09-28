@@ -281,3 +281,42 @@ def test_panel_solo_muestra_lo_propio(api):
     assert [x["name"] for x in mine["projects"]] == ["Mío"] and mine["totals"]["runs"] == 1
     other = register().get("/api/dashboard").json()
     assert other["projects"] == [] and other["runs"] == [] and other["totals"]["runs"] == 0
+
+
+# --- Adjuntos en el chat ----------------------------------------------------------
+
+PNG_1PX = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+    "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082"
+)
+
+
+def test_adjuntos_en_el_chat(api):
+    p = new_project(api, "Adjuntos")
+    img = api.c.post(f"/api/projects/{p['id']}/files?auto_rename=true", files={"file": ("captura.png", PNG_1PX, "image/png")}, headers=api._h())
+    assert img.status_code == 200 and img.json()["kind"] == "imagen"
+    pdf = api.c.post(f"/api/projects/{p['id']}/files?auto_rename=true", files={"file": ("informe.pdf", b"%PDF-1.4 prueba", "application/pdf")}, headers=api._h())
+    assert pdf.status_code == 200 and pdf.json()["mime"] == "application/pdf"
+    # Mismo nombre desde el chat: se renombra solo.
+    again = api.c.post(f"/api/projects/{p['id']}/files?auto_rename=true", files={"file": ("informe.pdf", b"%PDF-1.4 otra", "application/pdf")}, headers=api._h())
+    assert again.json()["name"] == "informe (2).pdf"
+    ids = [img.json()["id"], pdf.json()["id"]]
+    run = api.post(f"/api/projects/{p['id']}/runs", json={"input": "", "attachment_ids": ids}).json()
+    assert [a["name"] for a in run["attachments"]] == ["captura.png", "informe.pdf"]
+    done = wait_run(api, run["id"])
+    assert done["status"] == "completed" and "Adjuntos recibidos: captura.png" in done["output"]
+    conv = api.get(f"/api/projects/{p['id']}/conversations/{run['conversation_id']}").json()
+    assert conv["messages"][0]["attachments"][1]["name"] == "informe.pdf"
+    dl = api.get(f"/api/projects/{p['id']}/files/{ids[0]}/download")
+    assert dl.content == PNG_1PX and dl.headers["content-type"] == "image/png"
+
+
+def test_adjuntos_de_otro_proyecto_o_demasiado_grandes(api):
+    a = new_project(api, "A")
+    b = new_project(api, "B")
+    f = api.c.post(f"/api/projects/{a['id']}/files", files={"file": ("x.txt", b"hola", "text/plain")}, headers=api._h()).json()
+    assert api.post(f"/api/projects/{b['id']}/runs", json={"input": "x", "attachment_ids": [f["id"]]}).status_code == 422
+    big = api.c.post(f"/api/projects/{a['id']}/files", files={"file": ("g.png", b"0" * 1_000_001, "image/png")}, headers=api._h())
+    assert big.status_code == 413
+    exe = api.c.post(f"/api/projects/{a['id']}/files", files={"file": ("x.exe", b"MZ", "application/octet-stream")}, headers=api._h())
+    assert exe.status_code == 422

@@ -7,7 +7,7 @@ import { requireUser } from "./auth";
 import { all, dumps, loads, nowIso, one, run } from "./db";
 import type { AppEnv, Env, User } from "./env";
 import { ACTIVE, REJECTED_MSG } from "./executor";
-import { fail, jsonBody, objOf, reqStr, toId } from "./http";
+import { fail, jsonBody, objOf, reqStr, str, toId } from "./http";
 import { DEFAULT_LIMITS, getConversation, getProject } from "./projects";
 import { hit } from "./ratelimit";
 import { TOOLS, execute, requiresConfirmation, toolOut } from "./tools";
@@ -20,9 +20,9 @@ function actionOut(row: any) {
 }
 
 async function runOut(env: Env, row: any) {
-  const { state_json, params_json, usage_json, ...rest } = row;
+  const { state_json, params_json, usage_json, attachments_json, ...rest } = row;
   const actions = await all<any>(env.DB, "SELECT * FROM actions WHERE run_id = ? ORDER BY id", row.id);
-  return { ...rest, params: loads(params_json), usage: loads(usage_json), actions: actions.map(actionOut) };
+  return { ...rest, params: loads(params_json), usage: loads(usage_json), attachments: loads(attachments_json, []), actions: actions.map(actionOut) };
 }
 
 async function runForUser(c: Context<AppEnv>, id: number) {
@@ -36,7 +36,31 @@ async function runForUser(c: Context<AppEnv>, id: number) {
   return row;
 }
 
-async function createRun(c: Context<AppEnv>, project: any, convId: number, text: string, userMessageId: number | null, retryOf: number | null) {
+/** Valida que los adjuntos pertenecen al proyecto y devuelve su resumen público. */
+async function resolveAttachments(env: Env, projectId: number, raw: unknown) {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw) || raw.length > 10) fail(422, "Puedes adjuntar hasta 10 archivos por mensaje.");
+  const out = [];
+  let total = 0;
+  for (const v of raw as unknown[]) {
+    const f = await one<any>(env.DB, "SELECT id, name, mime, size FROM project_files WHERE id = ? AND project_id = ?", Number(v), projectId);
+    if (!f) fail(422, "Uno de los adjuntos no existe en este proyecto.");
+    total += f.size;
+    out.push({ id: f.id, name: f.name, mime: f.mime, size: f.size });
+  }
+  if (total > 1_500_000) fail(413, "Los adjuntos de un mensaje no pueden superar 1,5 MB en total.");
+  return out;
+}
+
+async function createRun(
+  c: Context<AppEnv>,
+  project: any,
+  convId: number,
+  text: string,
+  userMessageId: number | null,
+  retryOf: number | null,
+  attachments: any[] = [],
+) {
   const u = c.get("user");
   const s = c.get("settings");
   if (project.status === "archived") fail(409, "El proyecto está archivado. Restáuralo para ejecutar tareas.");
@@ -52,11 +76,19 @@ async function createRun(c: Context<AppEnv>, project: any, convId: number, text:
   const now = nowIso();
   const msgId =
     userMessageId ??
-    (await run(c.env.DB, "INSERT INTO messages (conversation_id, project_id, role, content, created_at) VALUES (?, ?, 'user', ?, ?)", convId, project.id, text, now));
+    (await run(
+      c.env.DB,
+      "INSERT INTO messages (conversation_id, project_id, role, content, created_at, attachments_json) VALUES (?, ?, 'user', ?, ?, ?)",
+      convId,
+      project.id,
+      text,
+      now,
+      dumps(attachments),
+    ));
   const runId = await run(
     c.env.DB,
-    "INSERT INTO runs (project_id, conversation_id, user_id, status, input, provider, model, params_json, retry_of, user_message_id, created_at)" +
-      " VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO runs (project_id, conversation_id, user_id, status, input, provider, model, params_json, retry_of, user_message_id, created_at, attachments_json)" +
+      " VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)",
     project.id,
     convId,
     u.id,
@@ -67,6 +99,7 @@ async function createRun(c: Context<AppEnv>, project: any, convId: number, text:
     retryOf,
     msgId,
     now,
+    dumps(attachments),
   );
   await run(c.env.DB, "UPDATE messages SET run_id = ? WHERE id = ? AND run_id IS NULL", runId, msgId);
   await run(c.env.DB, "UPDATE conversations SET updated_at = ? WHERE id = ?", now, convId);
@@ -88,7 +121,9 @@ runRoutes.use("*", requireUser);
 runRoutes.post("/projects/:id/runs", async (c) => {
   const project = await getProject(c, toId(c.req.param("id")));
   const body = await jsonBody(c.req.raw);
-  const input = reqStr(body, "input", { label: "mensaje", min: 1, max: 50_000 });
+  const attachments = await resolveAttachments(c.env, project.id, body.attachment_ids);
+  const input = str(body, "input", { label: "mensaje", max: 50_000, optional: true }) || (attachments.length ? "Analiza los archivos adjuntos." : "");
+  if (!input) fail(422, "Escribe un mensaje o adjunta un archivo.");
   let convId: number;
   if (body.conversation_id) {
     convId = (await getConversation(c.env, project.id, toId(String(body.conversation_id)))).id;
@@ -97,7 +132,7 @@ runRoutes.post("/projects/:id/runs", async (c) => {
     const title = input.split("\n")[0].slice(0, 60) || "Conversación";
     convId = await run(c.env.DB, "INSERT INTO conversations (project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?)", project.id, title, now, now);
   }
-  const runId = await createRun(c, project, convId, input, null, null);
+  const runId = await createRun(c, project, convId, input, null, null, attachments);
   return c.json(await runOut(c.env, await runForUser(c, runId)));
 });
 
@@ -162,7 +197,7 @@ runRoutes.post("/runs/:id/retry", async (c) => {
   const r = await runForUser(c, toId(c.req.param("id")));
   if (!["failed", "stopped", "cancelled"].includes(r.status)) fail(409, "Solo se pueden reintentar ejecuciones fallidas, detenidas o canceladas.");
   const project = await getProject(c, r.project_id);
-  const newId = await createRun(c, project, r.conversation_id, r.input, r.user_message_id, r.id);
+  const newId = await createRun(c, project, r.conversation_id, r.input, r.user_message_id, r.id, loads(r.attachments_json, []));
   return c.json(await runOut(c.env, await runForUser(c, newId)));
 });
 

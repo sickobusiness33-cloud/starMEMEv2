@@ -33,14 +33,6 @@
   color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #111215; --dot: #2a2c31; --card: #1a1b1f; --ink: #eef0f3; --muted: #a2a7b0; --faint: #6c717a;
-    --line: #e6e8ec; --soft: #25272c; --track: #2a2d33; --shadow: 3px 4px 0 #000;
-    color-scheme: dark;
-  }
-}
-
 * { box-sizing: border-box; }
 html, body { margin: 0; }
 body {
@@ -255,11 +247,6 @@ details summary { cursor: pointer; font-weight: 700; }
 .bus .handle.run { animation: busmove 3.2s ease-in-out infinite; }
 @keyframes busmove { 0%, 100% { top: 34px; } 50% { top: calc(100% - 64px); } }
 .bus .label { writing-mode: vertical-rl; color: #fff; font-size: 11.5px; font-weight: 700; letter-spacing: .5em; text-transform: uppercase; }
-.wire { fill: none; stroke: var(--ink); stroke-width: 1.2; opacity: .75; }
-.wire.faint { opacity: .18; stroke-width: 1; }
-.wire.hot { stroke: var(--glow); stroke-width: 2; opacity: 1; stroke-dasharray: 6 8; animation: flow 1s linear infinite; filter: drop-shadow(0 0 4px rgba(31, 163, 255, .9)); }
-@keyframes flow { to { stroke-dashoffset: -28; } }
-.jn { fill: var(--glow); }
 .panels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
 .rlog { display: grid; grid-template-columns: 46px minmax(0, 1.1fr) minmax(0, 1fr) 54px 64px; gap: 3px 10px; font-size: 11.5px; align-items: center; }
 .rlog .t { color: var(--faint); }
@@ -326,4 +313,111 @@ details summary { cursor: pointer; font-weight: 700; }
 @media (prefers-reduced-motion: reduce) {
   .spin, .wire.hot, .bus .handle.run { animation: none; }
   .btn:hover { transform: none; }
+}
+
+
+/* ================= Animación "2050" ================================== */
+.stats-fixed { display: contents; }
+main > * { animation: viewIn .45s cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes viewIn { from { opacity: 0; transform: translateY(8px); } }
+.card, .btn { transition: transform .18s ease, box-shadow .18s ease; }
+.btn:hover { box-shadow: 3px 4px 0 var(--line), 0 0 0 3px rgba(31, 163, 255, .15); }
+
+/* Nodos: entrada escalonada, hover y estado activo con halo que late */
+.map.intro .node { animation: nodeIn .7s cubic-bezier(.2, .9, .2, 1.1) both; animation-delay: calc(var(--k, 0) * 70ms + 150ms); }
+@keyframes nodeIn { from { opacity: 0; transform: translateY(14px) scale(.96); filter: blur(2px); } }
+.map .node:hover { transform: translate(-2px, -3px); box-shadow: 5px 7px 0 var(--line); }
+.map .node.active { animation: haloPulse 2.2s ease-in-out infinite; }
+@keyframes haloPulse {
+  0%, 100% { box-shadow: 3px 4px 0 var(--line), 0 0 0 3px rgba(31, 163, 255, .30), 0 0 22px rgba(31, 163, 255, .45); }
+  50% { box-shadow: 3px 4px 0 var(--line), 0 0 0 5px rgba(31, 163, 255, .18), 0 0 42px rgba(31, 163, 255, .75); }
+}
+.node.active .node-h::after { background: var(--glow); box-shadow: 0 0 0 0 rgba(31, 163, 255, .7); animation: ping 1.4s ease-out infinite; }
+@keyframes ping { to { box-shadow: 0 0 0 9px rgba(31, 163, 255, 0); } }
+.node-h { position: relative; overflow: hidden; }
+.node.running .node-h::before {
+  content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, .55) 50%, transparent 80%);
+  transform: translateX(-100%); animation: sweep 1.8s ease-in-out infinite;
+}
+@keyframes sweep { to { transform: translateX(100%); } }
+
+/* Valores que cambian: destello azul */
+b.flash { animation: flash 1.2s ease-out; }
+@keyframes flash { 0% { color: var(--glow); text-shadow: 0 0 10px rgba(31, 163, 255, .9); } 100% { color: inherit; text-shadow: none; } }
+
+/* Bus central: brillo que baja, tirador en movimiento, halo si hay trabajo */
+.bus { overflow: hidden; }
+.bus .sheen { position: absolute; left: 0; right: 0; height: 30%; top: -30%;
+  background: linear-gradient(180deg, transparent, rgba(31, 163, 255, .35), transparent); animation: sheen 3.6s linear infinite; }
+@keyframes sheen { to { top: 100%; } }
+.bus .handle { animation: busmove 7s ease-in-out infinite; }
+.bus.running .handle { animation-duration: 2.6s; box-shadow: 0 0 16px rgba(247, 193, 46, .9); }
+.bus.running { box-shadow: 0 0 0 2px #0e0f11, 0 0 36px rgba(31, 163, 255, .45); }
+.bus .label { position: relative; z-index: 1; }
+.bus.running .label { animation: blink 2.4s ease-in-out infinite; }
+@keyframes blink { 50% { opacity: .55; } }
+
+/* Cables */
+.wire { fill: none; stroke: #16181c; stroke-width: 1.15; opacity: .7; }
+.wire.faint { stroke-width: .8; opacity: .14; animation: breathe 5s ease-in-out infinite; animation-delay: var(--d, 0s); }
+@keyframes breathe { 50% { opacity: .32; } }
+.map.intro .g-main .wire:not(.hot), .map.intro .g-faint .wire { stroke-dasharray: 1400; stroke-dashoffset: 1400; animation: drawIn 1.6s cubic-bezier(.3, .7, .2, 1) .35s forwards, breathe 5s ease-in-out 2s infinite; }
+@keyframes drawIn { to { stroke-dashoffset: 0; } }
+.wire.hot { stroke: var(--glow); stroke-width: 2; opacity: 1; stroke-dasharray: 5 7; animation: flow .9s linear infinite; }
+@keyframes flow { to { stroke-dashoffset: -24; } }
+.wire.halo { stroke: var(--glow); stroke-width: 12; opacity: .35; fill: none; animation: haloWire 2.2s ease-in-out infinite; }
+@keyframes haloWire { 50% { opacity: .6; stroke-width: 18; } }
+.wire-ghost { fill: none; stroke: none; }
+.spark { fill: #7fd3ff; filter: drop-shadow(0 0 3px rgba(31, 163, 255, .95)); }
+.spark.hot { fill: #fff; filter: drop-shadow(0 0 5px rgba(31, 163, 255, 1)) drop-shadow(0 0 10px rgba(31, 163, 255, .8)); }
+.jn { fill: var(--glow); }
+.jn.pulse { animation: jnPulse 1.3s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes jnPulse { 50% { transform: scale(1.8); opacity: .6; } }
+.jn.port-glow { fill: #0e0f11; }
+
+/* Run log: filas nuevas que entran y cursor parpadeante */
+.rlog .rl-row { display: contents; }
+.rlog .rl-row > * { transition: background .3s; }
+.rlog .rl-row.fresh > * { animation: rowIn .6s ease-out both; }
+@keyframes rowIn { from { opacity: 0; transform: translateX(-10px); background: rgba(31, 163, 255, .2); } }
+.rlog .rl-row.cur .t { position: relative; }
+.rlog .rl-row.cur .t::before { content: ""; position: absolute; left: -9px; top: 2px; bottom: 2px; width: 3px; background: var(--glow); animation: blink 1s steps(2) infinite; }
+.rlog a.a { color: inherit; text-decoration: none; }
+.rlog a.a:hover { color: var(--glow); }
+
+/* Dispatch: barras que se llenan en cascada y punta viva */
+.panel-card { animation: viewIn .6s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(var(--k, 0) * 90ms + 250ms); }
+.segbar i { transition: background .4s; }
+.segbar i.on, .segbar i.tip { animation: segIn .5s ease-out both; animation-delay: calc(var(--i) * 25ms); }
+@keyframes segIn { from { background: var(--track); } }
+.segbar.live i.tip { animation: tipBlink .7s ease-in-out infinite; }
+@keyframes tipBlink { 50% { background: #d2efff; box-shadow: 0 0 8px rgba(31, 163, 255, .9); } }
+
+/* Sparkline que se dibuja */
+.spark path { stroke-linejoin: round; }
+.spark.draw path { stroke-dasharray: 700; stroke-dashoffset: 700; animation: drawIn 1.8s ease-out .4s forwards; }
+
+/* Etiqueta LIVE que late */
+.live { animation: livePulse 1.6s ease-in-out infinite; }
+@keyframes livePulse { 50% { box-shadow: 0 0 0 4px rgba(234, 59, 75, .18); } }
+
+/* Adjuntos en el chat */
+.chat-main { position: relative; }
+.att-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.att-chip { display: inline-flex; align-items: center; gap: 6px; border: 2px solid var(--line); border-radius: 6px; padding: 2px 4px 2px 8px;
+  background: var(--card); font-size: 11.5px; box-shadow: 2px 2px 0 var(--line); color: var(--ink); text-decoration: none; animation: viewIn .3s ease-out both; }
+.att-chip .att-ico { color: var(--glow); font-weight: 700; }
+.att-chip .att-name { font-weight: 700; }
+.att-chip.subiendo { border-style: dashed; }
+.att-chip.subiendo .att-ico { animation: blink .8s infinite; }
+.att-chip.error { border-color: var(--err); color: var(--err); }
+.att-x { border: none; background: none; cursor: pointer; font-size: 15px; line-height: 1; padding: 0 4px; color: var(--muted); }
+.btn.clip { font-size: 15px; padding: 5px 10px; }
+.dropzone { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; border: 3px dashed var(--glow);
+  border-radius: 10px; background: rgba(31, 163, 255, .08); backdrop-filter: blur(2px); font-weight: 700; color: var(--glow); z-index: 5; pointer-events: none; }
+.chat-main.dragging .dropzone { display: flex; animation: viewIn .2s ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .map.intro .g-main .wire, .map.intro .g-faint .wire { stroke-dashoffset: 0; }
 }

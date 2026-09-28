@@ -15,7 +15,7 @@ import { all, dumps, loads, nowIso, one, run } from "./db";
 import type { Env, Settings } from "./env";
 import { DEFAULT_LIMITS } from "./projects";
 import { ProviderError, getProvider, markUsed } from "./providers";
-import type { ToolCall, ToolOutcome } from "./providers/base";
+import type { Attachment, Provider, ToolCall, ToolOutcome } from "./providers/base";
 import { TOOLS, execute, requiresConfirmation, toolDef, toolsForModel, untrusted } from "./tools";
 
 export const ACTIVE = ["pending", "running", "awaiting_confirmation"];
@@ -38,7 +38,7 @@ export async function buildSystemPrompt(env: Env, project: any): Promise<string>
   ];
   const files = await all<any>(
     env.DB,
-    "SELECT name, content FROM project_files WHERE project_id = ? AND include_in_context = 1 ORDER BY name",
+    "SELECT name, content FROM project_files WHERE project_id = ? AND include_in_context = 1 AND data_b64 IS NULL ORDER BY name",
     project.id,
   );
   let budget = MAX_CONTEXT_FILE_CHARS;
@@ -55,6 +55,32 @@ export async function buildSystemPrompt(env: Env, project: any): Promise<string>
     }
   }
   return parts.join("\n");
+}
+
+/** Carga los adjuntos (del proyecto de la ejecución) para enviarlos al modelo. */
+async function loadAttachments(env: Env, projectId: number, ids: number[]): Promise<Attachment[]> {
+  const out: Attachment[] = [];
+  for (const id of ids) {
+    const f = await one<any>(env.DB, "SELECT name, mime, size, content, data_b64 FROM project_files WHERE id = ? AND project_id = ?", id, projectId);
+    if (!f) continue; // borrado después de enviarlo
+    out.push(f.data_b64 ? { name: f.name, mime: f.mime, size: f.size, b64: f.data_b64 } : { name: f.name, mime: f.mime, size: f.size, text: f.content });
+  }
+  return out;
+}
+
+/** La transcripción guarda solo referencias a los adjuntos; aquí se expanden. */
+async function expand(env: Env, projectId: number, provider: Provider, transcript: any[], cache: Map<string, any>) {
+  const out = [];
+  for (const m of transcript) {
+    if (!m?.__att) {
+      out.push(m);
+      continue;
+    }
+    const key = JSON.stringify(m.__att);
+    if (!cache.has(key)) cache.set(key, provider.userMessage(m.content, await loadAttachments(env, projectId, m.__att)));
+    out.push(cache.get(key));
+  }
+  return out;
 }
 
 /** Escribe en la ejecución solo si sigue en `running` (no pisa un Detener/Cancelar). */
@@ -141,14 +167,19 @@ async function execute_(env: Env, settings: Settings, runRow: any, signal: Abort
   if (!transcript.length) {
     const rows = await all<any>(
       env.DB,
-      "SELECT role, content FROM messages WHERE conversation_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
+      "SELECT role, content, attachments_json FROM messages WHERE conversation_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
       runRow.conversation_id,
       runRow.user_message_id ?? Number.MAX_SAFE_INTEGER,
       limits.history_messages,
     );
-    const history = rows.reverse().map((r) => [r.role, r.content] as [string, string]);
+    const history = rows.reverse().map((r) => {
+      const names = loads<any[]>(r.attachments_json, []).map((a) => a.name);
+      return [r.role, names.length ? `${r.content}\n[Adjuntos en ese mensaje: ${names.join(", ")}]` : r.content] as [string, string];
+    });
     while (history.length && history[0][0] !== "user") history.shift();
-    transcript = [...provider.historyMessages(history), { role: "user", content: runRow.input }];
+    const attIds = loads<any[]>(runRow.attachments_json, []).map((a) => Number(a.id)).filter(Boolean);
+    const first = attIds.length ? { role: "user", content: runRow.input, __att: attIds } : { role: "user", content: runRow.input };
+    transcript = [...provider.historyMessages(history), first];
   }
 
   const pending: any[] = state.pending_calls ?? [];
@@ -167,6 +198,7 @@ async function execute_(env: Env, settings: Settings, runRow: any, signal: Abort
   const system = await buildSystemPrompt(env, project);
   const offered = await toolsForModel(env, project);
   const offeredIds = new Set(offered.map((t) => t.id));
+  const attCache = new Map<string, any>();
 
   while (true) {
     if (steps >= limits.max_tool_steps) {
@@ -179,7 +211,14 @@ async function execute_(env: Env, settings: Settings, runRow: any, signal: Abort
       }
       return;
     }
-    const result = await provider.step({ model: runRow.model, system, transcript, tools: offered.map(toolDef), params, signal });
+    const result = await provider.step({
+      model: runRow.model,
+      system,
+      transcript: await expand(env, project.id, provider, transcript, attCache),
+      tools: offered.map(toolDef),
+      params,
+      signal,
+    });
     await markUsed(env, runRow.user_id, runRow.provider);
     steps += 1;
     for (const [k, v] of Object.entries(result.usage)) usage[k] = (usage[k] ?? 0) + Number(v || 0);

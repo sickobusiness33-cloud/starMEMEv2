@@ -16,7 +16,29 @@ const EXTENSIONS = [
   ".txt", ".md", ".json", ".csv", ".tsv", ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css",
   ".yaml", ".yml", ".xml", ".log", ".toml", ".ini", ".sql", ".sh",
 ];
-const FILE_NAME_RE = /^[\p{L}\p{N}_\-. ]{1,120}$/u;
+const FILE_NAME_RE = /^[\p{L}\p{N}_\-. ()]{1,120}$/u;
+// Binarios que la IA puede leer directamente (Claude: imágenes y PDF).
+export const BINARY_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".pdf": "application/pdf",
+};
+export const MAX_BINARY_BYTES = 1_000_000;
+
+function toB64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+function renamed(name: string, n: number): string {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? `${name.slice(0, dot)} (${n})${name.slice(dot)}` : `${name} (${n})`;
+}
 
 export async function projectOut(env: Env, row: any) {
   const stats = await one<any>(
@@ -180,10 +202,12 @@ projectRoutes.delete("/:id", async (c) => {
 
 // --- Archivos ----------------------------------------------------------------
 
-const fileOut = (r: any) => ({
+export const fileOut = (r: any) => ({
   id: r.id,
   name: r.name,
   size: r.size,
+  mime: r.mime ?? "text/plain",
+  kind: String(r.mime ?? "").startsWith("image/") ? "imagen" : r.mime === "application/pdf" ? "pdf" : "texto",
   created_by: r.created_by,
   created_at: r.created_at,
   include_in_context: Boolean(r.include_in_context),
@@ -199,7 +223,7 @@ projectRoutes.get("/:id/files", async (c) => {
   const p = await getProject(c, toId(c.req.param("id")));
   const rows = await all<any>(
     c.env.DB,
-    "SELECT id, name, size, include_in_context, created_by, created_at FROM project_files WHERE project_id = ? ORDER BY name",
+    "SELECT id, name, size, mime, include_in_context, created_by, created_at FROM project_files WHERE project_id = ? ORDER BY name",
     p.id,
   );
   return c.json(rows.map(fileOut));
@@ -213,29 +237,45 @@ projectRoutes.post("/:id/files", async (c) => {
   const file = form.file;
   if (!(file instanceof File)) fail(422, "Adjunta un archivo en el campo «file».");
   const f = file as File;
-  const name = f.name.split(/[\\/]/).pop()!.trim();
+  let name = (f.name || "archivo").split(/[\\/]/).pop()!.trim().replace(/[^\p{L}\p{N}_\-. ()]/gu, "_").slice(0, 120);
   if (!FILE_NAME_RE.test(name)) fail(422, "Nombre de archivo no válido (letras, números, espacios, - _ .).");
   const ext = name.includes(".") ? name.slice(name.lastIndexOf(".")).toLowerCase() : "";
-  if (!EXTENSIONS.includes(ext)) fail(422, `Tipo no admitido. Solo texto: ${EXTENSIONS.join(", ")}`);
-  if (f.size > max) fail(413, `El archivo supera el máximo de ${Math.round(max / 1024)} KB.`);
-  let content: string;
-  try {
-    content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(await f.arrayBuffer());
-  } catch {
-    return fail(422, "El archivo no es texto UTF-8.");
+  const binaryMime = BINARY_TYPES[ext];
+  if (!binaryMime && !EXTENSIONS.includes(ext)) {
+    fail(422, `Tipo no admitido. Texto/código (${EXTENSIONS.join(" ")}), imágenes (png jpg gif webp) o PDF.`);
   }
-  if (await one(c.env.DB, "SELECT id FROM project_files WHERE project_id = ? AND name = ?", p.id, name)) {
-    fail(409, "Ya existe un archivo con ese nombre en el proyecto.");
+  const limit = binaryMime ? MAX_BINARY_BYTES : max;
+  if (f.size > limit) fail(413, `«${name}» supera el máximo de ${Math.round(limit / 1024)} KB.`);
+  const buf = await f.arrayBuffer();
+  let content = "";
+  let dataB64: string | null = null;
+  if (binaryMime) {
+    dataB64 = toB64(buf);
+  } else {
+    try {
+      content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(buf);
+    } catch {
+      return fail(422, "El archivo no es texto UTF-8.");
+    }
+  }
+  // Desde el chat se renombra solo si ya existe; desde Archivos se avisa.
+  const autoRename = c.req.query("auto_rename") === "true";
+  for (let n = 2; await one(c.env.DB, "SELECT id FROM project_files WHERE project_id = ? AND name = ?", p.id, name); n++) {
+    if (!autoRename) fail(409, "Ya existe un archivo con ese nombre en el proyecto.");
+    name = renamed(name.replace(/ \(\d+\)(?=\.[^.]+$|$)/, ""), n);
+    if (n > 50) fail(409, "Demasiados archivos con el mismo nombre.");
   }
   const id = await run(
     c.env.DB,
-    "INSERT INTO project_files (project_id, name, content, size, include_in_context, created_by, created_at) VALUES (?, ?, ?, ?, 0, ?, ?)",
+    "INSERT INTO project_files (project_id, name, content, size, include_in_context, created_by, created_at, mime, data_b64) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)",
     p.id,
     name,
     content,
     f.size,
     u.email,
     nowIso(),
+    binaryMime ?? "text/plain",
+    dataB64,
   );
   await record(c.env.DB, { actor: u.email, userId: u.id, projectId: p.id, action: "archivo.subir", target: name, detail: `${f.size} bytes` });
   return c.json(fileOut(await getFile(c.env, p.id, id)));
@@ -253,10 +293,12 @@ projectRoutes.patch("/:id/files/:fid", async (c) => {
 projectRoutes.get("/:id/files/:fid/download", async (c) => {
   const p = await getProject(c, toId(c.req.param("id")));
   const row = await getFile(c.env, p.id, toId(c.req.param("fid")));
-  // Siempre adjunto de texto plano: nunca se interpreta como HTML.
-  return new Response(row.content, {
+  // Siempre como descarga y nunca interpretado como HTML.
+  const binary = Boolean(row.data_b64);
+  const body = binary ? Uint8Array.from(atob(row.data_b64), (ch) => ch.charCodeAt(0)) : row.content;
+  return new Response(body, {
     headers: {
-      "Content-Type": "text/plain; charset=utf-8",
+      "Content-Type": binary ? row.mime : "text/plain; charset=utf-8",
       "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(row.name)}`,
       "X-Content-Type-Options": "nosniff",
     },
@@ -340,7 +382,8 @@ projectRoutes.get("/:id/conversations", async (c) => {
 projectRoutes.get("/:id/conversations/:cid", async (c) => {
   const p = await getProject(c, toId(c.req.param("id")));
   const conv = await getConversation(c.env, p.id, toId(c.req.param("cid")));
-  const messages = await all(c.env.DB, "SELECT * FROM messages WHERE conversation_id = ? ORDER BY id", conv.id);
+  const rows = await all<any>(c.env.DB, "SELECT * FROM messages WHERE conversation_id = ? ORDER BY id", conv.id);
+  const messages = rows.map(({ attachments_json, ...m }) => ({ ...m, attachments: loads(attachments_json, []) }));
   return c.json({ conversation: conv, messages });
 });
 

@@ -2,7 +2,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { redact } from "../crypto";
-import { MAX_TOKENS, type ParamSpec, Provider, ProviderError, type StepArgs, type StepResult, type ToolOutcome } from "./base";
+import { type Attachment, MAX_TOKENS, type ParamSpec, wrapUntrusted, Provider, ProviderError, type StepArgs, type StepResult, type ToolOutcome } from "./base";
 
 // sampling: acepta temperature (los modelos nuevos la rechazan con 400).
 // effort: acepta output_config.effort.
@@ -77,6 +77,21 @@ export class AnthropicProvider extends Provider {
   async test() {
     const models = await this.listModels();
     return `Conexión correcta. ${models.length} modelos disponibles con tu API key.`;
+  }
+
+  // Claude lee imágenes y PDF de forma nativa (bloques image/document).
+  userMessage(text: string, atts: Attachment[]) {
+    const content: any[] = [];
+    for (const a of atts) {
+      if (a.text !== undefined) content.push({ type: "text", text: wrapUntrusted(`adjunto:${a.name}`, a.text) });
+      else if (a.mime === "application/pdf") {
+        content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: a.b64 }, title: a.name });
+      } else if (a.mime.startsWith("image/")) {
+        content.push({ type: "image", source: { type: "base64", media_type: a.mime, data: a.b64 } });
+      }
+    }
+    content.push({ type: "text", text: text || "(sin texto)" });
+    return { role: "user", content };
   }
 
   async step({ model, system, transcript, tools, params, signal }: StepArgs): Promise<StepResult> {

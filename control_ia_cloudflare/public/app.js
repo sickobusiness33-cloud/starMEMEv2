@@ -310,6 +310,10 @@ function route() {
   const r = parseRoute();
   const main = h("main", { id: "main", tabindex: "-1" });
   const stats = h("div", { class: "stats", "aria-label": "Resumen" });
+  const fixed = h("span", { class: "stats-fixed" });
+  const tEl = h("b", {}, "00.00"), fEl = h("b", {}, "0000");
+  stats.append(fixed, h("span", {}, "T", tEl), h("span", {}, "Frame", fEl));
+  startClock(tEl, fEl);
   const pendingBadge = h("span", { class: "count", hidden: true });
   const nav = h("nav", { class: "nav", "aria-label": "Secciones" }, NAV.map(([key, label, icon]) =>
     h("a", { href: `#/${key}`, "aria-current": r.section === key ? "page" : null },
@@ -324,13 +328,13 @@ function route() {
   const refreshStats = async () => {
     const [runs, actions] = await Promise.all([api("GET", "/api/runs?active=true"), api("GET", "/api/actions?status=pending")]);
     const running = runs.filter((x) => x.status === "running").length;
-    stats.replaceChildren(
-      h("span", {}, "Proyectos", h("b", {}, S.projects.length || "·")),
-      h("span", { class: "hl" }, "Activas", h("b", {}, runs.length)),
-      h("span", {}, "Run", h("b", {}, running)),
-      h("span", {}, "Cola", h("b", {}, runs.filter((x) => x.status === "pending").length)),
-      h("span", { class: actions.length ? "hl" : null }, "Confirmar", h("b", {}, actions.length)),
-      h("span", {}, "T", h("b", {}, new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }))));
+    const d = S.dash || {};
+    fixed.replaceChildren(
+      h("span", {}, "Files", h("b", {}, d.files ?? (S.projects.length ? "·" : 0))),
+      h("span", { class: "hl" }, "Edges", h("b", {}, d.edges ?? "·")),
+      h("span", {}, "Bus readers", h("b", {}, d.readers ?? "·")),
+      h("span", {}, "Depth", h("b", {}, running)),
+      h("span", { class: actions.length ? "hl" : null }, "Confirm", h("b", {}, actions.length)));
     pendingBadge.hidden = !actions.length;
     pendingBadge.textContent = actions.length;
     pendingBadge.setAttribute("aria-label", `${actions.length} acciones por confirmar`);
@@ -578,9 +582,37 @@ async function sendResult(project, text) {
 async function tabChat(panel, project) {
   const convList = h("ul", { class: "convs", "aria-label": "Conversaciones" });
   const timeline = h("div", { class: "msgs", "aria-live": "polite", "aria-label": "Historial de la conversación" });
-  const input = h("textarea", { id: "composer", required: true, maxlength: 50000, placeholder: "Describe la tarea para la IA… (Ctrl+Enter para enviar)" });
+  const input = h("textarea", { id: "composer", maxlength: 50000, placeholder: "Describe la tarea o arrastra archivos aquí… (Ctrl+Enter para enviar)" });
   const send = h("button", { class: "btn primary", type: "submit" }, "▶ Ejecutar");
-  const form = h("form", { class: "composer", novalidate: true }, h("div", { class: "grow" }, h("label", { for: "composer" }, "Mensaje"), input), send);
+  // --- Adjuntos: 📎, arrastrar y soltar, o pegar imágenes -----------------
+  const attachments = []; // { id?, name, size, mime, state: "subiendo"|"listo"|"error", error? }
+  const chips = h("div", { class: "att-chips", "aria-live": "polite" });
+  const picker = h("input", { type: "file", multiple: true, class: "sr", id: "att-picker", tabindex: "-1",
+    accept: ".png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.md,.json,.csv,.tsv,.py,.js,.ts,.tsx,.jsx,.html,.css,.yaml,.yml,.xml,.log,.toml,.ini,.sql,.sh" });
+  const clip = h("button", { class: "btn clip", type: "button", title: "Adjuntar archivos (PDF, imágenes, texto, código)", "aria-label": "Adjuntar archivos",
+    onclick: () => picker.click() }, "📎");
+  const renderChips = () => chips.replaceChildren(...attachments.map((a, i) => h("span", { class: `att-chip ${a.state}` },
+    h("span", { class: "att-ico", "aria-hidden": "true" }, a.mime?.startsWith("image/") ? "▣" : a.mime === "application/pdf" ? "▤" : "≡"),
+    h("span", { class: "att-name" }, trunc(a.name, 28)),
+    h("span", { class: "muted" }, a.state === "subiendo" ? "subiendo…" : a.state === "error" ? a.error : fmtBytes(a.size)),
+    h("button", { type: "button", class: "att-x", "aria-label": `Quitar ${a.name}`, onclick: () => { attachments.splice(i, 1); renderChips(); } }, "×"))));
+  const uploadFiles = async (files) => {
+    for (const file of files) {
+      if (attachments.length >= 10) { toast("Máximo 10 archivos por mensaje.", true); break; }
+      const a = { name: file.name || "imagen-pegada.png", size: file.size, mime: file.type, state: "subiendo" };
+      attachments.push(a); renderChips();
+      try {
+        const fd = new FormData(); fd.append("file", file, a.name);
+        const res = await api("POST", `/api/projects/${project.id}/files?auto_rename=true`, fd);
+        Object.assign(a, { id: res.id, name: res.name, mime: res.mime, size: res.size, state: "listo" });
+      } catch (err) { Object.assign(a, { state: "error", error: err.message }); }
+      renderChips();
+    }
+  };
+  picker.addEventListener("change", () => { uploadFiles([...picker.files]); picker.value = ""; });
+  const form = h("form", { class: "composer", novalidate: true },
+    h("div", { class: "grow" }, h("label", { for: "composer" }, "Mensaje"), chips, input), h("div", { class: "row" }, clip, send), picker);
+  const dropZone = h("div", { class: "dropzone", "aria-hidden": "true" }, h("span", {}, "▼ suelta los archivos para adjuntarlos"));
   let conversationId = Number(sessionStorage.getItem(`conv-${project.id}`)) || null;
   let conversations = [];
 
@@ -588,7 +620,20 @@ async function tabChat(panel, project) {
     h("div", { class: "stack" },
       h("button", { class: "btn small", type: "button", onclick: () => { conversationId = null; sessionStorage.removeItem(`conv-${project.id}`); renderConvs(); refresh(); input.focus(); } }, "+ Nueva conversación"),
       convList),
-    h("div", {}, timeline, form)));
+    h("div", { class: "chat-main" }, timeline, form, dropZone)));
+  const chatMain = panel.querySelector(".chat-main");
+  let dragDepth = 0;
+  chatMain.addEventListener("dragenter", (e) => { e.preventDefault(); dragDepth++; chatMain.classList.add("dragging"); });
+  chatMain.addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; chatMain.classList.remove("dragging"); } });
+  chatMain.addEventListener("dragover", (e) => e.preventDefault());
+  chatMain.addEventListener("drop", (e) => {
+    e.preventDefault(); dragDepth = 0; chatMain.classList.remove("dragging");
+    if (e.dataTransfer?.files?.length) uploadFiles([...e.dataTransfer.files]);
+  });
+  input.addEventListener("paste", (e) => {
+    const files = [...(e.clipboardData?.files || [])];
+    if (files.length) { e.preventDefault(); uploadFiles(files); }
+  });
 
   const renderConvs = () => {
     convList.replaceChildren(...conversations.map((c) => h("li", {}, h("button", { type: "button", "aria-current": c.id === conversationId ? "true" : null,
@@ -614,7 +659,11 @@ async function tabChat(panel, project) {
     const assistantByRun = new Map(detail.messages.filter((m) => m.role === "assistant").map((m) => [m.run_id, m]));
     const nodes = [];
     for (const m of detail.messages.filter((x) => x.role === "user")) {
-      nodes.push(h("div", { class: "msg user" }, h("div", { class: "meta" }, "Tú · ", fmtTime(m.created_at)), h("div", { class: "pre" }, m.content)));
+      nodes.push(h("div", { class: "msg user" }, h("div", { class: "meta" }, "Tú · ", fmtTime(m.created_at)), h("div", { class: "pre" }, m.content),
+        (m.attachments || []).length ? h("div", { class: "att-chips", style: "margin:6px 0 0" }, m.attachments.map((a) =>
+          h("a", { class: "att-chip listo", href: `/api/projects/${project.id}/files/${a.id}/download`, title: "Descargar" },
+            h("span", { class: "att-ico", "aria-hidden": "true" }, a.mime?.startsWith("image/") ? "▣" : a.mime === "application/pdf" ? "▤" : "≡"),
+            h("span", { class: "att-name" }, trunc(a.name, 28)), h("span", { class: "muted" }, fmtBytes(a.size))))) : null));
       for (const run of byMsg.get(m.id) || []) {
         const answer = assistantByRun.get(run.id);
         if (run.status === "completed" && answer) {
@@ -639,18 +688,20 @@ async function tabChat(panel, project) {
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    if (!validateForm(form)) return;
+    if (attachments.some((a) => a.state === "subiendo")) { toast("Espera a que terminen de subir los adjuntos.", true); return; }
+    const ready = attachments.filter((a) => a.state === "listo");
+    if (!input.value.trim() && !ready.length) { toast("Escribe un mensaje o adjunta un archivo.", true); input.focus(); return; }
     send.disabled = true;
     try {
-      const run = await api("POST", `/api/projects/${project.id}/runs`, { input: input.value, conversation_id: conversationId });
+      const run = await api("POST", `/api/projects/${project.id}/runs`, { input: input.value, conversation_id: conversationId, attachment_ids: ready.map((a) => a.id) });
       conversationId = run.conversation_id; sessionStorage.setItem(`conv-${project.id}`, conversationId);
-      input.value = "";
+      input.value = ""; attachments.length = 0; renderChips();
       await refresh();
     } catch (err) { toast(err.message, true); }
     finally { send.disabled = false; input.focus(); }
   });
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) form.requestSubmit(); });
-  if (project.status === "archived") { input.disabled = true; send.disabled = true; input.placeholder = "Proyecto archivado: restáuralo en Ajustes para ejecutar tareas."; }
+  if (project.status === "archived") { input.disabled = true; send.disabled = true; clip.disabled = true; input.placeholder = "Proyecto archivado: restáuralo en Ajustes para ejecutar tareas."; }
 
   await refresh();
   every(1500, async () => { await refresh(); });
@@ -703,12 +754,12 @@ async function tabRuns(panel, project) {
 
 async function tabFiles(panel, project) {
   const list = h("div", { class: "table-wrap" });
-  const fileInput = h("input", { type: "file", id: "upload", accept: ".txt,.md,.json,.csv,.tsv,.py,.js,.ts,.html,.css,.yaml,.yml,.xml,.log,.toml,.ini,.sql,.sh" });
+  const fileInput = h("input", { type: "file", id: "upload", accept: ".png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.md,.json,.csv,.tsv,.py,.js,.ts,.tsx,.jsx,.html,.css,.yaml,.yml,.xml,.log,.toml,.ini,.sql,.sh" });
   const upload = h("button", { class: "btn primary", type: "button" }, "Subir archivo");
   const maxKb = Math.round(S.catalog.settings.max_file_bytes / 1024);
   panel.replaceChildren(h("div", { class: "stack" },
     h("div", { class: "row" }, h("label", { for: "upload", class: "sr" }, "Archivo"), fileInput, upload),
-    h("p", { class: "help" }, `Solo texto UTF-8, máx. ${maxKb} KB. Marca «En contexto» para que el modelo lo reciba en cada tarea (como datos, nunca como órdenes).`),
+    h("p", { class: "help" }, `Texto/código (máx. ${maxKb} KB), imágenes y PDF (máx. 1 MB). «En contexto» envía un archivo de texto en cada tarea; imágenes y PDF se adjuntan desde el chat.`),
     list));
   const load = async () => {
     const files = await api("GET", `/api/projects/${project.id}/files`);
@@ -733,7 +784,8 @@ async function tabFiles(panel, project) {
   upload.addEventListener("click", () => withBusy(upload, async () => {
     const file = fileInput.files[0];
     if (!file) throw new Error("Elige un archivo primero.");
-    if (file.size > S.catalog.settings.max_file_bytes) throw new Error(`El archivo supera ${maxKb} KB.`);
+    const binary = /\.(png|jpe?g|gif|webp|pdf)$/i.test(file.name);
+    if (file.size > (binary ? 1_000_000 : S.catalog.settings.max_file_bytes)) throw new Error(`El archivo supera ${binary ? 1000 : maxKb} KB.`);
     const fd = new FormData(); fd.append("file", file);
     await api("POST", `/api/projects/${project.id}/files`, fd);
     fileInput.value = ""; toast("Archivo subido"); await load();
@@ -1123,35 +1175,45 @@ async function viewSettings(main) {
 // ================================================================= PANEL (grafo)
 
 const SVGNS = "http://www.w3.org/2000/svg";
-const svg = (tag, attrs) => { const el = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); return el; };
+const svg = (tag, attrs = {}, ...kids) => { const el = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); kids.forEach((k) => el.append(k)); return el; };
 const PROVIDER_COLOR = { anthropic: "naranja", openai: "verde", demo: "turquesa" };
 const CONNECTOR_COLOR = { github: "morado", discord_webhook: "azul", slack_webhook: "rosa" };
 const pad2 = (n) => String(n).padStart(2, "0");
 const hhmm = (iso) => { if (!iso) return "—"; const d = new Date(iso); return `${pad2(d.getHours())}.${pad2(d.getMinutes())}`; };
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
 function dur(r) {
   if (!r.started_at) return "—";
   const ms = new Date(r.finished_at || Date.now()) - new Date(r.started_at);
   return ms < 10000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`;
 }
-function segbar(pct, n = 22, dark = false) {
+function segbar(pct, n = 22, dark = false, live = false) {
   const on = Math.round((Math.max(0, Math.min(100, pct)) / 100) * n);
-  return h("div", { class: "segbar" + (dark ? " dark" : ""), role: "img", "aria-label": `${Math.round(pct)}%` },
-    Array.from({ length: n }, (_, i) => h("i", { class: i < on ? (!dark && i === on - 1 && on < n ? "tip" : "on") : null })));
+  return h("div", { class: "segbar" + (dark ? " dark" : "") + (live ? " live" : ""), role: "img", "aria-label": `${Math.round(pct)}%` },
+    Array.from({ length: n }, (_, i) => h("i", { class: i < on ? (!dark && i === on - 1 && on < n ? "tip" : "on") : null, style: `--i:${i}` })));
+}
+
+// Recuerda valores anteriores para destellar solo lo que cambia.
+const prevVals = new Map();
+function val(key, v, style) {
+  const changed = prevVals.has(key) && prevVals.get(key) !== String(v);
+  prevVals.set(key, String(v));
+  return h("b", { class: changed ? "flash" : null, style }, v);
 }
 
 function projectNode(p, providers) {
-  const running = p.running > 0;
   const prov = providers.find((x) => x.id === p.provider);
-  return h("a", { class: "card node" + (p.active ? " active" : ""), href: `#/proyectos/${p.id}/chat`, "data-node": `p${p.id}`,
+  const k = `p${p.id}`;
+  return h("a", { class: "card node" + (p.active ? " active" : "") + (p.running ? " running" : ""), href: `#/proyectos/${p.id}/chat`, "data-node": k,
     "aria-label": `Proyecto ${p.name}: ${p.runs} tareas, ${p.active} activas` },
     h("div", { class: `node-h col-${p.color}` }, h("span", { class: "title" }, slug(p.name) + ".proj")),
     h("div", { class: "node-b" },
       h("div", { class: "chip" }, h("i", { class: `col-${PROVIDER_COLOR[p.provider] || "azul"}` }), p.model || "sin modelo"),
-      h("div", { class: "kv port" }, "tareas", h("b", {}, p.runs)),
-      h("div", { class: "kv port" }, "hoy", h("b", {}, `${p.runs_today}/${p.limit_per_day}`)),
-      p.failed ? h("div", { class: "kv port" }, "fallos", h("b", { style: "color:var(--err)" }, p.failed)) : h("div", { class: "kv port" }, "pasos", h("b", {}, p.steps)),
+      h("div", { class: "kv port" }, "tareas", val(`${k}.runs`, p.runs)),
+      h("div", { class: "kv port" }, "hoy", val(`${k}.today`, `${p.runs_today}/${p.limit_per_day}`)),
+      p.failed ? h("div", { class: "kv port" }, "fallos", val(`${k}.failed`, p.failed, "color:var(--err)")) : h("div", { class: "kv port" }, "pasos", val(`${k}.steps`, p.steps)),
       h("div", { class: "chk" + (p.status === "active" ? " on" : "") }, p.status === "archived" ? "archivado" : "activo"),
-      running ? h("div", { class: "row", style: "margin-top:4px" }, pill(RUN_STATUS, "running")) : p.active ? h("div", { class: "row", style: "margin-top:4px" }, h("span", { class: "pill st-warn" }, "wait")) : null,
+      p.running ? h("div", { class: "row", style: "margin-top:4px" }, pill(RUN_STATUS, "running"))
+        : p.active ? h("div", { class: "row", style: "margin-top:4px" }, h("span", { class: "pill st-warn" }, "wait")) : null,
       p.provider && (!prov || !prov.connected) ? h("div", { class: "small", style: "color:var(--warn);margin-top:4px" }, "! falta conectar la IA") : null));
 }
 
@@ -1160,76 +1222,143 @@ function sideNode(kind, item) {
   const color = isProv ? PROVIDER_COLOR[item.id] || "azul" : CONNECTOR_COLOR[item.type] || "morado";
   const title = isProv ? `${item.id}.ia` : `${slug(item.name)}.${item.type.split("_")[0]}`;
   const ok = isProv ? item.connected : item.status === "connected";
+  const k = isProv ? `ia-${item.id}` : `c${item.id}`;
   const stateLabel = isProv ? (item.is_demo ? "demo" : item.connected ? (item.status === "ok" ? "verificada" : item.status === "error" ? "error" : "sin probar") : "sin clave")
     : ({ connected: "verificado", error: "error", untested: "sin probar", pending_config: "pendiente" })[item.status] || item.status;
-  return h("a", { class: "card node", href: isProv ? "#/configuracion" : "#/conectores", "data-node": isProv ? `ia-${item.id}` : `c${item.id}`,
+  return h("a", { class: "card node", href: isProv ? "#/configuracion" : "#/conectores", "data-node": k,
     "aria-label": `${isProv ? "IA" : "Conector"} ${item.name}: ${stateLabel}` },
     h("div", { class: `node-h col-${color}` }, h("span", { class: "title" }, title)),
     h("div", { class: "node-b" },
       h("div", { class: "chk" + (ok ? " on" : "") }, isProv ? (item.connected ? "conectada" : "desconectada") : item.enabled ? "activo" : "inactivo"),
-      h("div", { class: "kv port" }, "estado", h("b", { style: !ok ? "color:var(--warn)" : null }, stateLabel)),
-      h("div", { class: "kv port" }, "uso", h("b", {}, item.last_used_at ? hhmm(item.last_used_at) : "—"))));
+      h("div", { class: "kv port" }, "estado", val(`${k}.st`, stateLabel, !ok ? "color:var(--warn)" : null)),
+      h("div", { class: "kv port" }, "uso", val(`${k}.use`, item.last_used_at ? hhmm(item.last_used_at) : "—"))));
 }
 
-function drawWires(map, data) {
-  map.querySelector("svg.wires")?.remove();
+// Dibuja los cables. Solo se redibuja si cambia la estructura (así las animaciones no saltan).
+let wireSig = "";
+function drawWires(map, data, force = false) {
   const box = map.getBoundingClientRect();
-  const bus = map.querySelector(".bus").getBoundingClientRect();
-  if (!box.width || getComputedStyle(map.querySelector(".col")).display === "none") return;
-  const layer = svg("svg", { class: "wires", "aria-hidden": "true" });
-  const bx1 = bus.left - box.left, bx2 = bus.right - box.left, bTop = bus.top - box.top + 20, bH = bus.height - 40;
-  const hot = new Set(data.projects.filter((p) => p.running || p.active).map((p) => `p${p.id}`));
+  const bus = map.querySelector(".bus")?.getBoundingClientRect();
+  if (!bus || !box.width || getComputedStyle(map).gridTemplateColumns.split(" ").length < 3) { map.querySelector("svg.wires")?.remove(); wireSig = ""; return; }
+  const hot = new Set(data.projects.filter((p) => p.active).map((p) => `p${p.id}`));
   const hotSide = new Set();
-  for (const p of data.projects) if (hot.has(`p${p.id}`)) { hotSide.add(`ia-${p.provider}`); p.connector_ids.forEach((c) => hotSide.add(`c${c}`)); }
-  let seed = 7;
-  const rnd = () => ((seed = (seed * 9301 + 49297) % 233280) / 233280);
-  const curve = (x1, y1, x2, y2, cls) => {
-    const mx = (x1 + x2) / 2;
-    layer.append(svg("path", { d: `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`, class: `wire ${cls}` }));
-  };
+  for (const p of data.projects) if (p.active) { hotSide.add(`ia-${p.provider}`); p.connector_ids.forEach((c) => hotSide.add(`c${c}`)); }
   const nodes = [...map.querySelectorAll("[data-node]")];
+  const sig = `${Math.round(box.width)}x${Math.round(box.height)}|${nodes.map((n) => n.dataset.node).join(",")}|${[...hot, ...hotSide].join(",")}`;
+  if (!force && sig === wireSig && map.querySelector("svg.wires")) return;
+  wireSig = sig;
+  map.querySelector("svg.wires")?.remove();
+
+  const layer = svg("svg", { class: "wires", "aria-hidden": "true" });
+  const defs = svg("defs");
+  const blur = svg("filter", { id: "glowblur", x: "-20%", y: "-20%", width: "140%", height: "140%" }, svg("feGaussianBlur", { stdDeviation: "6" }));
+  defs.append(blur);
+  layer.append(defs);
+  const gFaint = svg("g", { class: "g-faint" });
+  const gHalo = svg("g", { class: "g-halo", filter: "url(#glowblur)" });
+  const gMain = svg("g", { class: "g-main" });
+  const gFx = svg("g", { class: "g-fx" });
+  layer.append(gFaint, gHalo, gMain, gFx);
+
+  const bx1 = bus.left - box.left, bx2 = bus.right - box.left, bTop = bus.top - box.top + 24, bH = Math.max(40, bus.height - 48);
+  let seed = 11;
+  const rnd = () => ((seed = (seed * 9301 + 49297) % 233280) / 233280);
+  let pid = 0, edges = 0;
+  const curve = (x1, y1, x2, y2, bend = 0.5) => {
+    const mx = x1 + (x2 - x1) * bend;
+    return `M${x1.toFixed(1)},${y1.toFixed(1)} C${mx.toFixed(1)},${y1.toFixed(1)} ${mx.toFixed(1)},${y2.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`;
+  };
+  const particle = (d, durS, delay, big) => {
+    if (REDUCED) return;
+    const id = `w${pid++}`;
+    gFx.append(svg("path", { id, d, class: "wire-ghost" }));
+    const dot = svg("circle", { r: big ? 3.2 : 2, class: big ? "spark hot" : "spark" },
+      svg("animateMotion", { dur: `${durS}s`, begin: `${delay}s`, repeatCount: "indefinite", rotate: "auto" }, svg("mpath", { href: `#${id}` })));
+    gFx.append(dot);
+  };
+
   nodes.forEach((n, idx) => {
     const r = n.getBoundingClientRect();
-    const left = r.left + r.width / 2 < bus.left;
+    const left = r.left + r.width / 2 < bus.left + bus.width / 2;
     const key = n.dataset.node;
     const isHot = hot.has(key) || hotSide.has(key);
     const ports = [...n.querySelectorAll(".kv.port")].map((k) => k.getBoundingClientRect());
     const ys = ports.length ? ports.map((k) => k.top + k.height / 2 - box.top) : [r.top + r.height / 2 - box.top];
-    const x = left ? r.right - box.left + 6 : r.left - box.left - 6;
+    const x = left ? r.right - box.left + 5 : r.left - box.left - 5;
     const bx = left ? bx1 : bx2;
+    // Maraña de fondo, como en el vídeo: muchas curvas tenues que "respiran".
+    for (let k = 0; k < 9; k++) {
+      const y1 = ys[k % ys.length] + (rnd() - 0.5) * 6;
+      const y2 = bTop + rnd() * bH;
+      const far = left ? bx2 + rnd() * 60 : bx1 - rnd() * 60; // algunas cruzan el bus
+      gFaint.append(svg("path", { d: curve(x, y1, k % 4 === 0 ? far : bx, y2, 0.35 + rnd() * 0.4), class: "wire faint", style: `--d:${(rnd() * 4).toFixed(2)}s` }));
+    }
     ys.forEach((y, i) => {
-      const target = bTop + ((idx * 97 + i * 53) % 1000) / 1000 * bH;
-      curve(x, y, bx, target, i === 0 && isHot ? "hot" : "");
-      layer.append(svg("circle", { cx: bx, cy: target, r: i === 0 && isHot ? 3.5 : 2.2, class: "jn" }));
+      const target = bTop + (((idx * 97 + i * 53) % 1000) / 1000) * bH;
+      const d = curve(x, y, bx, target);
+      edges++;
+      if (i === 0 && isHot) {
+        gHalo.append(svg("path", { d, class: "wire halo" }));
+        gMain.append(svg("path", { d, class: "wire hot" }));
+        particle(d, 1.4 + rnd(), -rnd() * 1.4, true);
+        particle(d, 1.9 + rnd(), -rnd() * 2, true);
+      } else {
+        gMain.append(svg("path", { d, class: "wire" }));
+        if (rnd() < 0.45) particle(d, 3.5 + rnd() * 4, -rnd() * 6, false);
+      }
+      gMain.append(svg("circle", { cx: bx, cy: target, r: i === 0 && isHot ? 3.6 : 2.3, class: "jn" + (i === 0 && isHot ? " pulse" : "") }));
+      gMain.append(svg("circle", { cx: x, cy: y, r: 1.6, class: "jn port-glow" }));
     });
-    for (let k = 0; k < 6; k++) curve(x, ys[k % ys.length], bx, bTop + rnd() * bH, "faint");
   });
+  map.dataset.edges = edges;
   map.prepend(layer);
 }
 
+// Contadores vivos de la cabecera (T y FRAME), como en el vídeo.
+function startClock(tEl, fEl) {
+  const t0 = performance.now();
+  let frame = 0, last = 0, alive = true;
+  const tick = (now) => {
+    if (!alive || !tEl.isConnected) return;
+    frame++;
+    if (now - last > 90) {
+      last = now;
+      const secs = (now - t0) / 1000;
+      tEl.textContent = `${pad2(Math.floor(secs / 60) % 100)}.${pad2(Math.floor(secs % 60))}`;
+      fEl.textContent = String(frame % 10000).padStart(4, "0");
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  return () => { alive = false; };
+}
+
+let panelFirst = true;
 async function viewPanel(main) {
-  const map = h("section", { class: "map", "aria-label": "Mapa de proyectos, IAs y conectores" });
+  const map = h("section", { class: "map" + (panelFirst ? " intro" : ""), "aria-label": "Mapa de proyectos, IAs y conectores" });
   const runlog = h("div", { class: "rlog", role: "list" });
   const dispatch = h("div", {});
   const stats = h("div", { class: "statlist" });
-  const liveBadge = h("span", { class: "live" }, "LIVE");
   const workers = h("span", { class: "pill tag-dark" }, "—");
   const foot = h("div", { class: "metrics-foot" });
-  main.replaceChildren(h("div", {},
+  main.replaceChildren(h("div", { class: "panel-view" },
     map,
     h("div", { class: "panels" },
-      h("section", { class: "card" }, h("div", { class: "card-h spread" }, h("span", { class: "grow" }, "Run log"), liveBadge), h("div", { class: "card-b" }, runlog)),
-      h("section", { class: "card" }, h("div", { class: "card-h spread" }, h("span", { class: "grow" }, "Dispatch"), workers), h("div", { class: "card-b" }, dispatch)),
-      h("section", { class: "card" }, h("div", { class: "card-h spread" }, h("span", { class: "grow" }, "Graph stats"), h("span", { class: "pill tag-blue" }, "v1.0")), h("div", { class: "card-b" }, stats))),
+      h("section", { class: "card panel-card", style: "--k:0" }, h("div", { class: "card-h spread" }, h("span", { class: "grow" }, "Run log"), h("span", { class: "live" }, "LIVE")), h("div", { class: "card-b" }, runlog)),
+      h("section", { class: "card panel-card", style: "--k:1" }, h("div", { class: "card-h spread" }, h("span", { class: "grow" }, "Dispatch"), workers), h("div", { class: "card-b" }, dispatch)),
+      h("section", { class: "card panel-card", style: "--k:2" }, h("div", { class: "card-h spread" }, h("span", { class: "grow" }, "Graph stats"), h("span", { class: "pill tag-blue" }, "v2.0")), h("div", { class: "card-b" }, stats))),
     foot));
+  if (panelFirst) setTimeout(() => map.classList.remove("intro"), 3200);
+  panelFirst = false;
 
   let data = null;
+  const seenRuns = new Set();
+  let firstPaint = true;
   const render = () => {
     const projects = data.projects;
     const providers = data.providers.filter((p) => p.connected);
     const side = [...providers.map((p) => sideNode("prov", p)), ...data.connectors.map((c) => sideNode("conn", c))];
     const nodes = projects.map((p) => projectNode(p, data.providers));
-    // Reparto como en el grafo del vídeo: proyectos a ambos lados del bus.
     const left = nodes.filter((_, i) => i % 2 === 0);
     side.unshift(...nodes.filter((_, i) => i % 2 === 1));
     if (!projects.length) left.push(h("a", { class: "card node", href: "#/proyectos", "data-node": "new" },
@@ -1238,64 +1367,78 @@ async function viewPanel(main) {
     if (!side.length) side.push(h("a", { class: "card node", href: "#/configuracion", "data-node": "ia-none" },
       h("div", { class: "node-h col-naranja" }, h("span", { class: "title" }, "tu-ia.ia")),
       h("div", { class: "node-b" }, h("div", { class: "chk" }, "sin conectar"), h("div", { class: "kv port" }, "siguiente", h("b", {}, "conectar →")))));
+    [...left, ...side].forEach((n, i) => n.style.setProperty("--k", i));
     const running = projects.some((p) => p.running);
-    map.replaceChildren(
+    // Se conserva el SVG de cables para que sus animaciones no se reinicien.
+    [...map.children].forEach((ch) => { if (!ch.matches("svg.wires")) ch.remove(); });
+    map.append(
       h("div", { class: "col left" }, left),
-      h("div", { class: "bus", "aria-hidden": "true" }, h("div", { class: "handle" + (running ? " run" : "") }), h("span", { class: "label" }, running ? "trabajando · live" : "control · ia · bus")),
+      h("div", { class: "bus" + (running ? " running" : ""), "aria-hidden": "true" },
+        h("div", { class: "sheen" }), h("div", { class: "handle" }),
+        h("span", { class: "label" }, running ? "shared surface · live" : "shared surface · locked")),
       h("div", { class: "col right" }, side));
     requestAnimationFrame(() => drawWires(map, data));
 
-    runlog.replaceChildren(...(data.runs.length ? data.runs.map((r, i) => h("div", { role: "listitem", style: "display:contents" },
-      h("span", { class: "t" + (i === 0 ? " cur" : "") }, hhmm(r.created_at)),
-      h("a", { class: "a", href: `#/proyectos/${r.project_id}/ejecuciones`, style: "color:inherit;text-decoration:none" }, slug(r.project_name)),
-      h("span", { class: "f" }, trunc(r.input, 40)),
-      h("span", { class: "ms" }, dur(r)),
-      h("span", {}, h("span", { class: `pill ${RUN_STATUS[r.status]?.[1] || "st-idle"}` }, SHORT[r.status] || r.status))))
-      : [h("p", { class: "small muted", style: "grid-column:1/-1" }, "Sin tareas todavía. Lanza una desde un proyecto.")]));
+    runlog.replaceChildren(...(data.runs.length ? data.runs.map((r, i) => {
+      const fresh = !firstPaint && !seenRuns.has(r.id);
+      seenRuns.add(r.id);
+      return h("div", { role: "listitem", class: "rl-row" + (fresh ? " fresh" : "") + (i === 0 ? " cur" : "") },
+        h("span", { class: "t" }, hhmm(r.created_at)),
+        h("a", { class: "a", href: `#/proyectos/${r.project_id}/ejecuciones` }, slug(r.project_name)),
+        h("span", { class: "f" }, trunc(r.input, 40)),
+        h("span", { class: "ms" }, dur(r)),
+        h("span", {}, h("span", { class: `pill ${RUN_STATUS[r.status]?.[1] || "st-idle"}` }, SHORT[r.status] || r.status)));
+    }) : [h("p", { class: "small muted", style: "grid-column:1/-1" }, "Sin tareas todavía. Lanza una desde un proyecto.")]));
 
-    workers.textContent = `${projects.length} nodos`;
+    workers.textContent = `${projects.length} workers`;
     dispatch.replaceChildren(
       ...(projects.length ? projects.slice(0, 8).map((p, i) => {
         const pct = p.limit_per_day ? (p.runs_today / p.limit_per_day) * 100 : 0;
         const state = p.running ? ["run", "st-ok"] : p.active ? ["wait", "st-warn"] : ["idle", "st-idle"];
         return h("div", { class: "dispatch-row", title: `${p.name}: ${p.runs_today} de ${p.limit_per_day} tareas hoy` },
-          h("span", {}, `p${i + 1}`), segbar(pct), h("b", {}, `${Math.round(pct)}%`), h("span", {}, h("span", { class: `pill ${state[1]}` }, state[0])));
+          h("span", {}, `w${i + 1}`), segbar(Math.max(pct, p.running ? 8 : 0), 22, false, p.running > 0),
+          val(`d${p.id}`, `${Math.round(pct)}%`), h("span", {}, h("span", { class: `pill ${state[1]}` }, state[0])));
       }) : [h("p", { class: "small muted" }, "Crea un proyecto para ver su carga diaria.")]),
       h("div", { class: "dispatch-foot" },
-        h("span", {}, "activas ", h("b", {}, data.totals.active)),
-        h("span", {}, "confirmar ", h("b", {}, data.totals.pending_actions)),
-        h("span", {}, "pasos ", h("b", {}, data.totals.steps))));
+        h("span", {}, "parallel ", val("t.active", data.totals.active)),
+        h("span", {}, "queued ", val("t.pa", data.totals.pending_actions)),
+        h("span", {}, "steps ", val("t.steps", data.totals.steps))));
 
     const t = data.totals;
     const done = (t.completed || 0) + (t.failed || 0);
     const rate = done ? ((t.completed || 0) / done) * 100 : 0;
-    const buckets = Array(24).fill(0);
+    const buckets = Array(48).fill(0);
     const now = Date.now();
     for (const b of data.hourly) {
-      const idx = 23 - Math.floor((now - new Date(b.h + ":00:00Z").getTime()) / 3600_000);
-      if (idx >= 0 && idx < 24) buckets[idx] = b.n;
+      const idx = 47 - Math.floor((now - new Date(b.h + ":00:00Z").getTime()) / 1800_000);
+      if (idx >= 0 && idx < 48) buckets[idx] += b.n;
     }
+    // Ruido suave para que la línea "respire" aunque no haya actividad.
     const max = Math.max(1, ...buckets);
-    const pts = buckets.map((v, i) => `${(i / 23) * 300},${40 - (v / max) * 34 - 2}`).join(" L");
+    const pts = buckets.map((v, i) => `${((i / 47) * 300).toFixed(1)},${(36 - (v / max) * 28 - (Math.sin(i * 1.7 + now / 900) + 1) * 1.6).toFixed(1)}`).join(" L");
+    const sp = svg("svg", { class: "spark" + (firstPaint ? " draw" : ""), viewBox: "0 0 300 42", preserveAspectRatio: "none", role: "img", "aria-label": "Actividad de las últimas 24 h" },
+      svg("path", { d: `M${pts}` }));
     stats.replaceChildren(
-      h("div", { class: "kv" }, "proyectos", h("b", {}, projects.length)),
-      h("div", { class: "kv" }, "ias conectadas", h("b", {}, providers.filter((p) => !p.is_demo).length)),
-      h("div", { class: "kv" }, "conectores", h("b", {}, data.connectors.length)),
-      h("div", { class: "kv" }, "tareas", h("b", {}, t.runs)),
-      h("div", { class: "kv" }, "tokens hoy", h("b", {}, t.tokens_today.toLocaleString("es-ES"))),
-      h("div", { class: "kv blue" }, "fallidas", h("b", {}, t.failed || 0)),
-      h("div", { class: "kv", style: "border-top:1.5px solid var(--soft);margin-top:6px;padding-top:8px" }, "éxito", h("b", {}, `${Math.round(rate)}%`)),
+      h("div", { class: "kv" }, "edges", val("s.edges", map.dataset.edges || 0)),
+      h("div", { class: "kv" }, "bus readers", val("s.br", providers.length + data.connectors.length)),
+      h("div", { class: "kv" }, "proyectos", val("s.p", projects.length)),
+      h("div", { class: "kv" }, "runs", val("s.r", t.runs)),
+      h("div", { class: "kv" }, "tokens hoy", val("s.tok", t.tokens_today.toLocaleString("es-ES"))),
+      h("div", { class: "kv blue" }, "strikes", val("s.f", t.failed || 0)),
+      h("div", { class: "kv", style: "border-top:1.5px solid var(--soft);margin-top:6px;padding-top:8px" }, "éxito", val("s.rate", `${Math.round(rate)}%`)),
       segbar(rate, 26, true),
-      (() => { const sp = svg("svg", { class: "spark", viewBox: "0 0 300 42", preserveAspectRatio: "none", role: "img", "aria-label": "Tareas por hora, últimas 24 h" });
-        sp.append(svg("path", { d: `M${pts}` })); return sp; })());
+      sp);
 
-    foot.replaceChildren(h("span", {}, `control · ia · ${projects.length} proyectos · ${t.active ? "live current" : "en reposo"}`), h("b", {}, `@${S.user.name}`));
+    const files = projects.reduce((a, p) => a + (p.files || 0), 0);
+    foot.replaceChildren(h("span", {}, `shared surface · ${files} files · ${t.active ? "live current" : "idle"}`), h("b", {}, `@${slug(S.user.name).replace(/-/g, "_")}`));
+    S.dash = { files, edges: Number(map.dataset.edges || 0), readers: providers.length + data.connectors.length, active: t.active };
+    firstPaint = false;
   };
 
   const load = async () => { data = await api("GET", "/api/dashboard"); S.projects = data.projects; render(); };
   await load();
   every(3000, load);
   if (window.__panelResize) window.removeEventListener("resize", window.__panelResize);
-  window.__panelResize = () => { if (data && map.isConnected) drawWires(map, data); };
+  window.__panelResize = () => { if (data && map.isConnected) drawWires(map, data, true); };
   window.addEventListener("resize", window.__panelResize);
 }

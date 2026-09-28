@@ -94,8 +94,9 @@ const filesList: Handler = async ({ env, project }) => {
 };
 
 const filesRead: Handler = async ({ env, project }, a) => {
-  const row = await one<any>(env.DB, "SELECT content FROM project_files WHERE project_id = ? AND name = ?", project.id, a.nombre);
+  const row = await one<any>(env.DB, "SELECT content, mime, data_b64 FROM project_files WHERE project_id = ? AND name = ?", project.id, a.nombre);
   if (!row) throw new ToolFailure(`No existe el archivo «${a.nombre}» en este proyecto.`);
+  if (row.data_b64) return `«${a.nombre}» es un archivo ${row.mime}: pide al usuario que lo adjunte en el chat para poder verlo.`;
   return untrusted(`archivo:${a.nombre}`, String(row.content).slice(0, 50_000));
 };
 
