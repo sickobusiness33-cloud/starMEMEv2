@@ -272,3 +272,12 @@ def test_eliminar_cuenta(api):
     assert api.delete("/api/auth/account").status_code == 428
     assert api.c.delete("/api/auth/account?confirm=true", headers=api._h()).status_code == 200
     assert api.get("/api/projects").status_code == 401
+
+
+def test_panel_solo_muestra_lo_propio(api):
+    p = new_project(api, "Mío")
+    api.post(f"/api/projects/{p['id']}/runs", json={"input": "hola"})
+    mine = api.get("/api/dashboard").json()
+    assert [x["name"] for x in mine["projects"]] == ["Mío"] and mine["totals"]["runs"] == 1
+    other = register().get("/api/dashboard").json()
+    assert other["projects"] == [] and other["runs"] == [] and other["totals"]["runs"] == 0

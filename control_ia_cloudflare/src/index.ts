@@ -6,6 +6,7 @@ import { listEntries } from "./audit";
 import { authRoutes, requireUser } from "./auth";
 import { CONNECTORS, connectorRoutes } from "./connectors";
 import { redact } from "./crypto";
+import { dashboardRoutes } from "./dashboard";
 import { type AppEnv, type Env, type RunMessage, publicSettings, settingsFrom } from "./env";
 import { processRun } from "./executor";
 import { HttpError } from "./http";
@@ -43,6 +44,7 @@ app.route("/auth", authRoutes);
 app.route("/projects", projectRoutes);
 app.route("/connectors", connectorRoutes);
 app.route("/providers", providerRoutes);
+app.route("/dashboard", dashboardRoutes);
 app.route("/", runRoutes);
 
 app.get("/activity", requireUser, async (c) => {

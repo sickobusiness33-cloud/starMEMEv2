@@ -93,14 +93,16 @@ async function withBusy(button, fn) {
 // ------------------------------------------------------------------ estados
 
 const RUN_STATUS = {
-  pending: ["Pendiente", "st-idle", "◷"],
-  running: ["Ejecutándose", "st-run", "↻"],
-  awaiting_confirmation: ["Esperando confirmación", "st-warn", "!"],
-  completed: ["Completada", "st-ok", "✓"],
-  failed: ["Fallida", "st-err", "✕"],
-  stopped: ["Detenida", "st-idle", "■"],
-  cancelled: ["Cancelada", "st-idle", "⊘"],
+  pending: ["pendiente", "st-idle", "◷"],
+  running: ["ejecutándose", "st-run", "↻"],
+  awaiting_confirmation: ["confirmar", "st-warn", "!"],
+  completed: ["completada", "st-ok", "✓"],
+  failed: ["fallida", "st-err", "✕"],
+  stopped: ["detenida", "st-idle", "■"],
+  cancelled: ["cancelada", "st-idle", "⊘"],
 };
+const SHORT = { pending: "cola", running: "run", awaiting_confirmation: "wait", completed: "ok", failed: "err", stopped: "stop", cancelled: "cancel" };
+const slug = (s) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "proyecto";
 const CONN_STATUS = {
   pending_config: ["Pendiente de configuración", "st-warn", "!"],
   untested: ["Sin probar", "st-idle", "?"],
@@ -280,7 +282,7 @@ function renderAuth(allowSignup, mode = allowSignup ? "register" : "login") {
     h("button", { class: "btn small" + (!register ? " primary" : ""), type: "button", "aria-pressed": !register ? "true" : "false",
       onclick: () => renderAuth(allowSignup, "login") }, "Ya tengo cuenta")) : null;
   app.replaceChildren(h("div", { class: "auth" }, h("div", { class: "card" },
-    h("div", { class: "strip col-azul" }),
+    h("div", { class: "node-h col-azul" }, h("span", { class: "title" }, "control-ia.acceso")),
     h("div", { class: "card-b stack" },
       h("h1", {}, "CONTROL", h("span", { class: "muted" }, "·"), "IA"),
       h("p", {}, "Conecta tus IAs (Claude, GPT) y tus repositorios, organiza tus productos en proyectos y deja que la IA los analice y proponga mejoras. Tú apruebas cada acción."),
@@ -294,13 +296,13 @@ function renderAuth(allowSignup, mode = allowSignup ? "register" : "login") {
 // ------------------------------------------------------------------ esqueleto
 
 const NAV = [
-  ["proyectos", "Proyectos", "▦"], ["actividad", "Actividad", "≋"],
+  ["panel", "Panel", "◈"], ["proyectos", "Proyectos", "▦"], ["actividad", "Actividad", "≋"],
   ["conectores", "Conectores", "⇄"], ["configuracion", "Configuración", "⚙"],
 ];
 
 function parseRoute() {
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
-  return { section: parts[0] || "proyectos", id: parts[1] ? Number(parts[1]) : null, tab: parts[2] || "chat" };
+  return { section: parts[0] || "panel", id: parts[1] ? Number(parts[1]) : null, tab: parts[2] || "chat" };
 }
 
 function route() {
@@ -313,7 +315,7 @@ function route() {
     h("a", { href: `#/${key}`, "aria-current": r.section === key ? "page" : null },
       h("span", { "aria-hidden": "true" }, icon), label, key === "actividad" ? pendingBadge : null)));
   const top = h("header", { class: "topbar" },
-    h("div", { class: "brand" }, "CONTROL", h("b", {}, "·"), "IA"), stats,
+    h("div", { class: "brand" }, h("span", { class: "k" }, "PANEL"), "control-ia"), stats,
     h("div", { class: "row", style: "margin-left:auto" },
       h("span", { class: "small muted" }, `${S.user.name} · ${S.user.role === "admin" ? "admin" : "miembro"}`),
       h("button", { class: "btn small", type: "button", onclick: logout }, "Salir")));
@@ -323,10 +325,12 @@ function route() {
     const [runs, actions] = await Promise.all([api("GET", "/api/runs?active=true"), api("GET", "/api/actions?status=pending")]);
     const running = runs.filter((x) => x.status === "running").length;
     stats.replaceChildren(
-      h("span", {}, "PROYECTOS ", h("b", {}, S.projects.length || "·")),
-      h("span", { class: running ? "hl" : null }, "EJECUTÁNDOSE ", h("b", {}, running)),
-      h("span", {}, "EN COLA ", h("b", {}, runs.filter((x) => x.status === "pending").length)),
-      h("span", { class: actions.length ? "hl" : null }, "POR CONFIRMAR ", h("b", {}, actions.length)));
+      h("span", {}, "Proyectos", h("b", {}, S.projects.length || "·")),
+      h("span", { class: "hl" }, "Activas", h("b", {}, runs.length)),
+      h("span", {}, "Run", h("b", {}, running)),
+      h("span", {}, "Cola", h("b", {}, runs.filter((x) => x.status === "pending").length)),
+      h("span", { class: actions.length ? "hl" : null }, "Confirmar", h("b", {}, actions.length)),
+      h("span", {}, "T", h("b", {}, new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }))));
     pendingBadge.hidden = !actions.length;
     pendingBadge.textContent = actions.length;
     pendingBadge.setAttribute("aria-label", `${actions.length} acciones por confirmar`);
@@ -334,7 +338,7 @@ function route() {
   refreshStats().catch(() => {});
   every(4000, refreshStats);
 
-  const views = { proyectos: viewProjects, actividad: viewActivity, conectores: viewConnectors, configuracion: viewSettings };
+  const views = { panel: viewPanel, proyectos: viewProjects, actividad: viewActivity, conectores: viewConnectors, configuracion: viewSettings };
   (views[r.section] || viewProjects)(main, r).catch((err) => main.replaceChildren(h("div", { class: "alert" }, err.message)));
 }
 
@@ -473,7 +477,7 @@ async function renderProject(container, r) {
       h("code", {}, "/herramienta <nombre> {json}"), " · ", h("code", {}, "/lento 10"), " · ", h("code", {}, "/fallar"));
   }
   container.replaceChildren(h("div", { class: "card" },
-    h("div", { class: `strip col-${project.color}` }),
+    h("div", { class: `node-h col-${project.color}` }, h("span", { class: "title" }, slug(project.name) + ".proj")),
     h("div", { class: "card-b stack" },
       h("a", { class: "btn small only-mobile", href: "#/proyectos" }, "← Proyectos"),
       h("div", { class: "row spread" },
@@ -1113,4 +1117,185 @@ async function viewSettings(main) {
       h("div", { class: "card" }, h("div", { class: "card-h" }, "Límites de la plataforma"), h("div", { class: "card-b" }, limits))),
     isAdmin ? h("div", { class: "card" }, h("div", { class: "card-h" }, "Usuarios (admin)"), h("div", { class: "card-b" }, users)) : null));
   if (isAdmin) await loadUsers();
+}
+
+
+// ================================================================= PANEL (grafo)
+
+const SVGNS = "http://www.w3.org/2000/svg";
+const svg = (tag, attrs) => { const el = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); return el; };
+const PROVIDER_COLOR = { anthropic: "naranja", openai: "verde", demo: "turquesa" };
+const CONNECTOR_COLOR = { github: "morado", discord_webhook: "azul", slack_webhook: "rosa" };
+const pad2 = (n) => String(n).padStart(2, "0");
+const hhmm = (iso) => { if (!iso) return "—"; const d = new Date(iso); return `${pad2(d.getHours())}.${pad2(d.getMinutes())}`; };
+function dur(r) {
+  if (!r.started_at) return "—";
+  const ms = new Date(r.finished_at || Date.now()) - new Date(r.started_at);
+  return ms < 10000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`;
+}
+function segbar(pct, n = 22, dark = false) {
+  const on = Math.round((Math.max(0, Math.min(100, pct)) / 100) * n);
+  return h("div", { class: "segbar" + (dark ? " dark" : ""), role: "img", "aria-label": `${Math.round(pct)}%` },
+    Array.from({ length: n }, (_, i) => h("i", { class: i < on ? (!dark && i === on - 1 && on < n ? "tip" : "on") : null })));
+}
+
+function projectNode(p, providers) {
+  const running = p.running > 0;
+  const prov = providers.find((x) => x.id === p.provider);
+  return h("a", { class: "card node" + (p.active ? " active" : ""), href: `#/proyectos/${p.id}/chat`, "data-node": `p${p.id}`,
+    "aria-label": `Proyecto ${p.name}: ${p.runs} tareas, ${p.active} activas` },
+    h("div", { class: `node-h col-${p.color}` }, h("span", { class: "title" }, slug(p.name) + ".proj")),
+    h("div", { class: "node-b" },
+      h("div", { class: "chip" }, h("i", { class: `col-${PROVIDER_COLOR[p.provider] || "azul"}` }), p.model || "sin modelo"),
+      h("div", { class: "kv port" }, "tareas", h("b", {}, p.runs)),
+      h("div", { class: "kv port" }, "hoy", h("b", {}, `${p.runs_today}/${p.limit_per_day}`)),
+      p.failed ? h("div", { class: "kv port" }, "fallos", h("b", { style: "color:var(--err)" }, p.failed)) : h("div", { class: "kv port" }, "pasos", h("b", {}, p.steps)),
+      h("div", { class: "chk" + (p.status === "active" ? " on" : "") }, p.status === "archived" ? "archivado" : "activo"),
+      running ? h("div", { class: "row", style: "margin-top:4px" }, pill(RUN_STATUS, "running")) : p.active ? h("div", { class: "row", style: "margin-top:4px" }, h("span", { class: "pill st-warn" }, "wait")) : null,
+      p.provider && (!prov || !prov.connected) ? h("div", { class: "small", style: "color:var(--warn);margin-top:4px" }, "! falta conectar la IA") : null));
+}
+
+function sideNode(kind, item) {
+  const isProv = kind === "prov";
+  const color = isProv ? PROVIDER_COLOR[item.id] || "azul" : CONNECTOR_COLOR[item.type] || "morado";
+  const title = isProv ? `${item.id}.ia` : `${slug(item.name)}.${item.type.split("_")[0]}`;
+  const ok = isProv ? item.connected : item.status === "connected";
+  const stateLabel = isProv ? (item.is_demo ? "demo" : item.connected ? (item.status === "ok" ? "verificada" : item.status === "error" ? "error" : "sin probar") : "sin clave")
+    : ({ connected: "verificado", error: "error", untested: "sin probar", pending_config: "pendiente" })[item.status] || item.status;
+  return h("a", { class: "card node", href: isProv ? "#/configuracion" : "#/conectores", "data-node": isProv ? `ia-${item.id}` : `c${item.id}`,
+    "aria-label": `${isProv ? "IA" : "Conector"} ${item.name}: ${stateLabel}` },
+    h("div", { class: `node-h col-${color}` }, h("span", { class: "title" }, title)),
+    h("div", { class: "node-b" },
+      h("div", { class: "chk" + (ok ? " on" : "") }, isProv ? (item.connected ? "conectada" : "desconectada") : item.enabled ? "activo" : "inactivo"),
+      h("div", { class: "kv port" }, "estado", h("b", { style: !ok ? "color:var(--warn)" : null }, stateLabel)),
+      h("div", { class: "kv port" }, "uso", h("b", {}, item.last_used_at ? hhmm(item.last_used_at) : "—"))));
+}
+
+function drawWires(map, data) {
+  map.querySelector("svg.wires")?.remove();
+  const box = map.getBoundingClientRect();
+  const bus = map.querySelector(".bus").getBoundingClientRect();
+  if (!box.width || getComputedStyle(map.querySelector(".col")).display === "none") return;
+  const layer = svg("svg", { class: "wires", "aria-hidden": "true" });
+  const bx1 = bus.left - box.left, bx2 = bus.right - box.left, bTop = bus.top - box.top + 20, bH = bus.height - 40;
+  const hot = new Set(data.projects.filter((p) => p.running || p.active).map((p) => `p${p.id}`));
+  const hotSide = new Set();
+  for (const p of data.projects) if (hot.has(`p${p.id}`)) { hotSide.add(`ia-${p.provider}`); p.connector_ids.forEach((c) => hotSide.add(`c${c}`)); }
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 9301 + 49297) % 233280) / 233280);
+  const curve = (x1, y1, x2, y2, cls) => {
+    const mx = (x1 + x2) / 2;
+    layer.append(svg("path", { d: `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`, class: `wire ${cls}` }));
+  };
+  const nodes = [...map.querySelectorAll("[data-node]")];
+  nodes.forEach((n, idx) => {
+    const r = n.getBoundingClientRect();
+    const left = r.left + r.width / 2 < bus.left;
+    const key = n.dataset.node;
+    const isHot = hot.has(key) || hotSide.has(key);
+    const ports = [...n.querySelectorAll(".kv.port")].map((k) => k.getBoundingClientRect());
+    const ys = ports.length ? ports.map((k) => k.top + k.height / 2 - box.top) : [r.top + r.height / 2 - box.top];
+    const x = left ? r.right - box.left + 6 : r.left - box.left - 6;
+    const bx = left ? bx1 : bx2;
+    ys.forEach((y, i) => {
+      const target = bTop + ((idx * 97 + i * 53) % 1000) / 1000 * bH;
+      curve(x, y, bx, target, i === 0 && isHot ? "hot" : "");
+      layer.append(svg("circle", { cx: bx, cy: target, r: i === 0 && isHot ? 3.5 : 2.2, class: "jn" }));
+    });
+    for (let k = 0; k < 6; k++) curve(x, ys[k % ys.length], bx, bTop + rnd() * bH, "faint");
+  });
+  map.prepend(layer);
+}
+
+async function viewPanel(main) {
+  const map = h("section", { class: "map", "aria-label": "Mapa de proyectos, IAs y conectores" });
+  const runlog = h("div", { class: "rlog", role: "list" });
+  const dispatch = h("div", {});
+  const stats = h("div", { class: "statlist" });
+  const liveBadge = h("span", { class: "live" }, "LIVE");
+  const workers = h("span", { class: "pill tag-dark" }, "—");
+  const foot = h("div", { class: "metrics-foot" });
+  main.replaceChildren(h("div", {},
+    map,
+    h("div", { class: "panels" },
+      h("section", { class: "card" }, h("div", { class: "card-h spread" }, h("span", { class: "grow" }, "Run log"), liveBadge), h("div", { class: "card-b" }, runlog)),
+      h("section", { class: "card" }, h("div", { class: "card-h spread" }, h("span", { class: "grow" }, "Dispatch"), workers), h("div", { class: "card-b" }, dispatch)),
+      h("section", { class: "card" }, h("div", { class: "card-h spread" }, h("span", { class: "grow" }, "Graph stats"), h("span", { class: "pill tag-blue" }, "v1.0")), h("div", { class: "card-b" }, stats))),
+    foot));
+
+  let data = null;
+  const render = () => {
+    const projects = data.projects;
+    const providers = data.providers.filter((p) => p.connected);
+    const side = [...providers.map((p) => sideNode("prov", p)), ...data.connectors.map((c) => sideNode("conn", c))];
+    const nodes = projects.map((p) => projectNode(p, data.providers));
+    // Reparto como en el grafo del vídeo: proyectos a ambos lados del bus.
+    const left = nodes.filter((_, i) => i % 2 === 0);
+    side.unshift(...nodes.filter((_, i) => i % 2 === 1));
+    if (!projects.length) left.push(h("a", { class: "card node", href: "#/proyectos", "data-node": "new" },
+      h("div", { class: "node-h col-azul" }, h("span", { class: "title" }, "nuevo.proj")),
+      h("div", { class: "node-b" }, h("div", { class: "chk" }, "sin proyectos todavía"), h("div", { class: "kv port" }, "siguiente", h("b", {}, "crear →")))));
+    if (!side.length) side.push(h("a", { class: "card node", href: "#/configuracion", "data-node": "ia-none" },
+      h("div", { class: "node-h col-naranja" }, h("span", { class: "title" }, "tu-ia.ia")),
+      h("div", { class: "node-b" }, h("div", { class: "chk" }, "sin conectar"), h("div", { class: "kv port" }, "siguiente", h("b", {}, "conectar →")))));
+    const running = projects.some((p) => p.running);
+    map.replaceChildren(
+      h("div", { class: "col left" }, left),
+      h("div", { class: "bus", "aria-hidden": "true" }, h("div", { class: "handle" + (running ? " run" : "") }), h("span", { class: "label" }, running ? "trabajando · live" : "control · ia · bus")),
+      h("div", { class: "col right" }, side));
+    requestAnimationFrame(() => drawWires(map, data));
+
+    runlog.replaceChildren(...(data.runs.length ? data.runs.map((r, i) => h("div", { role: "listitem", style: "display:contents" },
+      h("span", { class: "t" + (i === 0 ? " cur" : "") }, hhmm(r.created_at)),
+      h("a", { class: "a", href: `#/proyectos/${r.project_id}/ejecuciones`, style: "color:inherit;text-decoration:none" }, slug(r.project_name)),
+      h("span", { class: "f" }, trunc(r.input, 40)),
+      h("span", { class: "ms" }, dur(r)),
+      h("span", {}, h("span", { class: `pill ${RUN_STATUS[r.status]?.[1] || "st-idle"}` }, SHORT[r.status] || r.status))))
+      : [h("p", { class: "small muted", style: "grid-column:1/-1" }, "Sin tareas todavía. Lanza una desde un proyecto.")]));
+
+    workers.textContent = `${projects.length} nodos`;
+    dispatch.replaceChildren(
+      ...(projects.length ? projects.slice(0, 8).map((p, i) => {
+        const pct = p.limit_per_day ? (p.runs_today / p.limit_per_day) * 100 : 0;
+        const state = p.running ? ["run", "st-ok"] : p.active ? ["wait", "st-warn"] : ["idle", "st-idle"];
+        return h("div", { class: "dispatch-row", title: `${p.name}: ${p.runs_today} de ${p.limit_per_day} tareas hoy` },
+          h("span", {}, `p${i + 1}`), segbar(pct), h("b", {}, `${Math.round(pct)}%`), h("span", {}, h("span", { class: `pill ${state[1]}` }, state[0])));
+      }) : [h("p", { class: "small muted" }, "Crea un proyecto para ver su carga diaria.")]),
+      h("div", { class: "dispatch-foot" },
+        h("span", {}, "activas ", h("b", {}, data.totals.active)),
+        h("span", {}, "confirmar ", h("b", {}, data.totals.pending_actions)),
+        h("span", {}, "pasos ", h("b", {}, data.totals.steps))));
+
+    const t = data.totals;
+    const done = (t.completed || 0) + (t.failed || 0);
+    const rate = done ? ((t.completed || 0) / done) * 100 : 0;
+    const buckets = Array(24).fill(0);
+    const now = Date.now();
+    for (const b of data.hourly) {
+      const idx = 23 - Math.floor((now - new Date(b.h + ":00:00Z").getTime()) / 3600_000);
+      if (idx >= 0 && idx < 24) buckets[idx] = b.n;
+    }
+    const max = Math.max(1, ...buckets);
+    const pts = buckets.map((v, i) => `${(i / 23) * 300},${40 - (v / max) * 34 - 2}`).join(" L");
+    stats.replaceChildren(
+      h("div", { class: "kv" }, "proyectos", h("b", {}, projects.length)),
+      h("div", { class: "kv" }, "ias conectadas", h("b", {}, providers.filter((p) => !p.is_demo).length)),
+      h("div", { class: "kv" }, "conectores", h("b", {}, data.connectors.length)),
+      h("div", { class: "kv" }, "tareas", h("b", {}, t.runs)),
+      h("div", { class: "kv" }, "tokens hoy", h("b", {}, t.tokens_today.toLocaleString("es-ES"))),
+      h("div", { class: "kv blue" }, "fallidas", h("b", {}, t.failed || 0)),
+      h("div", { class: "kv", style: "border-top:1.5px solid var(--soft);margin-top:6px;padding-top:8px" }, "éxito", h("b", {}, `${Math.round(rate)}%`)),
+      segbar(rate, 26, true),
+      (() => { const sp = svg("svg", { class: "spark", viewBox: "0 0 300 42", preserveAspectRatio: "none", role: "img", "aria-label": "Tareas por hora, últimas 24 h" });
+        sp.append(svg("path", { d: `M${pts}` })); return sp; })());
+
+    foot.replaceChildren(h("span", {}, `control · ia · ${projects.length} proyectos · ${t.active ? "live current" : "en reposo"}`), h("b", {}, `@${S.user.name}`));
+  };
+
+  const load = async () => { data = await api("GET", "/api/dashboard"); S.projects = data.projects; render(); };
+  await load();
+  every(3000, load);
+  if (window.__panelResize) window.removeEventListener("resize", window.__panelResize);
+  window.__panelResize = () => { if (data && map.isConnected) drawWires(map, data); };
+  window.addEventListener("resize", window.__panelResize);
 }
