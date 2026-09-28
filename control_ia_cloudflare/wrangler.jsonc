@@ -15,7 +15,7 @@
       "binding": "DB",
       "database_name": "control-ia",
       // Sustituye por el id que devuelve `npx wrangler d1 create control-ia`.
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "dd164cbc-e7a3-4055-afb2-c47964e54445",
       "migrations_dir": "migrations"
     }
   ],
