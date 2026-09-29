@@ -79,11 +79,13 @@ def test_orquestador_elige_agentes_con_dependencias_y_combina(api):
     st = wait_run(api, ask(api, t["id"], "Investiga la historia del café y crea un post para Instagram con imagen")["id"])
     assert st["run"]["status"] == "completed", st["run"]
     ids = [a["agent_id"] for a in st["agents"]]
-    assert ids == ["research-agent", "social-post-creator"]
-    research, social = st["agents"]
+    # Dos especialistas + el revisor (validación) que se activa cuando colaboran varios agentes.
+    assert ids == ["research-agent", "social-post-creator", "kairo-reviewer"]
+    research, social, review = st["agents"]
+    assert review["depends_on"] == [research["step"], social["step"]] and review["status"] == "COMPLETED"
     assert social["depends_on"] == [research["step"]] and research["depends_on"] == []
     assert all(a["status"] == "COMPLETED" and a["progress"] == 100 for a in st["agents"])
-    for a in st["agents"]:
+    for a in (research, social):
         assert a["model"] and a["execution_ms"] is not None and 0 < a["confidence"] <= 1
         assert a["metadata"]["confidence_method"] == "heuristic"
     # El agregador recibe resultados estructurados y da UNA respuesta con la imagen adjunta.
@@ -99,7 +101,7 @@ def test_ejecucion_en_paralelo(api):
     t = new_chat(api)
     st = wait_run(api, ask(api, t["id"], "[lento] Investiga el origen del ajedrez y verifica si es cierto que lo inventó un sabio indio")["id"], timeout=120)
     assert st["run"]["status"] == "completed"
-    a, b = st["agents"]
+    a, b = [x for x in st["agents"] if x["step"] != "review"]
     assert a["depends_on"] == [] and b["depends_on"] == []
     # Se solapan en el tiempo (paralelo), no uno detrás de otro.
     assert a["started_at"] <= b["finished_at"] and b["started_at"] <= a["finished_at"]

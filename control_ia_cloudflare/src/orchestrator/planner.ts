@@ -14,6 +14,8 @@ export interface PlanStep {
   agent: string;
   task: string;
   depends_on: string[];
+  /** Explicación funcional de por qué se eligió (no es razonamiento interno). */
+  why?: string;
 }
 
 export interface Plan {
@@ -21,6 +23,44 @@ export interface Plan {
   steps: PlanStep[];
   reason: string;
   planner: "llm" | "rules" | "manual";
+  task_type?: TaskType;
+}
+
+export type TaskType = "research" | "code" | "content" | "image" | "analysis" | "planning" | "general";
+
+/** Rol visual del agente en la red (derivado de su especialidad). */
+export type Role = "ORCHESTRATOR" | "RESEARCHER" | "SCANNER" | "ANALYST" | "CODER" | "WRITER" | "DESIGNER" | "PLANNER" | "SECURITY" | "ASSISTANT" | "REVIEWER";
+
+const ROLE_BY_CATEGORY: Record<string, Role> = {
+  research: "RESEARCHER", browser: "SCANNER", data: "ANALYST", finance: "ANALYST", trading: "ANALYST",
+  coding: "CODER", automation: "CODER", writing: "WRITER", social: "WRITER", marketing: "WRITER",
+  image: "DESIGNER", video: "DESIGNER", web: "DESIGNER", productivity: "PLANNER", business: "PLANNER",
+  security: "SECURITY", general: "ASSISTANT", multi: "PLANNER",
+};
+
+export function roleOf(a: RegistryAgent): Role {
+  if (a.model.capability === "reasoning") return "ANALYST";
+  return ROLE_BY_CATEGORY[a.category] ?? "ASSISTANT";
+}
+
+const TYPE_BY_ROLE: Partial<Record<Role, TaskType>> = {
+  RESEARCHER: "research", SCANNER: "research", ANALYST: "analysis", CODER: "code", WRITER: "content", DESIGNER: "image", PLANNER: "planning", SECURITY: "analysis",
+};
+
+/** Clasificación de la tarea: por el rol dominante de los agentes elegidos. */
+export function classify(steps: PlanStep[], byId: Map<string, RegistryAgent>): TaskType {
+  if (!steps.length) return "general";
+  // El tipo lo marca el entregable: los pasos finales (de los que nadie depende).
+  const sinks = steps.filter((s) => !steps.some((o) => o.depends_on.includes(s.id)));
+  const roles = sinks.map((s) => roleOf(byId.get(s.agent)!));
+  if (roles.includes("WRITER")) return "content";
+  if (roles.includes("DESIGNER")) return "image";
+  const first = roles.map((r) => TYPE_BY_ROLE[r]).find(Boolean);
+  return first ?? "general";
+}
+
+export function defaultWhy(a: RegistryAgent, extra?: string) {
+  return `${extra ? `${extra}. ` : ""}Aporta: ${a.capabilities.slice(0, 3).join(", ")}${a.tools.length ? ` · herramientas: ${a.tools.join(", ")}` : ""}.`;
 }
 
 export interface PoolAgent extends RegistryAgent {
@@ -72,7 +112,13 @@ export function validatePlan(raw: any, pool: Map<string, PoolAgent>, max: number
     const id = `s${steps.length + 1}`;
     const deps = (Array.isArray(s.depends_on) ? s.depends_on : []).map((d: unknown) => rawToId.get(String(d))).filter(Boolean) as string[];
     rawToId.set(String(s.id ?? id), id);
-    steps.push({ id, agent: a.id, task: String(s.task ?? "").slice(0, 400) || `Aporta tu parte como ${a.name}.`, depends_on: [...new Set(deps)] });
+    steps.push({
+      id,
+      agent: a.id,
+      task: String(s.task ?? "").slice(0, 400) || `Aporta tu parte como ${a.name}.`,
+      depends_on: [...new Set(deps)],
+      why: typeof s.why === "string" && s.why.trim() ? s.why.trim().slice(0, 240) : defaultWhy(a),
+    });
     seenAgents.add(a.id);
   }
   if (!steps.length) return null;
@@ -112,19 +158,26 @@ const RULES: [RegExp, string[]][] = [
 
 export function planWithRules(request: string, pool: Map<string, PoolAgent>, max: number, hasImages: boolean): Plan {
   const picked: string[] = [];
-  const add = (id: string) => {
+  const reasons = new Map<string, string>();
+  const add = (id: string, because = "") => {
     const a = pool.get(id);
-    if (a && !a.locked && !picked.includes(id) && (a.input.image !== "required" || hasImages)) picked.push(id);
+    if (a && !a.locked && !picked.includes(id) && (a.input.image !== "required" || hasImages)) {
+      picked.push(id);
+      reasons.set(id, because);
+    }
   };
   const hasUrl = /https?:\/\/\S+/.test(request);
   if (hasImages) {
     // Con imagen adjunta: editarla/ampliarla/variarla si se pide; si no, analizarla.
-    if (/\b(variaci[oó]n|variante|otra versión)/i.test(request)) add("image-variations");
-    else if (/\b(edita|modifica|cambia|convi[eé]rte|retoca|estilo|transforma)/i.test(request)) add("image-editor");
-    else add("vision-analyst");
+    if (/\b(variaci[oó]n|variante|otra versión)/i.test(request)) add("image-variations", "Has adjuntado una imagen y pides una variación");
+    else if (/\b(edita|modifica|cambia|convi[eé]rte|retoca|estilo|transforma)/i.test(request)) add("image-editor", "Has adjuntado una imagen y pides modificarla");
+    else add("vision-analyst", "Has adjuntado una imagen: hay que entenderla primero");
   }
-  if (hasUrl) add(/\b(resume|resumen)/i.test(request) ? "summarizer" : "page-reader");
-  for (const [re, ids] of RULES) if (re.test(request)) ids.forEach(add);
+  if (hasUrl) add(/\b(resume|resumen)/i.test(request) ? "summarizer" : "page-reader", "La petición incluye una URL que hay que leer");
+  for (const [re, ids] of RULES) {
+    const m = re.exec(request);
+    if (m) ids.forEach((id) => add(id, `La petición menciona «${m[0].trim()}»`));
+  }
   // Imagen para un post: el post ya genera su imagen, no hace falta otro generador.
   if (picked.includes("social-post-creator") && picked.includes("image-generator")) picked.splice(picked.indexOf("image-generator"), 1);
   const byId = new Map([...pool].map(([k, v]) => [k, v as RegistryAgent]));
@@ -135,15 +188,21 @@ export function planWithRules(request: string, pool: Map<string, PoolAgent>, max
     return { direct: true, steps: [], reason: words <= 6 ? "Mensaje breve: responde Kairo directamente." : "Ningún agente especializado encaja: responde Kairo.", planner: "rules" };
   }
   const steps = chainByClass(
-    chosen.map((agent, i) => ({ id: `s${i + 1}`, agent, task: `Resuelve la parte de la petición que corresponde a ${pool.get(agent)!.name}.`, depends_on: [] })),
+    chosen.map((agent, i) => ({
+      id: `s${i + 1}`,
+      agent,
+      task: `Resuelve la parte de la petición que corresponde a ${pool.get(agent)!.name}.`,
+      depends_on: [],
+      why: defaultWhy(pool.get(agent)!, reasons.get(agent)),
+    })),
     byId,
   );
-  return { direct: false, steps, reason: "Selección por palabras clave y capacidades de cada agente.", planner: "rules" };
+  return { direct: false, steps, reason: "Selección por palabras clave y capacidades de cada agente.", planner: "rules", task_type: classify(steps, byId) };
 }
 
 // --- planificador con modelo ------------------------------------------------------------------
 
-export async function planWithLLM(ctx: CallContext, request: string, history: string, pool: Map<string, PoolAgent>, max: number, hasImages: boolean): Promise<Plan | null> {
+export async function planWithLLM(ctx: CallContext, request: string, history: string, pool: Map<string, PoolAgent>, max: number, hasImages: boolean, project = ""): Promise<Plan | null> {
   const catalog = [...pool.values()]
     .filter((a) => !a.locked && (a.input.image !== "required" || hasImages))
     .map((a) => `${a.id} — ${a.name}: ${a.description}${a.tools.length ? ` [${a.tools.join(", ")}]` : ""}`)
@@ -153,18 +212,21 @@ export async function planWithLLM(ctx: CallContext, request: string, history: st
     "Responde SOLO con JSON válido, sin texto adicional.";
   const prompt =
     `Agentes disponibles (id — nombre: descripción [herramientas]):\n${catalog}\n\n` +
+    (project ? `Contexto del proyecto:\n${project}\n\n` : "") +
     (history ? `Contexto reciente del chat:\n${history}\n\n` : "") +
     `${hasImages ? "El usuario ha adjuntado imagen(es).\n" : ""}Petición del usuario:\n${request}\n\n` +
     `Reglas:\n- Usa el MENOR número de agentes que resuelva bien la petición (máximo ${max}). No uses agentes que no aporten.\n` +
     `- Saludos, charla o preguntas simples: {"direct": true, "steps": [], "reason": "..."}.\n` +
     `- Pasos independientes sin depends_on (se ejecutan en paralelo). Si un agente necesita el resultado de otro, pon su id en depends_on.\n` +
-    `- task = instrucción concreta para ese agente.\n` +
-    `Formato: {"direct": false, "reason": "por qué", "steps": [{"id": "s1", "agent": "<id>", "task": "...", "depends_on": []}]}`;
+    `- task = instrucción concreta para ese agente. why = una frase para el usuario: qué capacidad aporta a esta petición.\n` +
+    `Formato: {"direct": false, "reason": "por qué", "steps": [{"id": "s1", "agent": "<id>", "task": "...", "why": "...", "depends_on": []}]}`;
   try {
     const res = await generate(ctx, { system, messages: [{ role: "user", content: prompt }], maxTokens: 500, prefer: "free", allowFallback: true, capability: "chat" });
     const m = res.text.match(/\{[\s\S]*\}/);
     if (!m) return null;
-    return validatePlan(JSON.parse(m[0]), pool, max, hasImages);
+    const plan = validatePlan(JSON.parse(m[0]), pool, max, hasImages);
+    if (plan) plan.task_type = classify(plan.steps, new Map([...pool].map(([k, v]) => [k, v as RegistryAgent])));
+    return plan;
   } catch {
     return null;
   }

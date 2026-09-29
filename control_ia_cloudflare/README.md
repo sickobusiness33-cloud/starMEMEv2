@@ -41,6 +41,67 @@ plataforma trabaja con Claude sobre **su repositorio** mediante herramientas
 (leer código, proponer PRs). Es el mismo flujo de «hacer avanzar el producto»,
 pero siempre con aprobación humana y sin push directo.
 
+## AI Agent OS: proyectos como centros de operaciones
+
+Control IA funciona como un **sistema operativo de agentes**:
+
+```
+USUARIO → COMMAND CENTER → ORCHESTRATOR (clasifica, planifica, usa el contexto del proyecto)
+       → RED DE AGENTES (paralelo + dependencias) → VALIDACIÓN (Kairo Critic) → RESULTADO → HISTORIAL + REPLAY
+```
+
+- **Command Center** (`#/home`): «¿Qué quieres hacer?». `POST /api/workspace/command/analyze`
+  propone ejecutar en un proyecto existente (coincidencia por nombre/objetivo),
+  crear uno nuevo (objetivos de largo plazo) o una tarea independiente; el usuario
+  confirma con un clic y `POST /api/workspace/command/run` lo ejecuta.
+- **Proyectos sin configuración técnica**: solo nombre y objetivo (plantillas
+  opcionales: Software, Marketing, Research, Content, Business, Data, Automation,
+  Personal Assistant o Custom; `src/templates.ts`). Proveedor y modelo quedan en
+  AUTO; la consola clásica con herramientas sigue disponible en Settings → Avanzado.
+- **Project workspace** (`#/p/:id/:tab`): Overview, AI Workspace (chat + red en vivo),
+  Agents, Tasks (task graph + replay), Activity, Files, Memory, Analytics y Settings.
+- **Mission Control**: estado, progreso (calculado del progreso real de cada paso),
+  agentes activos/completados/esperando, acción actual (último evento), tiempo y
+  última actividad.
+- **Red de agentes** (`public/network.js`): se genera a partir de la ejecución real
+  (`chat_run_agents`): un nodo por paso, capas por dependencias, ramas paralelas,
+  el revisor y el resultado. Estados visuales IDLE · PLANNING · THINKING · WORKING ·
+  ANALYZING · WAITING · REVIEWING · COMPLETED · ERROR derivados del estado guardado.
+  Sin ejecución, todo está en IDLE: no hay animaciones que finjan trabajo.
+- **Eventos** (`run_events`): `RUN_STARTED, PLAN_CREATED, TASK_CREATED/STARTED/COMPLETED/FAILED,
+  AGENT_STARTED/WORKING/WAITING/COMPLETED/ERROR, VALIDATION_STARTED/COMPLETED,
+  RUN_COMPLETED/FAILED/CANCELLED`, con milisegundos desde el inicio. Alimentan la
+  red, la timeline, Mission Control y el **Execution Replay** (reproduce los eventos
+  guardados; comprime las pausas largas a 1,2 s).
+- **Tiempo real**: `GET /api/workspace/projects/:id/stream` (SSE) envía el estado
+  solo cuando cambia la versión de la ejecución.
+- **Validación**: cuando colaboran 2 o más agentes, *Kairo Critic* revisa el borrador
+  (coherencia, contradicciones, que responde a lo pedido, contexto del proyecto) y,
+  si hay observaciones concretas, Kairo lo corrige una vez.
+- **¿Por qué este agente?**: cada paso guarda una explicación funcional (`why`):
+  palabra clave o capacidad que lo activó. Nunca razonamiento interno.
+- **Memoria del proyecto** (`project_memory`): objetivos, instrucciones,
+  preferencias, decisiones y datos; lo fijado se envía (con el objetivo, las
+  instrucciones y el extracto de archivos «en contexto») al planificador, a los
+  agentes, al agregador y al revisor (`src/orchestrator/context.ts`). Se puede
+  guardar un resultado en memoria desde el chat.
+- **Personalización** (`#/apariencia`, `public/theme.js`): temas Cyber, Emerald,
+  Purple, Blue, Red, Amber, Ice, Mono y Custom; colores de fondo, paneles,
+  tarjetas, bordes, texto, principal/secundario, botones, badges, etiquetas,
+  nodos, conexiones, brillo de robots y estados; glow, radio, densidad,
+  animaciones (off/suaves/normales, y off automático con «reducir movimiento»);
+  visual de agentes (Minimal/Balanced/Immersive, robot/orbe/hexágono,
+  conexiones curvas/rectas/discontinuas, etiquetas, descripciones, progreso e
+  información técnica). Se guarda en `user_prefs` (`GET|PUT /api/workspace/prefs`).
+- **Dashboard personalizable**: módulos AI Agents, Proyectos, Actividad, Tareas,
+  Uso, Analíticas, Estado del sistema, Archivos y Proveedores de IA (ocultable);
+  arrastrar para reordenar, columnas y densidad.
+
+> Control IA no usa Firebase: la autenticación, los usuarios y la propiedad de
+> los proyectos están en D1 (sesiones con cookie HttpOnly + CSRF). Todas las
+> rutas nuevas validan que el proyecto, la memoria, la ejecución y los archivos
+> pertenecen al usuario.
+
 ## Kairo: orquestador multiagente y multimodelo
 
 **Kairo** es la inteligencia propia de Control IA. Cada chat nuevo arranca en
@@ -173,7 +234,11 @@ VAPID y un service worker; queda como mejora).
 `GET /api/images/:id/file` · `PATCH|DELETE /api/images/:id` ·
 `GET /api/notifications` · `GET /api/notifications/summary` ·
 `POST /api/notifications/read-all` · `POST /api/notifications/:id/read` ·
-`GET|PUT /api/notifications/prefs`.
+`GET|PUT /api/notifications/prefs` · `GET /api/workspace/templates` · `GET /api/workspace/home` ·
+`POST /api/workspace/command/analyze|run` · `GET /api/workspace/projects/:id` (overview) ·
+`…/runs` · `…/activity` · `…/agents` · `…/analytics` · `…/stream` (SSE) · `GET|POST …/memory` ·
+`PATCH|DELETE /api/workspace/memory/:id` · `GET /api/workspace/runs/:id` (plan + eventos para replay) ·
+`GET|PUT /api/workspace/prefs`.
 
 ## Agent Hub y Control IA Pro
 

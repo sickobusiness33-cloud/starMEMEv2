@@ -248,6 +248,7 @@ async function boot() {
   // /upgrade (ruta directa) → vista #/upgrade conservando ?estado=…
   if (location.pathname === "/upgrade" && !location.hash) history.replaceState(null, "", `/${location.search}#/upgrade`);
   if (!S.user) return renderAuth(status.allow_signup);
+  await loadPrefs();
   S.catalog = await api("GET", "/api/catalog");
   S.providers = await api("GET", "/api/providers");
   route();
@@ -302,18 +303,19 @@ function renderAuth(allowSignup, mode = allowSignup ? "register" : "login") {
 
 // [clave, etiqueta, icono, visible en la barra inferior del móvil]
 const NAV = [
-  ["chat", "Kairo", "kairo", true], ["hub", "Agentes", "agents", true], ["studio", "Estudio", "studio", true],
-  ["panel", "Panel", "panel", false], ["proyectos", "Proyectos", "projects", false], ["notificaciones", "Avisos", "bell", true],
-  ["actividad", "Actividad", "activity", false], ["conectores", "Conectores", "connectors", false], ["configuracion", "Ajustes", "settings", false],
+  ["home", "Command", "home", true], ["chat", "Kairo", "kairo", true], ["proyectos", "Proyectos", "projects", true],
+  ["hub", "Agentes", "agents", false], ["studio", "Estudio", "studio", false], ["notificaciones", "Avisos", "bell", true],
+  ["panel", "Red global", "panel", false], ["actividad", "Auditoría", "activity", false], ["conectores", "Conectores", "connectors", false],
+  ["configuracion", "Ajustes", "settings", false], ["apariencia", "Apariencia", "brush", false],
 ];
 const SECTION_TITLE = {
-  chat: "Kairo", hub: "Agent Hub", "hub-runs": "Agent Hub", studio: "Estudio", panel: "Panel", proyectos: "Proyectos", notificaciones: "Notificaciones",
+  home: "Command Center", p: "Project workspace", apariencia: "Apariencia", chat: "Kairo", hub: "Agent Hub", "hub-runs": "Agent Hub", studio: "Estudio", panel: "Panel", proyectos: "Proyectos", notificaciones: "Notificaciones",
   actividad: "Actividad", conectores: "Conectores", configuracion: "Ajustes", upgrade: "Control IA Pro", fuentes: "Modelos y licencias", metricas: "Métricas",
 };
 
 function parseRoute() {
   const parts = location.hash.replace(/^#\/?/, "").split("?")[0].split("/").filter(Boolean);
-  return { section: parts[0] || "chat", id: parts[1] ? Number(parts[1]) : null, tab: parts[2] || "chat" };
+  return { section: parts[0] || "home", id: parts[1] ? Number(parts[1]) : null, tab: parts[2] || "chat" };
 }
 
 function route() {
@@ -329,7 +331,7 @@ function route() {
     planBadge.classList.toggle("pro", b.subscription.plan === "pro");
   }).catch(() => { planBadge.textContent = "plan"; });
 
-  const isCurrent = (key) => r.section === key || (key === "hub" && ["hub-runs", "fuentes"].includes(r.section));
+  const isCurrent = (key) => r.section === key || (key === "hub" && ["hub-runs", "fuentes"].includes(r.section)) || (key === "proyectos" && r.section === "p");
   const navLink = ([key, label, ic, primary]) => h("a", { href: `#/${key}`, class: primary ? "primary" : "secondary", "aria-current": isCurrent(key) ? "page" : null },
     h("span", { class: "nav-ico" }, icon(ic, 19)), h("span", { class: "nav-label" }, label), key === "actividad" ? pendingBadge : null);
   const moreSheet = h("div", { class: "more-sheet", hidden: true },
@@ -339,9 +341,9 @@ function route() {
     h("span", { class: "nav-ico" }, icon("more", 19)), h("span", { class: "nav-label" }, "Más"));
   document.addEventListener("click", () => { moreSheet.hidden = true; }, { once: true });
   const nav = h("nav", { class: "nav", "aria-label": "Secciones" },
-    h("a", { class: "side-brand", href: "#/chat" }, kairoLogo(30), h("span", {}, h("b", {}, "Control IA"), h("small", {}, `${BRAND_NAME} Intelligence`))),
+    h("a", { class: "side-brand", href: "#/home" }, kairoLogo(30), h("span", {}, h("b", {}, "Control IA"), h("small", {}, `${BRAND_NAME} Intelligence`))),
     h("div", { class: "nav-group" }, NAV.slice(0, 3).map(navLink)),
-    h("div", { class: "nav-sep" }, "Trabajo"),
+    h("div", { class: "nav-sep" }, "Agentes"),
     h("div", { class: "nav-group" }, NAV.slice(3, 6).map(navLink)),
     h("div", { class: "nav-sep" }, "Sistema"),
     h("div", { class: "nav-group" }, NAV.slice(6).map(navLink)),
@@ -380,7 +382,7 @@ function route() {
 
   const initials = (S.user.name || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
   const top = h("header", { class: "topbar" },
-    h("a", { class: "top-brand", href: "#/chat", "aria-label": "Control IA" }, kairoLogo(26)),
+    h("a", { class: "top-brand", href: "#/home", "aria-label": "Control IA" }, kairoLogo(26)),
     h("div", { class: "top-title" }, SECTION_TITLE[r.section] || "Control IA"),
     stats,
     h("div", { class: "top-actions" },
@@ -389,10 +391,12 @@ function route() {
       h("button", { class: "btn small ghost", type: "button", onclick: logout }, "Salir")));
   document.getElementById("app").replaceChildren(h("div", { class: "layout" }, nav, h("div", { class: "workspace" }, top, main)));
 
-  const views = { chat: viewChat, hub: viewHub, "hub-runs": viewHubRuns, upgrade: viewUpgrade, fuentes: viewSources, metricas: viewMetrics,
+  // Compatibilidad: los enlaces antiguos a proyectos abren el nuevo espacio de trabajo.
+  if (r.section === "proyectos" && r.id) { location.replace(`#/p/${r.id}/${r.tab === "archivos" ? "files" : r.tab === "ajustes" ? "settings" : r.tab === "ejecuciones" ? "tasks" : "overview"}`); return; }
+  const views = { home: viewHome, p: viewWorkspace, apariencia: viewAppearance, chat: viewChat, hub: viewHub, "hub-runs": viewHubRuns, upgrade: viewUpgrade, fuentes: viewSources, metricas: viewMetrics,
     studio: viewStudio, notificaciones: viewNotifications,
-    panel: viewPanel, proyectos: viewProjects, actividad: viewActivity, conectores: viewConnectors, configuracion: viewSettings };
-  (views[r.section] || viewChat)(main, r).catch((err) => main.replaceChildren(h("div", { class: "alert" }, err.message)));
+    panel: viewPanel, proyectos: viewProjectsOS, actividad: viewActivity, conectores: viewConnectors, configuracion: viewSettings };
+  (views[r.section] || viewHome)(main, r).catch((err) => main.replaceChildren(h("div", { class: "alert" }, err.message)));
 }
 
 async function logout() {
@@ -405,150 +409,11 @@ const providerById = (id) => (S.providers || []).find((p) => p.id === id);
 
 // ================================================================= PROYECTOS
 
-async function viewProjects(main, r) {
-  const listBox = h("ul", { "aria-label": "Lista de proyectos" });
-  const search = h("input", { type: "search", placeholder: "Buscar por nombre o descripción", value: S.filter.q, "aria-label": "Buscar proyectos" });
-  const filter = h("select", { "aria-label": "Filtrar proyectos" },
-    [["active", "Activos"], ["archived", "Archivados"], ["all", "Todos"]].map(([v, l]) => h("option", { value: v, selected: S.filter.status === v }, l)));
-  const detail = h("section", { class: "pdetail", "aria-label": "Detalle del proyecto" });
-  const wrap = h("div", { class: "projects" + (r.id ? " has-detail" : "") },
-    h("aside", { class: "plist card" },
-      h("div", { class: "card-h spread" }, h("span", {}, "Proyectos"),
-        h("button", { class: "btn small primary", type: "button", onclick: newProject }, "+ Nuevo")),
-      h("div", { class: "card-b stack" }, search, filter),
-      listBox),
-    detail);
-  main.replaceChildren(wrap);
-
-  const loadList = async () => {
-    listBox.replaceChildren(h("li", { class: "empty" }, "Cargando…"));
-    const params = new URLSearchParams({ q: S.filter.q, status: S.filter.status });
-    S.projects = await api("GET", `/api/projects?${params}`);
-    if (!S.projects.length) {
-      listBox.replaceChildren(h("li", {}, S.filter.q || S.filter.status !== "active"
-        ? empty("Sin resultados", "Ningún proyecto coincide con el filtro.")
-        : empty("Aún no hay proyectos", "Crea el primero para empezar.", h("button", { class: "btn primary", onclick: newProject }, "+ Nuevo proyecto"))));
-      return;
-    }
-    listBox.replaceChildren(...S.projects.map((p) => h("li", {}, h("a", { href: `#/proyectos/${p.id}/chat`, "aria-current": p.id === r.id ? "true" : null },
-      h("div", { class: "pname" }, h("span", { class: `swatch col-${p.color}`, "aria-hidden": "true" }), h("span", { class: "grow" }, p.name),
-        p.active_runs ? h("span", { class: "pill st-run" }, h("span", { class: "spin", "aria-hidden": "true" }, "↻"), p.active_runs) : null),
-      h("div", { class: "small muted" }, trunc(p.description, 70) || "Sin descripción"),
-      h("div", { class: "row small" },
-        p.is_demo ? h("span", { class: "pill badge-demo" }, "DEMO") : null,
-        p.status === "archived" ? h("span", { class: "pill st-idle" }, "▣ Archivado") : null,
-        h("span", { class: "muted" }, `${p.provider || "sin proveedor"} · ${p.run_count} ejecuciones`))))));
-  };
-  let t;
-  search.addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => { S.filter.q = search.value.trim(); loadList().catch((e) => toast(e.message, true)); }, 250); });
-  filter.addEventListener("change", () => { S.filter.status = filter.value; loadList().catch((e) => toast(e.message, true)); });
-  await loadList();
-
-  if (!r.id) {
-    const connectors = await api("GET", "/api/connectors").catch(() => []);
-    const hasAI = (S.providers || []).some((p) => !p.is_demo && p.key_source);
-    const hasGitHub = connectors.some((c) => c.type === "github" && c.status === "connected");
-    const step = (done, title, text, action) => h("li", { class: "card card-b row spread" },
-      h("div", { class: "grow" }, h("div", { class: "row" }, h("span", { class: `pill ${done ? "st-ok" : "st-idle"}` }, done ? "✓ Hecho" : "○ Pendiente"), h("b", {}, title)),
-        h("p", { class: "small muted", style: "margin:4px 0 0" }, text)), action);
-    detail.replaceChildren(h("div", { class: "stack" },
-      h("h1", {}, "Primeros pasos"),
-      h("ol", { class: "stack", style: "list-style:none;padding:0;margin:0" },
-        step(hasAI, "1. Conecta tu IA", "Pega tu API key de Anthropic (Claude) u OpenAI. Se guarda cifrada y solo la usas tú.",
-          h("a", { class: "btn small" + (hasAI ? "" : " primary"), href: "#/configuracion" }, hasAI ? "Ver mis IAs" : "Conectar IA")),
-        step(S.projects.length > 0, "2. Crea un proyecto por producto", "Dale instrucciones: qué es el producto, a quién va dirigido y qué quieres mejorar.",
-          h("button", { class: "btn small" + (hasAI && !S.projects.length ? " primary" : ""), type: "button", onclick: newProject }, "+ Nuevo proyecto")),
-        step(hasGitHub, "3. Conecta el repositorio (opcional)", "Con GitHub la IA puede leer tu código y proponerte cambios como Pull Request. Tú decides si fusionarlos.",
-          h("a", { class: "btn small", href: "#/conectores" }, hasGitHub ? "Ver conectores" : "Conectar GitHub")),
-        step(false, "4. Pide trabajo a la IA", "Ejemplo: «Analiza el repositorio y propón las 3 mejoras más importantes para el producto».",
-          S.projects[0] ? h("a", { class: "btn small", href: `#/proyectos/${S.projects[0].id}/chat` }, "Ir al chat") : null)),
-      !hasAI ? h("p", { class: "small muted" }, "¿Solo quieres probar? Usa el proveedor «Demostración (no es IA)»: no necesita clave.") : null));
-    return;
-  }
-  await renderProject(detail, r);
-}
-
 function providerOptions(selected) {
   return [h("option", { value: "" }, "— Elige proveedor —"),
     ...(S.providers || []).map((p) => h("option", { value: p.id, selected: p.id === selected },
       `${p.name}${p.configured ? "" : " (pendiente de configuración)"}`))];
 }
-
-async function newProject() {
-  const name = h("input", { type: "text", required: true, maxlength: 80 });
-  const description = h("input", { type: "text", maxlength: 500 });
-  const instructions = h("textarea", { maxlength: 20000, rows: 4 });
-  const preferred = (S.providers || []).find((p) => !p.is_demo && p.configured) || (S.providers || []).find((p) => p.is_demo);
-  const provider = h("select", {}, providerOptions(preferred ? preferred.id : ""));
-  const model = h("input", { type: "text", maxlength: 120, list: "new-models" });
-  const models = h("datalist", { id: "new-models" });
-  provider.addEventListener("change", async () => {
-    models.replaceChildren();
-    if (!provider.value) return;
-    const data = await api("GET", `/api/providers/${provider.value}/models`).catch(() => ({ models: [] }));
-    models.replaceChildren(...data.models.map((m) => h("option", { value: m })));
-    if (!model.value && data.models.length) model.value = data.models[0];
-  });
-  if (preferred) setTimeout(() => provider.dispatchEvent(new Event("change")), 0);
-  const created = await formDialog({
-    title: "Nuevo proyecto", submitLabel: "Crear proyecto",
-    fields: [field("Nombre", name), field("Descripción", description),
-      field("Instrucciones del sistema", instructions, "Se envían al modelo en cada tarea de este proyecto."),
-      field("Proveedor de IA", provider, "Puedes cambiarlo después en Ajustes."), field("Modelo", model), models],
-    onSubmit: () => api("POST", "/api/projects", { name: name.value.trim(), description: description.value.trim(),
-      instructions: instructions.value, provider: provider.value, model: model.value.trim() }),
-  });
-  if (created && created.id) { toast("Proyecto creado"); location.hash = `#/proyectos/${created.id}/chat`; }
-}
-
-const TABS = [["chat", "Chat"], ["ejecuciones", "Ejecuciones"], ["archivos", "Archivos"], ["herramientas", "Herramientas"],
-  ["conectores", "Conectores"], ["ajustes", "Ajustes"]];
-
-async function renderProject(container, r) {
-  container.replaceChildren(h("div", { class: "card" }, h("div", { class: "empty" }, "Cargando proyecto…")));
-  let project;
-  try { project = await api("GET", `/api/projects/${r.id}`); }
-  catch (err) { container.replaceChildren(h("div", { class: "card" }, empty("No se pudo abrir el proyecto", err.message, h("a", { class: "btn", href: "#/proyectos" }, "Volver")))); return; }
-  const provider = providerById(project.provider);
-  const tabPanel = h("div", { class: "card-b", role: "tabpanel", id: "tabpanel" });
-  const tabs = h("div", { class: "tabs", role: "tablist", "aria-label": "Secciones del proyecto" }, TABS.map(([key, label]) =>
-    h("button", { type: "button", role: "tab", "aria-selected": r.tab === key ? "true" : "false", "aria-controls": "tabpanel",
-      onclick: () => { location.hash = `#/proyectos/${project.id}/${key}`; } }, label)));
-  tabs.addEventListener("keydown", (e) => {
-    if (!["ArrowRight", "ArrowLeft"].includes(e.key)) return;
-    const idx = TABS.findIndex(([k]) => k === r.tab);
-    const next = TABS[(idx + (e.key === "ArrowRight" ? 1 : TABS.length - 1)) % TABS.length][0];
-    location.hash = `#/proyectos/${project.id}/${next}`;
-  });
-  let warning = null;
-  if (!project.provider || !project.model) {
-    warning = h("div", { class: "note" }, "! Este proyecto no tiene proveedor o modelo. ", h("a", { href: `#/proyectos/${project.id}/ajustes` }, "Configúralo en Ajustes"), ".");
-  } else if (provider && !provider.configured) {
-    warning = h("div", { class: "note" }, "! ", provider.problem, " ", h("a", { href: "#/configuracion" }, "Conectar mi IA"));
-  } else if (provider && provider.is_demo) {
-    warning = h("div", { class: "info small" }, "Proveedor de demostración: las respuestas NO las genera una IA. Comandos de prueba: ",
-      h("code", {}, "/herramienta <nombre> {json}"), " · ", h("code", {}, "/lento 10"), " · ", h("code", {}, "/fallar"));
-  }
-  container.replaceChildren(h("div", { class: "card" },
-    h("div", { class: `node-h col-${project.color}` }, h("span", { class: "title" }, slug(project.name) + ".proj")),
-    h("div", { class: "card-b stack" },
-      h("a", { class: "btn small only-mobile", href: "#/proyectos" }, "← Proyectos"),
-      h("div", { class: "row spread" },
-        h("div", { class: "grow phead" },
-          h("h1", {}, project.name),
-          h("p", { class: "muted" }, project.description || "Sin descripción")),
-        h("div", { class: "row" },
-          project.is_demo ? h("span", { class: "pill badge-demo" }, "DEMO — datos de ejemplo") : null,
-          project.status === "archived" ? h("span", { class: "pill st-idle" }, "▣ Archivado") : null,
-          h("span", { class: "pill st-idle" }, `${project.provider || "—"} / ${project.model || "—"}`),
-          project.provider ? providerPill(provider) : null)),
-      warning),
-    tabs, tabPanel));
-  const renderers = { chat: tabChat, ejecuciones: tabRuns, archivos: tabFiles, herramientas: tabTools, conectores: tabProjectConnectors, ajustes: tabSettings };
-  await (renderers[r.tab] || tabChat)(tabPanel, project);
-}
-
-// ------------------------------------------------------------------ chat
 
 function runControls(run, onChange) {
   const act = (label, path, cls = "") => h("button", { class: `btn small ${cls}`, type: "button", onclick: (e) => withBusy(e.target, async () => {
@@ -757,49 +622,6 @@ async function tabChat(panel, project) {
 }
 
 // ------------------------------------------------------------------ ejecuciones
-
-async function tabRuns(panel, project) {
-  const q = h("input", { type: "search", placeholder: "Buscar en entradas, resultados y errores", "aria-label": "Buscar ejecuciones" });
-  const status = h("select", { "aria-label": "Filtrar por estado" }, h("option", { value: "" }, "Todos los estados"),
-    Object.entries(RUN_STATUS).map(([k, [label]]) => h("option", { value: k }, label)));
-  const list = h("div", { class: "stack" });
-  const searchAll = h("div", { class: "stack" });
-  panel.replaceChildren(h("div", { class: "stack" }, h("div", { class: "row" }, h("div", { class: "grow" }, q), status), searchAll, list));
-
-  const load = async () => {
-    const params = new URLSearchParams({ q: q.value.trim(), status: status.value });
-    const runs = await api("GET", `/api/projects/${project.id}/runs?${params}`);
-    if (!runs.length) { list.replaceChildren(empty("Sin ejecuciones", q.value || status.value ? "Nada coincide con la búsqueda." : "Las tareas que lances en el chat aparecerán aquí.")); return; }
-    const open = new Set([...list.querySelectorAll("details[open]")].map((d) => d.dataset.id));
-    list.replaceChildren(...runs.map((run) => h("details", { class: "card", "data-id": run.id, open: open.has(String(run.id)) },
-      h("summary", { class: "card-b row" }, pill(RUN_STATUS, run.status), h("span", { class: "muted" }, `#${run.id}`),
-        h("span", { class: "grow" }, trunc(run.input, 90)), h("span", { class: "small muted" }, `${run.model} · ${fmtDate(run.created_at)}`)),
-      h("div", { class: "card-b stack" },
-        h("div", { class: "small muted" }, `Proveedor ${run.provider} · pasos ${run.steps} · tokens ${run.usage.input_tokens || 0}→${run.usage.output_tokens || 0}` +
-          (run.started_at ? ` · inicio ${fmtTime(run.started_at)}` : "") + (run.finished_at ? ` · fin ${fmtTime(run.finished_at)}` : "")),
-        h("div", {}, h("div", { class: "mono-up muted" }, "Entrada"), h("div", { class: "pre" }, run.input)),
-        run.output ? h("div", {}, h("div", { class: "row spread" }, h("span", { class: "mono-up muted" }, "Resultado"),
-          h("button", { class: "btn small", type: "button", onclick: () => copyText(run.output) }, "Copiar resultado")), h("div", { class: "pre" }, run.output)) : null,
-        run.error ? h("div", { class: "alert row spread" }, h("span", { class: "grow pre" }, run.error),
-          h("button", { class: "btn small", type: "button", onclick: () => copyText(run.error) }, "Copiar error")) : null,
-        run.actions.map((a) => actionCard(a, load)),
-        h("div", { class: "row" }, runControls(run, load))))));
-  };
-  const searchHistory = async () => {
-    const term = q.value.trim();
-    if (term.length < 2) { searchAll.replaceChildren(); return; }
-    const res = await api("GET", `/api/projects/${project.id}/search?q=${encodeURIComponent(term)}`);
-    searchAll.replaceChildren(h("div", { class: "info small" }, `Mensajes de conversaciones que contienen «${term}»: ${res.messages.length}`,
-      res.messages.slice(0, 8).map((m) => h("div", {}, h("b", {}, m.role === "user" ? "Tú" : "IA"), ` en «${trunc(m.conversation_title, 30)}»: `, trunc(m.content, 120)))));
-  };
-  let t;
-  q.addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => { load(); searchHistory(); }, 300); });
-  status.addEventListener("change", load);
-  await load();
-  every(3000, load);
-}
-
-// ------------------------------------------------------------------ archivos
 
 async function tabFiles(panel, project) {
   const list = h("div", { class: "table-wrap" });

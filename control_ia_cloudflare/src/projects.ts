@@ -8,6 +8,7 @@ import { all, dumps, loads, nowIso, one, run, update } from "./db";
 import type { AppEnv, Env, Settings } from "./env";
 import { boolOf, fail, intIn, jsonBody, objOf, reqStr, str, toId } from "./http";
 import { ProviderError, availableProviderIds, getProvider } from "./providers";
+import { TEMPLATE_MAP } from "./templates";
 import { TOOLS, toolStatus } from "./tools";
 
 export const COLORS = ["azul", "rosa", "morado", "verde", "turquesa", "naranja"];
@@ -47,11 +48,18 @@ export async function projectOut(env: Env, row: any) {
     row.id,
   );
   const files = await one<any>(env.DB, "SELECT COUNT(*) AS n FROM project_files WHERE project_id = ?", row.id);
+  const kairo = await one<any>(
+    env.DB,
+    "SELECT COUNT(*) AS runs, SUM(status IN ('queued','planning','running','aggregating','validating')) AS active, SUM(status = 'completed') AS completed, MAX(created_at) AS last_at FROM chat_runs WHERE project_id = ?",
+    row.id,
+  );
   const tools = await one<any>(env.DB, "SELECT COUNT(*) AS n FROM project_tools WHERE project_id = ?", row.id);
   return {
     id: row.id,
     name: row.name,
     description: row.description,
+    objective: row.objective ?? "",
+    template: row.template ?? "custom",
     instructions: row.instructions,
     color: row.color,
     status: row.status,
@@ -66,6 +74,10 @@ export async function projectOut(env: Env, row: any) {
     active_runs: stats?.active ?? 0,
     last_run_at: stats?.last_run ?? null,
     file_count: files?.n ?? 0,
+    task_count: kairo?.runs ?? 0,
+    task_active: kairo?.active ?? 0,
+    task_completed: kairo?.completed ?? 0,
+    last_task_at: kairo?.last_at ?? null,
     tool_count: tools?.n ?? 0,
   };
 }
@@ -121,8 +133,11 @@ projectRoutes.post("/", async (c) => {
   const body = await jsonBody(c.req.raw);
   const name = reqStr(body, "name", { label: "nombre", min: 1, max: 80 });
   const description = str(body, "description", { label: "descripción", max: 500, optional: true }) ?? "";
-  const instructions = str(body, "instructions", { label: "instrucciones", max: 20_000, optional: true, trim: false }) ?? "";
-  const color = str(body, "color", { label: "color", max: 20, optional: true }) || "azul";
+  // Solo nombre y objetivo son necesarios: proveedor y modelo son opcionales (AUTO = Kairo decide).
+  const template = TEMPLATE_MAP.get(str(body, "template", { label: "plantilla", max: 20, optional: true }) || "custom") ?? TEMPLATE_MAP.get("custom")!;
+  const objective = str(body, "objective", { label: "objetivo", max: 1000, optional: true }) || description || template.objective;
+  const instructions = str(body, "instructions", { label: "instrucciones", max: 20_000, optional: true, trim: false }) ?? template.instructions;
+  const color = str(body, "color", { label: "color", max: 20, optional: true }) || template.color || "azul";
   if (!COLORS.includes(color)) fail(422, "Color no válido.");
   const provider = str(body, "provider", { label: "proveedor", max: 40, optional: true }) ?? "";
   const model = str(body, "model", { label: "modelo", max: 120, optional: true }) ?? "";
@@ -130,10 +145,12 @@ projectRoutes.post("/", async (c) => {
   const now = nowIso();
   const id = await run(
     c.env.DB,
-    "INSERT INTO projects (owner_id, name, description, instructions, color, provider, model, params_json, limits_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO projects (owner_id, name, description, objective, template, instructions, color, provider, model, params_json, limits_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     u.id,
     name,
-    description,
+    description || objective.slice(0, 500),
+    objective,
+    template.id,
     instructions,
     color,
     provider,
@@ -143,7 +160,10 @@ projectRoutes.post("/", async (c) => {
     now,
     now,
   );
-  await record(c.env.DB, { actor: u.email, userId: u.id, projectId: id, action: "proyecto.crear", target: name });
+  for (const m of template.memory) {
+    await run(c.env.DB, "INSERT INTO project_memory (project_id, kind, content, source, created_at, updated_at) VALUES (?, ?, ?, 'user', ?, ?)", id, m.kind, m.content, now, now);
+  }
+  await record(c.env.DB, { actor: u.email, userId: u.id, projectId: id, action: "proyecto.crear", target: name, detail: `plantilla=${template.id}` });
   return c.json(await projectOut(c.env, await getProject(c, id)));
 });
 
@@ -161,6 +181,8 @@ projectRoutes.patch("/:id", async (c) => {
   if (description !== undefined) fields.description = description;
   const instructions = str(body, "instructions", { label: "instrucciones", max: 20_000, optional: true, trim: false });
   if (instructions !== undefined) fields.instructions = instructions;
+  const objective = str(body, "objective", { label: "objetivo", max: 1000, optional: true });
+  if (objective !== undefined) fields.objective = objective;
   const color = str(body, "color", { label: "color", max: 20, optional: true });
   if (color !== undefined) {
     if (!COLORS.includes(color)) fail(422, "Color no válido.");

@@ -38,6 +38,14 @@ const ICONS = {
   refresh: "M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6",
   image: "M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4",
   copy: "M8 8h11v11H8zM5 16V5h11",
+  play: "M7 5l12 7-12 7z",
+  pause: "M8 5v14M16 5v14",
+  home: "M4 11l8-7 8 7v9h-5v-6H9v6H4z",
+  brush: "M4 20c2 0 4-1 4-3 0-1.5 1.5-2 3-2l8-9-3-3-9 8c0 1.5-.5 3-2 3-2 0-3 2-3 6z",
+  memory: "M6 4h12v16H6zM9 8h6M9 12h6M9 16h4",
+  grid: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
+  back: "M15 5l-7 7 7 7",
+  bolt: "M13 3L5 14h6l-1 7 8-11h-6z",
 };
 
 function icon(name, size = 18, cls = "") {
@@ -70,9 +78,9 @@ function kairoAvatar(state = "idle", size = 40) {
 
 const KAIRO_STATE_LABEL = {
   idle: "Listo", queued: "En cola", planning: "Analizando tu petición", running: "Coordinando agentes",
-  aggregating: "Componiendo la respuesta", completed: "Hecho", failed: "Error", cancelled: "Cancelado",
+  aggregating: "Componiendo la respuesta", validating: "Revisando el resultado", completed: "Hecho", failed: "Error", cancelled: "Cancelado",
 };
-const KAIRO_AVATAR_STATE = { queued: "thinking", planning: "thinking", running: "orchestrating", aggregating: "composing", completed: "done", failed: "error", cancelled: "idle" };
+const KAIRO_AVATAR_STATE = { queued: "thinking", planning: "thinking", running: "orchestrating", aggregating: "composing", validating: "composing", completed: "done", failed: "error", cancelled: "idle" };
 
 /* ------------------------------------------------------------- estados de agentes */
 
@@ -313,7 +321,7 @@ async function viewChat(main) {
       renderActivity(state);
       if (!liveNode) { liveNode = kairoWorking(); msgs.append(liveNode); scroll(); }
       updateWorking(liveNode, state, agentsById);
-      if (!["queued", "planning", "running", "aggregating"].includes(state.run.status)) finish(state);
+      if (!["queued", "planning", "running", "aggregating", "validating"].includes(state.run.status)) finish(state);
     };
     const finish = (state) => {
       closeStream();
@@ -334,10 +342,10 @@ async function viewChat(main) {
       es.addEventListener("done", () => closeStream());
       es.onerror = () => {
         // Reconexión: EventSource reintenta solo; si la ejecución ya terminó, se pide el estado final.
-        api("GET", `/api/chat/runs/${runId}`).then((st) => { if (!["queued", "planning", "running", "aggregating"].includes(st.run.status)) onState(st); }).catch(() => {});
+        api("GET", `/api/chat/runs/${runId}`).then((st) => { if (!["queued", "planning", "running", "aggregating", "validating"].includes(st.run.status)) onState(st); }).catch(() => {});
       };
     } else {
-      const tid = every(2000, async () => { const st = await api("GET", `/api/chat/runs/${runId}`); onState(st); if (!["queued", "planning", "running", "aggregating"].includes(st.run.status)) clearInterval(tid); });
+      const tid = every(2000, async () => { const st = await api("GET", `/api/chat/runs/${runId}`); onState(st); if (!["queued", "planning", "running", "aggregating", "validating"].includes(st.run.status)) clearInterval(tid); });
     }
   };
 
@@ -438,7 +446,7 @@ function updateWorking(node, state, agentsById) {
     : `Coordinando ${state.agents.length} agente${state.agents.length === 1 ? "" : "s"} · ${done} completado${done === 1 ? "" : "s"}`;
   node.querySelector(".kx-working-line").replaceChildren(h("span", { class: "kx-shimmer" }, line));
   node.querySelector(".kx-working-agents").replaceChildren(...state.agents.map((a) => {
-    const info = agentsById.get(a.agent_id) || { id: a.agent_id, name: a.agent_id, color: "azul", category: "general" };
+    const info = agentsById.get(a.agent_id) || (a.agent_id === "kairo-reviewer" ? { id: a.agent_id, name: "Kairo Critic", color: "turquesa", category: "security" } : { id: a.agent_id, name: a.agent_id, color: "azul", category: "general" });
     return h("span", { class: `kx-chip s-${(AGENT_STATE[a.status] || ["idle"])[0]}` }, agentGlyph(info, 18), info.name);
   }));
 }
@@ -449,7 +457,7 @@ function fmtMs(ms) { return ms == null ? "" : ms < 1000 ? `${ms} ms` : `${(ms / 
 
 function renderActivityPanel(root, toggle, reg, agentsById, state) {
   const active = state ? state.agents : [];
-  const running = state && ["queued", "planning", "running", "aggregating"].includes(state.run.status);
+  const running = state && ["queued", "planning", "running", "aggregating", "validating"].includes(state.run.status);
   const busy = active.filter((a) => (AGENT_STATE[a.status] || [])[0] === "busy").length;
   toggle.classList.toggle("live", Boolean(running));
   toggle.querySelector(".kx-sheet-label").textContent = running ? `${busy || active.length} agente${(busy || active.length) === 1 ? "" : "s"} trabajando` : `${reg.agents.length} agentes listos`;
@@ -470,7 +478,7 @@ function renderActivityPanel(root, toggle, reg, agentsById, state) {
     flow.append(h("div", { class: "kx-note" }, "Respuesta directa: ningún agente especializado era necesario."));
   }
   for (const a of active) {
-    const info = agentsById.get(a.agent_id) || { id: a.agent_id, name: a.agent_id, color: "azul", category: "general" };
+    const info = agentsById.get(a.agent_id) || (a.agent_id === "kairo-reviewer" ? { id: a.agent_id, name: "Kairo Critic", color: "turquesa", category: "security" } : { id: a.agent_id, name: a.agent_id, color: "azul", category: "general" });
     const [cls, label] = AGENT_STATE[a.status] || ["idle", a.status];
     const deps = (a.depends_on || []).map((d) => active.find((x) => x.step === d)).filter(Boolean).map((x) => (agentsById.get(x.agent_id) || { name: x.agent_id }).name);
     flow.append(h("div", { class: `kx-node agent s-${cls}`, style: `--c:${COLOR_HEX[info.color] || COLOR_HEX.azul}` },

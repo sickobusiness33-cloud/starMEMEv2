@@ -13,10 +13,10 @@ import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { requireUser } from "./auth";
 import { all, dumps, loads, nowIso, one, run } from "./db";
-import type { AppEnv } from "./env";
+import type { AppEnv, Env } from "./env";
 import { fail, jsonBody, objOf, reqStr, str, toId } from "./http";
 import { ownedImages } from "./hub";
-import { getSubscription, PLAN_LIMITS, usageToday } from "./plans";
+import { getSubscription, PLAN_LIMITS, usageToday, type PlanId } from "./plans";
 import { hit } from "./ratelimit";
 import { generate, RouterError } from "./ai/router";
 import { MODEL_MAP, MODELS, publicModel } from "./ai/models";
@@ -24,7 +24,7 @@ import { getAgent, listAgents } from "./agents/registry";
 import { CATEGORIES, TOOL_INFO } from "./agents/types";
 import { BRAND } from "./orchestrator/brand";
 import { runState, type ManualConfig } from "./orchestrator/executor";
-import { orchestratorPool } from "./orchestrator/planner";
+import { orchestratorPool, roleOf } from "./orchestrator/planner";
 
 export const chatRoutes = new Hono<AppEnv>();
 chatRoutes.use("*", requireUser);
@@ -35,8 +35,47 @@ const SYSTEM =
 
 const MODE = /^(auto|router|claude|free|agent:[a-z0-9][a-z0-9-]{1,59})$/;
 const HISTORY = 12;
-const ACTIVE = ["queued", "planning", "running", "aggregating"];
+export const ACTIVE = ["queued", "planning", "running", "aggregating", "validating"];
 const CAT_LABEL = Object.fromEntries(CATEGORIES.map((c) => [c.id, c.label]));
+
+export async function ownedProject(db: D1Database, userId: number, raw: unknown): Promise<number> {
+  const p = await one<any>(db, "SELECT id FROM projects WHERE id = ? AND owner_id = ?", Number(raw), userId);
+  if (!p) fail(404, "Proyecto no encontrado.");
+  return p.id;
+}
+
+/** Nuevo chat: modo AUTO activado y todos los agentes disponibles (no hay que activarlos). */
+export async function createThread(db: D1Database, userId: number, o: { title: string; mode?: string; projectId?: number | null }) {
+  const now = nowIso();
+  return run(db, "INSERT INTO chat_threads (user_id, title, mode, auto_mode, project_id, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?)", userId, o.title, o.mode ?? "auto", o.projectId ?? null, now, now);
+}
+
+/** Envía un mensaje al orquestador (lo usan el chat y el centro de comandos). */
+export async function startOrchestrated(env: Env, userId: number, plan: PlanId, t: any, content: string, images: number[]) {
+  const busy = await one<any>(env.DB, `SELECT id FROM chat_runs WHERE thread_id = ? AND status IN (${ACTIVE.map(() => "?").join(",")})`, t.id, ...ACTIVE);
+  if (busy) fail(409, `${BRAND.name} aún está trabajando en tu mensaje anterior.`);
+  const now = nowIso();
+  const mid = await run(env.DB, "INSERT INTO chat_messages (thread_id, role, content, images_json, created_at) VALUES (?, 'user', ?, ?, ?)", t.id, content, dumps(images), now);
+  const manual = t.auto_mode ? null : loads<ManualConfig>(t.manual_json, {});
+  const runId = await run(
+    env.DB,
+    "INSERT INTO chat_runs (thread_id, user_id, message_id, status, mode, plan_json, plan, project_id, created_at) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?)",
+    t.id,
+    userId,
+    mid,
+    manual ? "manual" : "auto",
+    dumps(manual ? { manual } : {}),
+    plan,
+    t.project_id ?? null,
+    now,
+  );
+  const title = t.title === "Nueva conversación" ? content.replace(/\s+/g, " ").slice(0, 60) : t.title;
+  await run(env.DB, "UPDATE chat_threads SET mode = 'auto', title = ?, updated_at = ? WHERE id = ?", title, now, t.id);
+  if (t.project_id) await run(env.DB, "UPDATE projects SET updated_at = ? WHERE id = ?", now, t.project_id);
+  await env.RUNS.send({ chatRunId: runId });
+  const message = await one<any>(env.DB, "SELECT * FROM chat_messages WHERE id = ?", mid);
+  return { message: { ...message, images, images_json: undefined }, run: (await runState(env.DB, runId))!.run };
+}
 
 async function ownThread(c: Context<AppEnv>) {
   const row = await one<any>(c.env.DB, "SELECT * FROM chat_threads WHERE id = ? AND user_id = ?", toId(c.req.param("id")), c.get("user").id);
@@ -69,23 +108,29 @@ chatRoutes.get("/agents", async (c) => {
       needs_image: a.input.image === "required",
       tools: a.tools,
       capability: a.model.capability ?? "chat",
+      role: roleOf(a),
+      capabilities: a.capabilities,
     })),
     models: MODELS.filter((m) => m.kind === "text").map(publicModel),
     tools: Object.entries(TOOL_INFO).map(([id, t]) => ({ id, ...t })),
   });
 });
 
-chatRoutes.get("/threads", async (c) =>
-  c.json((await all(c.env.DB, "SELECT * FROM chat_threads WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50", c.get("user").id)).map(threadOut)),
-);
+chatRoutes.get("/threads", async (c) => {
+  const pid = Number(c.req.query("project_id") || 0);
+  // Historial de chat separado de los datos del proyecto: la lista global no mezcla los chats de proyectos.
+  const rows = pid
+    ? await all(c.env.DB, "SELECT * FROM chat_threads WHERE user_id = ? AND project_id = ? ORDER BY updated_at DESC LIMIT 50", c.get("user").id, pid)
+    : await all(c.env.DB, "SELECT * FROM chat_threads WHERE user_id = ? AND project_id IS NULL ORDER BY updated_at DESC LIMIT 50", c.get("user").id);
+  return c.json(rows.map(threadOut));
+});
 
 chatRoutes.post("/threads", async (c) => {
   const body = await jsonBody(c.req.raw);
   const mode = str(body, "mode", { label: "Modo", max: 70, pattern: MODE, optional: true }) ?? "auto";
   const title = str(body, "title", { label: "Título", max: 80, optional: true }) || "Nueva conversación";
-  const now = nowIso();
-  // Nuevo chat: modo AUTO activado y todos los agentes disponibles (no hay que activarlos).
-  const id = await run(c.env.DB, "INSERT INTO chat_threads (user_id, title, mode, auto_mode, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)", c.get("user").id, title, mode, now, now);
+  const projectId = body.project_id ? await ownedProject(c.env.DB, c.get("user").id, body.project_id) : null;
+  const id = await createThread(c.env.DB, c.get("user").id, { title, mode, projectId });
   return c.json(threadOut(await one(c.env.DB, "SELECT * FROM chat_threads WHERE id = ?", id)), 201);
 });
 
@@ -155,27 +200,7 @@ chatRoutes.post("/threads/:id/messages", async (c) => {
   const title = t.title === "Nueva conversación" ? content.replace(/\s+/g, " ").slice(0, 60) : t.title;
 
   // --- Kairo: orquestador multiagente ---
-  if (mode === "auto") {
-    const busy = await one<any>(c.env.DB, `SELECT id FROM chat_runs WHERE thread_id = ? AND status IN (${ACTIVE.map(() => "?").join(",")})`, t.id, ...ACTIVE);
-    if (busy) fail(409, `${BRAND.name} aún está trabajando en tu mensaje anterior.`);
-    const mid = await run(c.env.DB, "INSERT INTO chat_messages (thread_id, role, content, images_json, created_at) VALUES (?, 'user', ?, ?, ?)", t.id, content, dumps(images), now);
-    const manual = t.auto_mode ? null : loads<ManualConfig>(t.manual_json, {});
-    const runId = await run(
-      c.env.DB,
-      "INSERT INTO chat_runs (thread_id, user_id, message_id, status, mode, plan_json, plan, created_at) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)",
-      t.id,
-      user.id,
-      mid,
-      manual ? "manual" : "auto",
-      dumps(manual ? { manual } : {}),
-      sub.plan,
-      now,
-    );
-    await run(c.env.DB, "UPDATE chat_threads SET mode = ?, title = ?, updated_at = ? WHERE id = ?", mode, title, now, t.id);
-    await c.env.RUNS.send({ chatRunId: runId });
-    const message = await one<any>(c.env.DB, "SELECT * FROM chat_messages WHERE id = ?", mid);
-    return c.json({ message: { ...message, images: images, images_json: undefined }, run: (await runState(c.env.DB, runId))!.run }, 202);
-  }
+  if (mode === "auto") return c.json(await startOrchestrated(c.env, user.id, sub.plan, t, content, images), 202);
 
   // --- Modos directos (síncronos) ---
   let system = SYSTEM;
