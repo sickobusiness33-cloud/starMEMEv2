@@ -44,6 +44,7 @@ const DEFAULT_PREFS = {
   // Red global (página principal): tamaño de nodos, orden y qué se muestra.
   panel: { size: "auto", sort: "recent", connectors: true, archived: false, tangle: true, particles: true, hidden: [] },
   ui: { nav: "open" },
+  canvas: { nodes: [], links: [], seeded: false },
 };
 
 const PREFS = { data: structuredClone(DEFAULT_PREFS), timer: null };

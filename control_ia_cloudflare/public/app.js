@@ -304,12 +304,12 @@ function renderAuth(allowSignup, mode = allowSignup ? "register" : "login") {
 // [clave, etiqueta, icono, visible en la barra inferior del móvil]
 const NAV = [
   ["panel", "Red global", "network", true], ["home", "Command", "home", false], ["chat", "Kairo", "kairo", true], ["proyectos", "Proyectos", "projects", true],
-  ["hub", "Agentes", "agents", false], ["studio", "Estudio", "studio", false], ["notificaciones", "Avisos", "bell", true],
+  ["hub", "Agentes", "agents", false], ["lienzo", "Lienzo", "canvas", false], ["studio", "Estudio", "studio", false], ["notificaciones", "Avisos", "bell", true],
   ["actividad", "Auditoría", "activity", false], ["conectores", "Conectores", "connectors", false],
   ["configuracion", "Ajustes", "settings", false], ["apariencia", "Apariencia", "brush", false],
 ];
 const SECTION_TITLE = {
-  home: "Command Center", p: "Project workspace", apariencia: "Apariencia", chat: "Kairo", hub: "Agent Hub", "hub-runs": "Agent Hub", studio: "Estudio", panel: "Red global", proyectos: "Proyectos", notificaciones: "Notificaciones",
+  home: "Command Center", p: "Project workspace", apariencia: "Apariencia", chat: "Kairo", hub: "Agent Hub", "hub-runs": "Agent Hub", studio: "Estudio", panel: "Red global", lienzo: "Lienzo de robots", proyectos: "Proyectos", notificaciones: "Notificaciones",
   actividad: "Actividad", conectores: "Conectores", configuracion: "Ajustes", upgrade: "Control IA Pro", fuentes: "Modelos y licencias", metricas: "Métricas",
 };
 
@@ -355,9 +355,9 @@ function route() {
       navToggle),
     h("div", { class: "nav-group" }, NAV.slice(0, 4).map(navLink)),
     h("div", { class: "nav-sep" }, "Agentes"),
-    h("div", { class: "nav-group" }, NAV.slice(4, 7).map(navLink)),
+    h("div", { class: "nav-group" }, NAV.slice(4, 8).map(navLink)),
     h("div", { class: "nav-sep" }, "Sistema"),
-    h("div", { class: "nav-group" }, NAV.slice(7).map(navLink)),
+    h("div", { class: "nav-group" }, NAV.slice(8).map(navLink)),
     moreBtn, moreSheet,
     h("a", { class: "side-pro", href: "#/upgrade", title: "Control IA Pro" }, icon("star", 16), h("span", {}, "Control IA Pro")));
 
@@ -405,7 +405,7 @@ function route() {
   // Compatibilidad: los enlaces antiguos a proyectos abren el nuevo espacio de trabajo.
   if (r.section === "proyectos" && r.id) { location.replace(`#/p/${r.id}/${r.tab === "archivos" ? "files" : r.tab === "ajustes" ? "settings" : r.tab === "ejecuciones" ? "tasks" : "overview"}`); return; }
   const views = { home: viewHome, p: viewWorkspace, apariencia: viewAppearance, chat: viewChat, hub: viewHub, "hub-runs": viewHubRuns, upgrade: viewUpgrade, fuentes: viewSources, metricas: viewMetrics,
-    studio: viewStudio, notificaciones: viewNotifications,
+    studio: viewStudio, notificaciones: viewNotifications, lienzo: viewCanvas,
     panel: viewPanel, proyectos: viewProjectsOS, actividad: viewActivity, conectores: viewConnectors, configuracion: viewSettings };
   (views[r.section] || viewPanel)(main, r).catch((err) => main.replaceChildren(h("div", { class: "alert" }, err.message)));
 }

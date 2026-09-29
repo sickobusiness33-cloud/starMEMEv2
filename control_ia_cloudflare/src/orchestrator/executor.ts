@@ -88,6 +88,8 @@ interface Ctx {
   history: ChatMsg[];
   images: number[];
   manual: ManualConfig | null;
+  /** Modelo de texto elegido por el usuario (modo manual o selector de modelo en modo auto). */
+  model: string | null;
   notices: string[];
 }
 
@@ -213,7 +215,7 @@ async function runAgentStep(c: Ctx, agent: RegistryAgent, step: PlanStep, rowId:
         userInput: c.request,
         outputs,
         tools: usesImages ? { images: c.images } : {},
-        model: c.manual?.model ?? undefined,
+        model: c.model ?? undefined,
         disabledTools: new Set(c.manual?.tools_off ?? []),
       },
       s,
@@ -339,7 +341,7 @@ async function aggregate(c: Ctx, plan: Plan, byId: Map<string, RegistryAgent>, r
       prefer: "premium",
       allowFallback: true,
       capability: "chat",
-      model: c.manual?.model ?? undefined,
+      model: c.model ?? undefined,
     });
     note(c, res.notices);
     return { text: res.text, provider: res.provider, model: res.model, fallback: res.fallback || ok.some((x) => x.r.metadata.fallback), images };
@@ -433,7 +435,7 @@ async function direct(c: Ctx) {
     prefer: "premium",
     allowFallback: true,
     capability: "chat",
-    model: c.manual?.model ?? undefined,
+    model: c.model ?? undefined,
   });
   note(c, res.notices);
   return { text: res.text, provider: res.provider, model: res.model, fallback: res.fallback, images: [] as { id: number; agent: string }[] };
@@ -459,6 +461,7 @@ export async function processChatRun(env: Env, runId: number) {
     history: prev.reverse().map((m) => ({ role: m.role, content: m.content })),
     images: loads<number[]>(msg?.images_json, []),
     manual: runRow.mode === "manual" ? ((loads<any>(runRow.plan_json, {}).manual ?? {}) as ManualConfig) : null,
+    model: (runRow.mode === "manual" ? loads<any>(runRow.plan_json, {}).manual?.model : loads<any>(runRow.plan_json, {}).model) ?? null,
     notices: [],
   };
   const t0 = c.t0;

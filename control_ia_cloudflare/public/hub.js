@@ -40,47 +40,79 @@ function providerBadge(provider, model, fallback) {
  * Representación propia de cada agente (no se usan imágenes de terceros).
  * state: idle | running | completed | failed | pending
  */
-function robot(color, state = "idle", size = 64, seed = 0) {
+/**
+ * Robot único por agente. La semilla (id del agente) decide cabeza, ojos, antena,
+ * orejas y placa; la categoría pone su icono en la pantalla del pecho.
+ */
+function robot(color, state = "idle", size = 64, seed = 0, category = null, code = null) {
   const c = COLOR_HEX[color] || COLOR_HEX.azul;
   const eyes = state === "failed" ? "#ff4d5e" : state === "completed" ? "#34f5a4" : "#38d6ff";
-  const variant = seed % 3; // tres cabezas distintas: rectangular, visor ancho y cabeza con cresta
-  const INK = "#0e0f11", SCREEN = "#070b10";
-  const head = variant === 1
-    ? svg("rect", { x: 10, y: 12, width: 44, height: 27, rx: 6, fill: "#fff", stroke: INK, "stroke-width": 2.2 })
-    : variant === 2
-      ? svg("path", { d: "M13 39V20q0-8 8-8h22q8 0 8 8v19z", fill: "#fff", stroke: INK, "stroke-width": 2.2 })
-      : svg("rect", { x: 12, y: 11, width: 40, height: 28, rx: 8, fill: "#fff", stroke: INK, "stroke-width": 2.2 });
+  const INK = "#0e0f11", SCREEN = "#070b10", SW = 2.1;
+  const pick = (n, salt) => Math.floor(((seed * 9301 + salt * 49297) % 233280) / 233280 * n);
+  const headV = pick(5, 1), eyeV = pick(5, 2), antV = pick(4, 3), earV = pick(3, 4), bodyV = pick(3, 5);
+  const g = svg("g", { class: "r-body" });
+  // Antena
+  if (antV === 0) g.append(svg("line", { x1: 32, y1: 4, x2: 32, y2: 11, stroke: INK, "stroke-width": SW }), svg("circle", { class: "r-antenna", cx: 32, cy: 4, r: 3.2, fill: c, stroke: INK, "stroke-width": 1.8 }));
+  else if (antV === 1) g.append(svg("path", { d: "M24 11l-4-7M40 11l4-7", stroke: INK, "stroke-width": SW, "stroke-linecap": "round", fill: "none" }),
+    svg("circle", { class: "r-antenna", cx: 20, cy: 4, r: 2.4, fill: c, stroke: INK, "stroke-width": 1.5 }), svg("circle", { class: "r-antenna", cx: 44, cy: 4, r: 2.4, fill: c, stroke: INK, "stroke-width": 1.5 }));
+  else if (antV === 2) g.append(svg("path", { class: "r-antenna", d: "M26 11.5L32 2l6 9.5z", fill: c, stroke: INK, "stroke-width": 1.8, "stroke-linejoin": "round" }));
+  else g.append(svg("line", { x1: 32, y1: 7, x2: 32, y2: 11, stroke: INK, "stroke-width": SW }), svg("path", { class: "r-antenna", d: "M25 7.5a7 7 0 0 1 14 0z", fill: c, stroke: INK, "stroke-width": 1.8 }));
+  // Orejas
+  if (earV === 0) g.append(svg("rect", { x: 6, y: 19, width: 5, height: 13, rx: 2, fill: c, stroke: INK, "stroke-width": 1.8 }), svg("rect", { x: 53, y: 19, width: 5, height: 13, rx: 2, fill: c, stroke: INK, "stroke-width": 1.8 }));
+  else if (earV === 1) g.append(svg("path", { d: "M11 27V22a21 14 0 0 1 42 0v5", fill: "none", stroke: INK, "stroke-width": 2.4 }),
+    svg("rect", { x: 5, y: 21, width: 7, height: 12, rx: 3, fill: c, stroke: INK, "stroke-width": 1.8 }), svg("rect", { x: 52, y: 21, width: 7, height: 12, rx: 3, fill: c, stroke: INK, "stroke-width": 1.8 }));
+  else g.append(svg("circle", { cx: 9.5, cy: 25.5, r: 3, fill: c, stroke: INK, "stroke-width": 1.8 }), svg("circle", { cx: 54.5, cy: 25.5, r: 3, fill: c, stroke: INK, "stroke-width": 1.8 }));
+  // Cabeza
+  const heads = [
+    svg("rect", { x: 12, y: 11, width: 40, height: 28, rx: 8, fill: "#fff", stroke: INK, "stroke-width": SW }),
+    svg("rect", { x: 10, y: 12, width: 44, height: 27, rx: 5, fill: "#fff", stroke: INK, "stroke-width": SW }),
+    svg("path", { d: "M13 39V21q0-10 10-10h18q10 0 10 10v18z", fill: "#fff", stroke: INK, "stroke-width": SW }),
+    svg("path", { d: "M18 11h28l6 6v16l-6 6H18l-6-6V17z", fill: "#fff", stroke: INK, "stroke-width": SW, "stroke-linejoin": "round" }),
+    svg("rect", { x: 11, y: 11, width: 42, height: 28, rx: 14, fill: "#fff", stroke: INK, "stroke-width": SW }),
+  ];
+  g.append(heads[headV], svg("rect", { class: "r-visor", x: 22, y: 13.4, width: 20, height: 2.2, rx: 1.1, fill: c }));
+  // Pantalla y ojos
+  g.append(svg("rect", { class: "r-screen", x: 16, y: 18, width: 32, height: 16, rx: headV === 4 ? 8 : 5, fill: SCREEN }));
+  const E = (attrs) => svg(attrs.r ? "circle" : "rect", { class: "r-eye", fill: eyes, ...attrs });
+  if (eyeV === 0) g.append(E({ x: 20.5, y: 22.5, width: 7.5, height: 5, rx: 2 }), E({ x: 36, y: 22.5, width: 7.5, height: 5, rx: 2 }));
+  else if (eyeV === 1) g.append(E({ x: 20, y: 23.5, width: 24, height: 4, rx: 2 }));
+  else if (eyeV === 2) g.append(E({ cx: 25, cy: 25, r: 3.4 }), E({ cx: 39, cy: 25, r: 3.4 }));
+  else if (eyeV === 3) g.append(E({ cx: 23.5, cy: 25, r: 2.3 }), E({ cx: 32, cy: 25, r: 2.3 }), E({ cx: 40.5, cy: 25, r: 2.3 }));
+  else g.append(E({ cx: 32, cy: 25.5, r: 5 }), svg("circle", { cx: 33.5, cy: 24, r: 1.4, fill: "#fff", opacity: .8 }));
+  g.append(svg("rect", { class: "r-mouth", x: 28, y: 30.4, width: 8, height: 1.4, rx: .7, fill: eyes, opacity: .7 }));
+  // Cuello y torso
+  g.append(svg("rect", { x: 27, y: 39, width: 10, height: 5, rx: 1.5, fill: INK }));
+  const bodies = [
+    svg("rect", { x: 16, y: 44, width: 32, height: 20, rx: 6, fill: c, stroke: INK, "stroke-width": SW }),
+    svg("path", { d: "M14 48q0-4 4-4h28q4 0 4 4l-3 16H17z", fill: c, stroke: INK, "stroke-width": SW, "stroke-linejoin": "round" }),
+    svg("path", { d: "M18 44h28l4 5v11l-4 4H18l-4-4V49z", fill: c, stroke: INK, "stroke-width": SW, "stroke-linejoin": "round" }),
+  ];
+  g.append(bodies[bodyV], svg("rect", { class: "r-core", x: 24, y: 47.2, width: 16, height: 12.4, rx: 3, fill: SCREEN }));
+  const iconPath = category && typeof CAT_ICON !== "undefined" ? CAT_ICON[category] : null;
+  if (iconPath) {
+    g.append(svg("g", { transform: "translate(27.2 48.6) scale(.4)" }, svg("path", { class: "r-logo", d: iconPath, fill: "none", stroke: eyes, "stroke-width": 2.6, "stroke-linecap": "round", "stroke-linejoin": "round" })));
+  } else {
+    g.append(svg("path", { class: "r-logo", d: "M32 49.2l4.3 2.5v5l-4.3 2.5-4.3-2.5v-5z", fill: "none", stroke: eyes, "stroke-width": 1.4, "stroke-linejoin": "round" }),
+      svg("circle", { class: "r-logo", cx: 32, cy: 54.2, r: 1.3, fill: eyes }));
+  }
+  if (code) g.append(svg("text", { x: 32, y: 63, "text-anchor": "middle", class: "r-code", fill: INK }, code));
+  // Brazos y piernas
   const arm = (side) => {
     const l = side === "l";
     return svg("g", { class: `r-arm r-arm-${side}` },
       svg("line", { x1: l ? 16 : 48, y1: 49, x2: l ? 8 : 56, y2: 58, stroke: INK, "stroke-width": 3.4, "stroke-linecap": "round" }),
       svg("circle", { cx: l ? 8 : 56, cy: 58.5, r: 2.6, fill: c, stroke: INK, "stroke-width": 1.6 }));
   };
-  // Hexágono con núcleo: el logo de Kairo en el pecho.
-  const hex = "M32 49.2l4.3 2.5v5l-4.3 2.5-4.3-2.5v-5z";
-  return svg("svg", { class: `robot r-${state}`, viewBox: "0 0 64 72", width: size, height: size * 72 / 64, role: "img", "aria-label": `robot ${state}` },
-    svg("g", { class: "r-body" },
-      svg("line", { x1: 32, y1: 4, x2: 32, y2: 11, stroke: INK, "stroke-width": 2.2 }),
-      svg("circle", { class: "r-antenna", cx: 32, cy: 4, r: 3.2, fill: c, stroke: INK, "stroke-width": 1.8 }),
-      svg("rect", { x: 6, y: 19, width: 5, height: 13, rx: 2, fill: c, stroke: INK, "stroke-width": 1.8 }),
-      svg("rect", { x: 53, y: 19, width: 5, height: 13, rx: 2, fill: c, stroke: INK, "stroke-width": 1.8 }),
-      head,
-      svg("rect", { class: "r-visor", x: 20, y: 13.6, width: 24, height: 2.4, rx: 1.2, fill: c }),
-      svg("rect", { class: "r-screen", x: 16, y: 18, width: 32, height: 16, rx: 5, fill: SCREEN }),
-      svg("rect", { class: "r-eye", x: 20.5, y: 22.5, width: 7.5, height: 5, rx: 2, fill: eyes }),
-      svg("rect", { class: "r-eye", x: 36, y: 22.5, width: 7.5, height: 5, rx: 2, fill: eyes }),
-      svg("rect", { class: "r-mouth", x: 27, y: 30, width: 10, height: 1.6, rx: .8, fill: eyes }),
-      svg("rect", { x: 27, y: 39, width: 10, height: 5, rx: 1.5, fill: INK }),
-      svg("rect", { x: 16, y: 44, width: 32, height: 20, rx: 6, fill: c, stroke: INK, "stroke-width": 2.2 }),
-      svg("rect", { class: "r-core", x: 24.5, y: 47.5, width: 15, height: 12, rx: 3, fill: SCREEN }),
-      svg("path", { class: "r-logo", d: hex, fill: "none", stroke: eyes, "stroke-width": 1.4, "stroke-linejoin": "round" }),
-      svg("circle", { class: "r-logo", cx: 32, cy: 54.2, r: 1.3, fill: eyes }),
-      svg("circle", { cx: 20, cy: 48, r: 1.2, fill: SCREEN }), svg("circle", { cx: 44, cy: 48, r: 1.2, fill: SCREEN }),
-      arm("l"), arm("r"),
-      svg("rect", { x: 21, y: 64, width: 8, height: 6, rx: 2, fill: INK }),
-      svg("rect", { x: 35, y: 64, width: 8, height: 6, rx: 2, fill: INK })));
+  g.append(arm("l"), arm("r"),
+    svg("rect", { x: 21, y: 64, width: 8, height: 6, rx: 2, fill: INK }),
+    svg("rect", { x: 35, y: 64, width: 8, height: 6, rx: 2, fill: INK }));
+  return svg("svg", { class: `robot r-${state}`, viewBox: "0 0 64 72", width: size, height: size * 72 / 64, role: "img", "aria-label": `robot ${state}` }, g);
 }
-const seedOf = (id) => [...String(id)].reduce((a, ch) => a + ch.charCodeAt(0), 0);
+/** Robot de un agente del registro: único y con el icono de su especialidad. */
+function agentRobot(agent, state = "idle", size = 40) {
+  return robot(agent.color, state, size, seedOf(agent.id || agent.name || "x"), agent.category);
+}
+const seedOf = (id) => [...String(id)].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) % 1000003, 7);
 
 /* ============================================================== AGENT HUB */
 
@@ -154,7 +186,7 @@ function agentCard(a, i, plan) {
   return h("a", { class: "card agent-card" + (locked ? " locked" : ""), href: `#/hub/${a.id}`, style: `--k:${Math.min(i, 20)}` },
     h("div", { class: `node-h col-${a.color}` }, h("span", { class: "title" }, a.name)),
     h("div", { class: "agent-card-b" },
-      h("div", { class: "agent-avatar" }, robot(a.color, "idle", 52, seedOf(a.id))),
+      h("div", { class: "agent-avatar" }, robot(a.color, "idle", 52, seedOf(a.id), a.category)),
       h("div", { class: "grow" },
         h("div", { class: "row", style: "gap:6px" }, tierPill(a.tier),
           h("span", { class: "pill tag-dark" }, a.category_label),
@@ -224,14 +256,14 @@ async function viewAgentDetail(main, id) {
         h("div", { class: `node-h col-${a.color}` }, h("span", { class: "title" }, `${a.id}.agent`)),
         h("div", { class: "card-b stack" },
           h("div", { class: "row", style: "align-items:flex-start;gap:16px" },
-            h("div", { class: "agent-avatar big" }, robot(a.color, "idle", 84, seedOf(a.id))),
+            h("div", { class: "agent-avatar big" }, robot(a.color, "idle", 84, seedOf(a.id), a.category)),
             h("div", { class: "grow" },
               h("h1", {}, a.name),
               h("div", { class: "row", style: "gap:6px;margin:6px 0" }, tierPill(a.tier), h("span", { class: "pill tag-dark" }, a.category_label),
                 a.multi_agent ? h("span", { class: "pill tag-blue" }, "multi-agent") : null, h("span", { class: "small muted" }, `v${a.version}`)),
               h("p", {}, a.description))),
           a.multi_agent ? h("div", { class: "info" }, h("div", { class: "mono-up" }, "Equipo de robots"),
-            h("div", { class: "robots-row left" }, a.sub_agents_info.map((s, i) => h("a", { class: "mini-bot", href: `#/hub/${s.id}` }, robot(s.color, "idle", 40, seedOf(s.id)), h("span", { class: "small" }, s.name))))) : null,
+            h("div", { class: "robots-row left" }, a.sub_agents_info.map((s, i) => h("a", { class: "mini-bot", href: `#/hub/${s.id}` }, robot(s.color, "idle", 40, seedOf(s.id), s.category), h("span", { class: "small" }, s.name))))) : null,
           form)),
       h("aside", { class: "stack" },
         h("section", { class: "card" }, h("div", { class: "card-h" }, "Modelo"),
@@ -277,7 +309,7 @@ function robotStage(run, agent) {
   const masterState = run.status === "completed" ? "completed" : run.status === "failed" ? "failed" : AGENT_ACTIVE.has(run.status) ? "running" : "idle";
   if (!team) {
     return h("div", { class: "bot-stage solo" },
-      h("div", { class: "bot-walk " + masterState }, robot(agent.color, masterState, 96, seedOf(agent.id))),
+      h("div", { class: "bot-walk " + masterState }, robot(agent.color, masterState, 96, seedOf(agent.id), agent.category)),
       h("div", { class: "bot-caption" }, active ? `${active.label}…` : AGENT_STATUS[run.status]?.[0] || run.status));
   }
   // Multiagente: maestro → subagentes → resultado final.
@@ -299,10 +331,10 @@ function robotStage(run, agent) {
   return h("div", { class: "bot-stage team" }, wires,
     h("div", { class: "team-node master", style: "left:50%;top:0" },
       (() => { const ms = masterState === "running" && (teamActive || finalActive) ? "idle" : masterState;
-        return h("div", { class: "bot-walk " + ms }, robot(agent.color, ms, 54, seedOf(agent.id))); })(),
+        return h("div", { class: "bot-walk " + ms }, robot(agent.color, ms, 54, seedOf(agent.id), agent.category)); })(),
       h("span", { class: "small" }, "master")),
     ...team.agents.map((s, i) => h("div", { class: "team-node", style: `left:${(xs[i] / W) * 100}%;top:36%` },
-      h("div", { class: "bot-walk " + subState(s) }, robot(s.color, subState(s), 50, seedOf(s.id))),
+      h("div", { class: "bot-walk " + subState(s) }, robot(s.color, subState(s), 50, seedOf(s.id), s.category)),
       h("span", { class: "small", style: "font-weight:700" }, s.name),
       h("span", { class: "small muted" }, s.status === "running" ? (s.stage || "…") : AGENT_STATUS[s.status]?.[0] || s.status))),
     h("div", { class: "team-node final", style: "left:50%;top:80%" },

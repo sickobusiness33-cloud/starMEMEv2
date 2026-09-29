@@ -46,6 +46,7 @@ const ICONS = {
   grid: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
   back: "M15 5l-7 7 7 7",
   bolt: "M13 3L5 14h6l-1 7 8-11h-6z",
+  canvas: "M4 4h16v16H4zM8 9a1.5 1.5 0 1 0 0-.01M16 15a1.5 1.5 0 1 0 0-.01M9.5 9.5l5 5",
   network: "M5 5h4v4H5zM15 5h4v4h-4zM10 15h4v4h-4zM9 7h6M7 9l4.5 6M17 9l-4.5 6",
   sidebar: "M4 4h16v16H4zM9 4v16M15 10l-2 2 2 2",
   sidebarOpen: "M4 4h16v16H4zM9 4v16M13 10l2 2-2 2",
@@ -188,82 +189,167 @@ const imgUrl = (id) => `/api/images/${id}/file`;
 
 /* ================================================================ CHAT KAIRO */
 
-const KX = { panelOpen: false, filter: "" };
+const KX = { panelOpen: false, filter: "", menuOpen: false, q: "", model: "" };
+
+const MODEL_GROUP = { free: "Gratis · Cloudflare AI", platform: "Pro · plataforma", user: "Tu API" };
+/** Selector de modelo: Automático + modelos agrupados por origen. */
+function modelSelect(reg, value) {
+  const groups = {};
+  for (const m of reg.models) (groups[m.source] ||= []).push(m);
+  const sel = h("select", { class: "kx-model-sel", "aria-label": "Modelo" },
+    h("option", { value: "" }, "Automático · el mejor disponible"),
+    Object.entries(groups).map(([src, ms]) => h("optgroup", { label: MODEL_GROUP[src] || src },
+      ms.map((m) => h("option", { value: m.id }, m.label)))));
+  sel.value = value || "";
+  return sel;
+}
+const modelLabel = (reg, id) => (id ? reg.models.find((m) => m.id === id)?.label || id.replace(/^@cf\/[^/]+\//, "") : "Auto");
+
+/** Conectar un proveedor (pegar la API key) sin salir del chat. */
+function connectProviderDialog(p, onDone) {
+  const key = h("input", { type: "password", autocomplete: "off", minlength: 8, maxlength: 500, placeholder: "Pega tu API key", spellcheck: "false" });
+  openDialog(`Conectar ${p.name}`, [
+    h("p", { class: "small muted" }, "La clave se guarda cifrada y solo la usas tú. Después activa «Usar mi API» en Ajustes si quieres que Kairo la priorice."),
+    field("API key", key, p.key_help || ""),
+  ], [
+    h("button", { class: "btn", type: "button", onclick: () => closeDialog(false) }, "Cancelar"),
+    h("button", { class: "btn primary", type: "button", onclick: async (e) => withBusy(e.target, async () => {
+      if (key.value.trim().length < 8) { toast("La clave es demasiado corta.", true); return; }
+      await api("PUT", `/api/providers/${p.id}/key`, { api_key: key.value.trim() });
+      const res = await api("POST", `/api/providers/${p.id}/test`).catch((err) => ({ ok: false, message: err.message }));
+      toast(res.ok ? `${p.name} conectado` : `Clave guardada, pero la prueba falló: ${res.message}`, !res.ok);
+      await refreshProviders(); closeDialog(true); onDone?.();
+    }) }, "Guardar y probar"),
+  ]);
+}
 
 async function viewChat(main) {
   const parts = hashParts();
   const threadId = parts[1] ? Number(parts[1]) : null;
   const [threads, reg] = await Promise.all([api("GET", "/api/chat/threads"), api("GET", "/api/chat/agents")]);
   const agentsById = new Map(reg.agents.map((a) => [a.id, a]));
+  let thread = null;
 
-  // --- columna de conversaciones
   const newChat = async () => {
     const t = await api("POST", "/api/chat/threads", {});
+    if (KX.model) await api("PATCH", `/api/chat/threads/${t.id}`, { manual: { agents: [], model: KX.model, tools_off: [] } }).catch(() => {});
     location.hash = `#/chat/${t.id}`;
   };
-  const threadList = h("nav", { class: "kx-threads", "aria-label": "Conversaciones" },
-    h("button", { class: "btn primary kx-new", type: "button", onclick: newChat }, icon("plus", 16), "Nuevo chat"),
-    h("div", { class: "kx-thread-list" }, threads.length ? threads.map((t) =>
-      h("a", { class: "kx-thread", href: `#/chat/${t.id}`, "aria-current": t.id === threadId ? "true" : null },
-        h("span", { class: "kx-thread-t" }, trunc(t.title, 42)),
-        h("span", { class: "kx-thread-m" }, t.mode === "auto" ? (t.auto_mode ? "Auto" : "Manual") : t.mode, " · ", fmtDate(t.updated_at))))
-      : h("p", { class: "small muted", style: "padding:8px" }, "Sin conversaciones todavía.")));
 
-  // --- panel de actividad (derecha / hoja inferior en móvil)
+  // --- menú lateral (modelos, agentes, conexiones, chats). En iPad/móvil es un cajón.
+  const menu = h("aside", { class: "kx-menu" + (KX.menuOpen ? " open" : ""), "aria-label": "Menú de Kairo" });
+  const backdrop = h("div", { class: "kx-menu-backdrop", hidden: !KX.menuOpen ? true : null, onclick: () => setMenu(false) });
+  const setMenu = (open) => { KX.menuOpen = open; menu.classList.toggle("open", open); backdrop.hidden = !open; };
+  const modelChip = h("button", { class: "kx-model-chip", type: "button", title: "Cambiar modelo", onclick: () => { setMenu(true); menu.querySelector(".kx-model-sel")?.focus(); } });
+  const hint = h("div", { class: "kx-hint" });
+  const refreshChrome = () => {
+    const m = thread ? thread.manual?.model : KX.model;
+    modelChip.replaceChildren(icon("cpu", 14), h("span", {}, modelLabel(reg, m)), icon("more", 14));
+    hint.replaceChildren(thread && !thread.auto_mode ? `Manual · ${thread.manual?.agents?.length || 0} agentes elegidos` : `${BRAND_NAME} elige entre ${reg.agents.length} agentes`,
+      " · ", m ? `modelo ${modelLabel(reg, m)}` : "modelo automático con respaldo");
+  };
+
+  const renderMenu = () => {
+    const current = thread ? thread.manual?.model || "" : KX.model;
+    const sel = modelSelect(reg, current);
+    sel.addEventListener("change", async () => {
+      if (thread) {
+        thread = { ...thread, ...(await api("PATCH", `/api/chat/threads/${thread.id}`, { manual: { agents: thread.manual?.agents || [], model: sel.value || null, tools_off: thread.manual?.tools_off || [] } })) };
+      } else KX.model = sel.value;
+      toast(`Modelo: ${modelLabel(reg, sel.value)}`); refreshChrome();
+    });
+    const mode = h("div", { class: "segctl kx-seg" },
+      ["Auto", "Manual"].map((l, i) => h("button", { type: "button", "aria-selected": (thread ? thread.auto_mode : true) === (i === 0) ? "true" : "false", disabled: thread ? null : true,
+        onclick: async () => {
+          if (!thread) return;
+          const auto = i === 0;
+          thread = { ...thread, ...(await api("PATCH", `/api/chat/threads/${thread.id}`, { auto_mode: auto })) };
+          renderMenu(); refreshChrome();
+          if (!auto) openManual();
+        } }, l)));
+    const provs = h("div", { class: "kx-provs" },
+      h("div", { class: "kx-prov" }, h("span", { class: "dot s-completed" }), h("span", { class: "grow" }, "Cloudflare AI", h("small", {}, "gratis · siempre activo"))),
+      (S.providers || []).filter((p) => !p.is_demo).map((p) => {
+        const on = Boolean(p.key_source) || !p.requires_key;
+        return h("div", { class: "kx-prov" }, h("span", { class: "dot " + (on ? "s-completed" : "") }),
+          h("span", { class: "grow" }, p.name, h("small", {}, on ? "tu API conectada" : "sin conectar")),
+          p.requires_key ? h("button", { class: "btn small" + (on ? " ghost" : ""), type: "button", onclick: () => connectProviderDialog(p, renderMenu) }, on ? "Cambiar" : "Conectar") : null);
+      }));
+    const search = h("input", { type: "search", placeholder: "Buscar chats", value: KX.q, "aria-label": "Buscar chats" });
+    const list = h("div", { class: "kx-thread-list" });
+    const renderList = () => {
+      const q = KX.q.toLowerCase();
+      const rows = threads.filter((t) => !q || t.title.toLowerCase().includes(q));
+      const today = new Date().toDateString();
+      const groups = [["Hoy", rows.filter((t) => new Date(t.updated_at).toDateString() === today)], ["Anteriores", rows.filter((t) => new Date(t.updated_at).toDateString() !== today)]];
+      list.replaceChildren(...(rows.length ? groups.filter(([, g]) => g.length).flatMap(([label, g]) => [h("div", { class: "kx-group" }, label),
+        ...g.map((t) => h("a", { class: "kx-thread", href: `#/chat/${t.id}`, "aria-current": t.id === threadId ? "true" : null, onclick: () => setMenu(false) },
+          h("span", { class: "kx-thread-t" }, trunc(t.title, 46)),
+          h("span", { class: "kx-thread-m" }, t.auto_mode ? "Auto" : "Manual", t.manual?.model ? ` · ${modelLabel(reg, t.manual.model)}` : "", " · ", fmtDate(t.updated_at))))])
+        : [h("p", { class: "small muted", style: "padding:8px" }, KX.q ? "Ningún chat coincide." : "Sin conversaciones todavía.")]));
+    };
+    search.addEventListener("input", () => { KX.q = search.value; renderList(); });
+    renderList();
+    menu.replaceChildren(
+      h("div", { class: "kx-menu-top" }, kairoLogo(22), h("b", { class: "grow" }, BRAND_NAME),
+        h("button", { class: "btn small ghost icon-only kx-menu-close", type: "button", "aria-label": "Cerrar menú", onclick: () => setMenu(false) }, icon("close", 16))),
+      h("button", { class: "btn primary kx-new", type: "button", onclick: newChat }, icon("plus", 16), "Nuevo chat"),
+      h("section", { class: "kx-sec" }, h("div", { class: "kx-sec-t" }, icon("cpu", 14), "Modelo"), sel,
+        h("p", { class: "kx-sec-help" }, "Automático elige el mejor modelo disponible y cambia a otro si falla.")),
+      h("section", { class: "kx-sec" }, h("div", { class: "kx-sec-t" }, icon("agents", 14), "Agentes"), mode,
+        thread && !thread.auto_mode ? h("button", { class: "btn small", type: "button", onclick: openManual }, icon("sliders", 14), `Elegir agentes (${thread.manual?.agents?.length || 0})`) : null),
+      h("section", { class: "kx-sec" }, h("div", { class: "kx-sec-t" }, icon("connectors", 14), "Conexiones de IA"), provs,
+        h("a", { class: "kx-sec-link", href: "#/configuracion" }, "Ajustes avanzados de modelos →")),
+      h("section", { class: "kx-sec grow-sec" }, h("div", { class: "kx-sec-t" }, icon("memory", 14), "Chats"), search, list));
+  };
+  const openManual = () => manualDialog(thread, reg, async (manual) => {
+    thread = { ...thread, ...(await api("PATCH", `/api/chat/threads/${thread.id}`, { manual: { ...manual, model: manual.model ?? thread.manual?.model ?? null } })) };
+    toast("Configuración manual guardada"); renderMenu(); refreshChrome();
+  });
+
+  // --- panel de actividad (robots, derecha / hoja inferior en móvil)
   const activity = h("aside", { class: "kx-activity" + (KX.panelOpen ? " open" : ""), "aria-label": "Agent Activity" });
   const sheetToggle = h("button", { class: "kx-sheet-toggle", type: "button", "aria-expanded": KX.panelOpen ? "true" : "false",
     onclick: () => { KX.panelOpen = !KX.panelOpen; activity.classList.toggle("open", KX.panelOpen); sheetToggle.setAttribute("aria-expanded", String(KX.panelOpen)); } },
     h("span", { class: "kx-pulse" }), h("span", { class: "kx-sheet-label" }, `${reg.agents.length} agentes listos`));
 
   const center = h("section", { class: "kx-main" });
-  main.replaceChildren(h("div", { class: "kx" }, threadList, center, activity), sheetToggle);
+  main.replaceChildren(h("div", { class: "kx" }, menu, backdrop, center, activity), sheetToggle);
+  const menuBtn = () => h("button", { class: "btn small ghost icon-only kx-menu-btn", type: "button", "aria-label": "Abrir menú", onclick: () => setMenu(true) }, icon("sidebarOpen", 18));
 
   const renderActivity = (state) => renderActivityPanel(activity, sheetToggle, reg, agentsById, state);
   renderActivity(null);
+  renderMenu(); refreshChrome();
 
   if (!threadId) {
-    center.replaceChildren(kairoWelcome(reg, async (prompt) => {
-      const t = await api("POST", "/api/chat/threads", {});
-      sessionStorage.setItem("kx-pending", prompt);
-      location.hash = `#/chat/${t.id}`;
-    }));
+    center.replaceChildren(h("header", { class: "kx-head slim" }, menuBtn(), h("div", { class: "grow" }), modelChip),
+      kairoWelcome(reg, async (prompt) => {
+        const t = await api("POST", "/api/chat/threads", {});
+        if (KX.model) await api("PATCH", `/api/chat/threads/${t.id}`, { manual: { agents: [], model: KX.model, tools_off: [] } }).catch(() => {});
+        sessionStorage.setItem("kx-pending", prompt);
+        location.hash = `#/chat/${t.id}`;
+      }));
     return;
   }
 
-  let thread;
   try { thread = await api("GET", `/api/chat/threads/${threadId}`); }
   catch (err) { center.replaceChildren(empty("Conversación no encontrada", err.message, h("button", { class: "btn primary", type: "button", onclick: newChat }, "Nuevo chat"))); return; }
+  renderMenu(); refreshChrome();
 
   // --- cabecera del chat
   const status = h("span", { class: "kx-status" }, KAIRO_STATE_LABEL.idle);
-  const avatarBox = h("span", {}, kairoAvatar("idle", 38));
+  const avatarBox = h("span", {}, kairoAvatar("idle", 34));
   const setKairo = (runStatus) => {
     const st = KAIRO_AVATAR_STATE[runStatus] || "idle";
-    avatarBox.replaceChildren(kairoAvatar(st, 38));
+    avatarBox.replaceChildren(kairoAvatar(st, 34));
     status.textContent = KAIRO_STATE_LABEL[runStatus] || KAIRO_STATE_LABEL.idle;
     status.dataset.state = st;
   };
-  const autoToggle = h("button", { class: "kx-mode" + (thread.auto_mode ? " on" : ""), type: "button", role: "switch", "aria-checked": thread.auto_mode ? "true" : "false",
-    title: "Auto: Kairo elige los agentes. Manual: los eliges tú." },
-    h("span", { class: "kx-mode-dot" }), thread.auto_mode ? "Auto" : "Manual");
-  autoToggle.addEventListener("click", async () => {
-    thread = { ...thread, ...(await api("PATCH", `/api/chat/threads/${thread.id}`, { auto_mode: !thread.auto_mode })) };
-    autoToggle.classList.toggle("on", thread.auto_mode);
-    autoToggle.setAttribute("aria-checked", String(thread.auto_mode));
-    autoToggle.lastChild.textContent = thread.auto_mode ? "Auto" : "Manual";
-    manualBtn.hidden = thread.auto_mode;
-    if (!thread.auto_mode) openManual();
-  });
-  const openManual = () => manualDialog(thread, reg, async (manual) => {
-    thread = { ...thread, ...(await api("PATCH", `/api/chat/threads/${thread.id}`, { manual })) };
-    toast("Configuración manual guardada");
-  });
-  const manualBtn = h("button", { class: "btn small ghost", type: "button", hidden: thread.auto_mode ? true : null, onclick: openManual }, icon("sliders", 15), "Configurar");
-
   const header = h("header", { class: "kx-head" },
-    avatarBox,
+    menuBtn(), avatarBox,
     h("div", { class: "grow" }, h("div", { class: "kx-title" }, trunc(thread.title, 70)), status),
-    autoToggle, manualBtn,
+    modelChip,
+    h("button", { class: "btn small ghost icon-only kx-bots-btn", type: "button", title: "Robots trabajando", "aria-label": "Ver robots", onclick: () => sheetToggle.click() }, icon("agents", 18)),
     h("button", { class: "btn small ghost icon-only", type: "button", title: "Borrar conversación", "aria-label": "Borrar conversación", onclick: async () => {
       if (!(await confirmDialog({ title: "Borrar conversación", body: "Se borrará con todos sus mensajes.", confirmLabel: "Borrar", danger: true }))) return;
       await api("DELETE", `/api/chat/threads/${thread.id}`); location.hash = "#/chat";
@@ -279,7 +365,7 @@ async function viewChat(main) {
   const b = await billing(true);
   const lim = b.plans[b.subscription.plan].limits;
   const input = h("textarea", { rows: 1, maxlength: lim.maxInputChars, placeholder: `Escribe a ${BRAND_NAME}…`, "aria-label": "Mensaje" });
-  const autosize = () => { input.style.height = "auto"; input.style.height = Math.min(220, input.scrollHeight) + "px"; };
+  const autosize = () => { input.style.height = "auto"; input.style.height = Math.min(260, input.scrollHeight) + "px"; };
   input.addEventListener("input", autosize);
   const chips = h("div", { class: "att-chips" });
   let attached = [];
@@ -300,12 +386,13 @@ async function viewChat(main) {
   const sendBtn = h("button", { class: "kx-send", type: "submit", "aria-label": "Enviar" }, icon("send", 18));
   const stopBtn = h("button", { class: "kx-send stop", type: "button", "aria-label": "Detener", hidden: true }, icon("stop", 16));
   const form = h("form", { class: "kx-composer" }, chips,
-    h("div", { class: "kx-compose-row" },
-      h("button", { class: "kx-attach", type: "button", "aria-label": "Adjuntar imagen", title: "Adjuntar imagen", onclick: () => picker.click() }, icon("clip", 18)),
-      input, sendBtn, stopBtn),
-    picker,
-    h("div", { class: "kx-hint" }, thread.auto_mode ? `${BRAND_NAME} elige automáticamente entre ${reg.agents.length} agentes` : "Modo manual: se usan los agentes que has elegido",
-      " · ", `${b.usage_today.chat}/${lim.chatMessagesPerDay} mensajes hoy`));
+    h("div", { class: "kx-compose-box" },
+      input,
+      h("div", { class: "kx-compose-bar" },
+        h("button", { class: "kx-attach", type: "button", "aria-label": "Adjuntar imagen", title: "Adjuntar imagen", onclick: () => picker.click() }, icon("clip", 18)),
+        h("span", { class: "kx-usage" }, `${b.usage_today.chat}/${lim.chatMessagesPerDay} hoy`),
+        h("span", { class: "grow" }), sendBtn, stopBtn)),
+    picker, hint);
 
   center.replaceChildren(header, msgs, form);
   scroll();
@@ -485,7 +572,7 @@ function renderActivityPanel(root, toggle, reg, agentsById, state) {
     const [cls, label] = AGENT_STATE[a.status] || ["idle", a.status];
     const deps = (a.depends_on || []).map((d) => active.find((x) => x.step === d)).filter(Boolean).map((x) => (agentsById.get(x.agent_id) || { name: x.agent_id }).name);
     flow.append(h("div", { class: `kx-node agent s-${cls}`, style: `--c:${COLOR_HEX[info.color] || COLOR_HEX.azul}` },
-      h("span", { class: "kx-node-ico" }, agentGlyph(info, 30)),
+      h("span", { class: "kx-node-ico bot" }, agentRobot(info, cls === "busy" ? "running" : cls === "done" ? "completed" : cls === "error" ? "failed" : "idle", 40)),
       h("div", { class: "grow" },
         h("div", { class: "kx-node-top" }, h("span", { class: "kx-node-name" }, info.name), h("span", { class: `kx-state s-${cls}` }, a.status)),
         h("div", { class: "kx-node-act" }, a.action || label),
@@ -507,7 +594,7 @@ function renderActivityPanel(root, toggle, reg, agentsById, state) {
     const usedIds = new Set(active.map((a) => a.agent_id));
     listBox.replaceChildren(...reg.agents.filter((a) => !term || `${a.name} ${a.category_label} ${a.description}`.toLowerCase().includes(term)).map((a) =>
       h("div", { class: "kx-reg" + (a.locked ? " locked" : "") + (usedIds.has(a.id) ? " used" : ""), title: a.description },
-        agentGlyph(a, 24), h("span", { class: "grow" }, a.name), h("span", { class: "kx-reg-st" }, a.locked ? "PRO" : usedIds.has(a.id) ? "EN USO" : "IDLE"))));
+        h("span", { class: "kx-reg-bot" }, agentRobot(a, "idle", 26)), h("span", { class: "grow" }, a.name), h("span", { class: "kx-reg-st" }, a.locked ? "PRO" : usedIds.has(a.id) ? "EN USO" : "IDLE"))));
   };
   q.addEventListener("input", () => { KX.filter = q.value; renderList(); });
   renderList();
