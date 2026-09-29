@@ -7,6 +7,7 @@ import { all, loads, one } from "./db";
 import type { AppEnv } from "./env";
 import { DEFAULT_LIMITS } from "./projects";
 import { availableProviderIds, PROVIDERS } from "./providers";
+import { ACTIVE as CHAT_ACTIVE } from "./chat";
 
 export const dashboardRoutes = new Hono<AppEnv>();
 dashboardRoutes.use("*", requireUser);
@@ -28,8 +29,10 @@ dashboardRoutes.get("/", async (c) => {
        (SELECT COALESCE(SUM(steps), 0) FROM runs r WHERE r.project_id = p.id) AS steps,
        (SELECT COUNT(*) FROM project_files f WHERE f.project_id = p.id) AS files,
        (SELECT COUNT(*) FROM project_tools t WHERE t.project_id = p.id) AS tools,
-       (SELECT GROUP_CONCAT(pc.connector_id) FROM project_connectors pc WHERE pc.project_id = p.id) AS connector_ids
-     FROM projects p WHERE p.owner_id = ? ORDER BY p.updated_at DESC LIMIT 12`,
+       (SELECT GROUP_CONCAT(pc.connector_id) FROM project_connectors pc WHERE pc.project_id = p.id) AS connector_ids,
+       (SELECT COUNT(*) FROM chat_runs cr WHERE cr.project_id = p.id) AS kairo_runs,
+       p.updated_at
+     FROM projects p WHERE p.owner_id = ? ORDER BY p.updated_at DESC LIMIT 60`,
     today,
     u.id,
   );
@@ -42,6 +45,55 @@ dashboardRoutes.get("/", async (c) => {
     const p = new PROVIDERS[id](settings);
     return { id, name: p.name, is_demo: p.isDemo, connected: p.requiresKey ? Boolean(k) : true, status: k?.status ?? "unknown", last_used_at: k?.last_used_at ?? null };
   });
+
+  // Qué IA y modelo usa cada proyecto (Kairo) y qué se está usando AHORA MISMO:
+  // con esto el panel enciende los cables proyecto → bus → IA en tiempo real.
+  const ph = CHAT_ACTIVE.map(() => "?").join(",");
+  const liveRows = await all<any>(
+    db,
+    `SELECT cr.id AS run_id, cr.project_id, a.provider, a.model, a.agent_id, a.status
+     FROM chat_runs cr LEFT JOIN chat_run_agents a ON a.run_id = cr.id
+     WHERE cr.user_id = ? AND cr.status IN (${ph})`,
+    u.id,
+    ...CHAT_ACTIVE,
+  );
+  const used = await all<any>(
+    db,
+    `SELECT cr.project_id, a.provider, a.model, COUNT(*) AS n, MAX(cr.created_at) AS last_at
+     FROM chat_run_agents a JOIN chat_runs cr ON cr.id = a.run_id
+     WHERE cr.user_id = ? AND a.provider IS NOT NULL AND a.model IS NOT NULL AND cr.created_at >= ?
+     GROUP BY cr.project_id, a.provider, a.model ORDER BY n DESC`,
+    u.id,
+    new Date(Date.now() - 30 * 24 * 3600_000).toISOString(),
+  );
+  const WORKING = new Set(["ANALYZING", "THINKING", "SEARCHING", "PROCESSING", "GENERATING", "EXECUTING"]);
+  const liveOf = (pid: number | null) => {
+    const rows = liveRows.filter((r) => (r.project_id ?? null) === pid);
+    const links = new Map<string, { provider: string; model: string }>();
+    for (const r of rows) if (r.provider && r.model && WORKING.has(r.status)) links.set(`${r.provider}|${r.model}`, { provider: r.provider, model: r.model });
+    return { live: new Set(rows.map((r) => r.run_id)).size, live_links: [...links.values()], live_agents: rows.filter((r) => WORKING.has(r.status)).length };
+  };
+  const usedOf = (pid: number | null) => used.filter((r) => (r.project_id ?? null) === pid).slice(0, 4).map((r) => ({ provider: r.provider, model: r.model, n: r.n }));
+  // Modelos por proveedor (uso de los últimos 30 días + modelo fijado en cada proyecto).
+  const modelMap = new Map<string, Map<string, { model: string; n: number; last_at: string | null }>>();
+  const addModel = (prov: string, model: string, n: number, last: string | null) => {
+    if (!prov || !model) return;
+    if (!modelMap.has(prov)) modelMap.set(prov, new Map());
+    const m = modelMap.get(prov)!;
+    const cur = m.get(model) ?? { model, n: 0, last_at: null };
+    cur.n += n;
+    if (last && (!cur.last_at || last > cur.last_at)) cur.last_at = last;
+    m.set(model, cur);
+  };
+  for (const r of used) addModel(r.provider, r.model, r.n, r.last_at);
+  for (const p of projects) if (p.provider && p.model) addModel(p.provider, p.model, 0, null);
+  const modelsOf = (prov: string) => [...(modelMap.get(prov)?.values() ?? [])].sort((a, b) => b.n - a.n).slice(0, 5);
+  providers.forEach((p: any) => { p.models = modelsOf(p.id); });
+  // Workers AI (modelos gratis de Kairo) siempre está disponible.
+  const wai = modelsOf("workers-ai");
+  providers.unshift({ id: "workers-ai", name: "Workers AI", is_demo: false, connected: true, status: "ok",
+    last_used_at: wai.reduce<string | null>((a, m) => (m.last_at && (!a || m.last_at > a) ? m.last_at : a), null), models: wai } as any);
+  const kairo = { ...liveOf(null), used: usedOf(null), runs: used.filter((r) => r.project_id == null).reduce((a, r) => a + r.n, 0) };
 
   const runs = await all<any>(
     db,
@@ -92,8 +144,11 @@ dashboardRoutes.get("/", async (c) => {
 
   return c.json({
     agent_runs: agentRuns.map((r) => ({ ...r, stages: loads(r.stages_json, []), stages_json: undefined })),
+    kairo,
     projects: projects.map((p) => ({
       ...p,
+      ...liveOf(p.id),
+      used: usedOf(p.id),
       is_demo: Boolean(p.is_demo),
       limit_per_day: { ...DEFAULT_LIMITS, ...loads(p.limits_json) }.max_runs_per_day,
       connector_ids: String(p.connector_ids ?? "")

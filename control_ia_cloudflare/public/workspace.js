@@ -288,7 +288,7 @@ async function wsAgents(body, WS) {
     const active = a.usage.active > 0;
     const node = { kind: "agent", role: a.role, vis: active ? "working" : a.usage.tasks ? "completed" : "idle", name: a.name, row: { agent_id: a.id, role: a.role, status: active ? "PROCESSING" : "IDLE", why: `Kairo lo elige automáticamente cuando la tarea necesita: ${a.capabilities.slice(0, 3).join(", ")}.` } };
     return h("button", { type: "button", class: `agent-tile v-${node.vis}${a.locked ? " locked" : ""}`, onclick: () => openAgentDrawer(node, { agentsById: WS.agentsById, usage, onViewActivity: (aid) => { location.hash = `#/p/${WS.pid}/activity?agent=${aid}`; } }) },
-      h("span", { class: `net-glyph v-${node.vis}` }, agentGlyphSvg(a.role, 38)),
+      h("span", { class: `net-glyph v-${node.vis}` }, agentGlyphSvg(a.role, 48)),
       h("span", { class: "grow" }, h("b", {}, a.name), h("small", {}, `${ROLE_META[a.role]?.label || a.role} · ${a.category_label}`),
         h("span", { class: "tile-meta" }, a.usage.tasks ? `${a.usage.done}/${a.usage.tasks} tareas · ${a.usage.avg_ms != null ? fmtMs(a.usage.avg_ms) : "—"}` : a.locked ? "PRO" : "Disponible")),
       h("span", { class: `dot s-${node.vis}` }));
@@ -301,6 +301,7 @@ async function wsAgents(body, WS) {
     h("h2", {}, `Active · ${active.length}`), active.length ? h("div", { class: "tile-grid" }, active.map(card)) : h("p", { class: "small muted" }, "Ningún agente trabajando ahora mismo."),
     h("h2", {}, `Usados en este proyecto · ${used.length}${data.reviewer ? " + Critic" : ""}`), used.length ? h("div", { class: "tile-grid" }, used.map(card)) : h("p", { class: "small muted" }, "Aún no se ha usado ninguno."),
     h("h2", {}, `Available · ${rest.length}`), h("div", { class: "tile-grid" }, rest.map(card))));
+  body.querySelectorAll(".tile-grid").forEach(wireGrid);
 }
 
 /* ---------------------------------------------------------------- Tasks (+ Task Graph + Replay) */

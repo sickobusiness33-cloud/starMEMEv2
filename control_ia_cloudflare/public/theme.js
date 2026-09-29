@@ -39,6 +39,9 @@ const DEFAULT_PREFS = {
   visuals: { mode: "balanced", robot: "bot", conn: "curve", anim: "normal", labels: true, desc: true, progress: true, tech: true },
   dashboard: { modules: DEFAULT_MODULES.map(([id, , on]) => ({ id, on })), layout: 3 },
   workspace: { view: "live" },
+  // Red global (página principal): tamaño de nodos, orden y qué se muestra.
+  panel: { size: "auto", sort: "recent", connectors: true, archived: false, tangle: true, particles: true, hidden: [] },
+  ui: { nav: "open" },
 };
 
 const PREFS = { data: structuredClone(DEFAULT_PREFS), timer: null };
@@ -90,6 +93,7 @@ function applyPrefs() {
   root.classList.toggle("hide-desc", !vis.desc);
   root.classList.toggle("hide-progress", !vis.progress);
   root.classList.toggle("hide-tech", !vis.tech);
+  root.dataset.nav = PREFS.data.ui?.nav === "collapsed" ? "collapsed" : "open";
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute("content", v.bg);
   lsSet("cia-prefs", JSON.stringify(PREFS.data));

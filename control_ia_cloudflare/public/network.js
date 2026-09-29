@@ -59,17 +59,26 @@ function agentGlyphSvg(role, size = 44) {
   } else if (style === "hex") {
     s.append(svg("path", { class: "ag-ring", d: "M24 3 42 13.5v21L24 45 6 34.5v-21Z" }), svg("path", { class: "ag-body", d: "M24 9 37 16.5v15L24 39 11 31.5v-15Z" }));
   } else {
-    // Robot: cabeza con antena y ojos; el icono del rol va en el pecho.
+    // Robot rectangular: placa, antena, cabeza con visor y ojos LED, torso con el icono del rol.
     s.append(
-      svg("circle", { class: "ag-ring", cx: 24, cy: 24, r: 22 }),
-      svg("line", { class: "ag-line", x1: 24, y1: 6, x2: 24, y2: 11 }),
-      svg("circle", { class: "ag-ant", cx: 24, cy: 5.5, r: 2.2 }),
-      svg("rect", { class: "ag-body", x: 11, y: 11, width: 26, height: 26, rx: 8 }),
-      svg("circle", { class: "ag-eye", cx: 19, cy: 19.5, r: 1.8 }),
-      svg("circle", { class: "ag-eye", cx: 29, cy: 19.5, r: 1.8 }),
+      svg("rect", { class: "ag-ring", x: 1.5, y: 1.5, width: 45, height: 45, rx: 11 }),
+      svg("path", { class: "ag-corner", d: "M5 12V7a2 2 0 0 1 2-2h5M36 5h5a2 2 0 0 1 2 2v5M43 36v5a2 2 0 0 1-2 2h-5M12 43H7a2 2 0 0 1-2-2v-5" }),
+      svg("line", { class: "ag-line", x1: 24, y1: 5.5, x2: 24, y2: 9 }),
+      svg("circle", { class: "ag-ant", cx: 24, cy: 5, r: 1.9 }),
+      svg("rect", { class: "ag-ear", x: 8.2, y: 13, width: 2.6, height: 7, rx: 1.2 }),
+      svg("rect", { class: "ag-ear", x: 37.2, y: 13, width: 2.6, height: 7, rx: 1.2 }),
+      svg("rect", { class: "ag-body", x: 11, y: 9, width: 26, height: 16, rx: 4.5 }),
+      svg("rect", { class: "ag-visor", x: 14, y: 12, width: 20, height: 8.5, rx: 3.5 }),
+      svg("rect", { class: "ag-eye", x: 17, y: 14.6, width: 4.4, height: 3.2, rx: 1.3 }),
+      svg("rect", { class: "ag-eye", x: 26.6, y: 14.6, width: 4.4, height: 3.2, rx: 1.3 }),
+      svg("rect", { class: "ag-neck", x: 21, y: 25, width: 6, height: 2.4, rx: .8 }),
+      svg("rect", { class: "ag-body", x: 12.5, y: 27.4, width: 23, height: 15, rx: 4 }),
+      svg("rect", { class: "ag-chest", x: 18, y: 29.4, width: 12, height: 11, rx: 2.6 }),
+      svg("circle", { class: "ag-led", cx: 15.4, cy: 30.6, r: .9 }),
+      svg("circle", { class: "ag-led", cx: 32.6, cy: 30.6, r: .9 }),
     );
   }
-  const g = svg("g", { transform: style === "bot" ? "translate(16.5 22) scale(.62)" : "translate(15 15) scale(.75)" });
+  const g = svg("g", { class: style === "bot" ? "ag-mark" : null, transform: style === "bot" ? "translate(19.5 30.4) scale(.375)" : "translate(15 15) scale(.75)" });
   g.append(svg("path", { class: "ag-icon", d: meta.icon }));
   s.append(g);
   return s;
@@ -392,4 +401,51 @@ function mountReplay(box, data, ctx = {}) {
     h("div", { class: "replay-grid" }, h("div", { class: "card net-card" }, netBox), h("div", { class: "card" }, h("div", { class: "card-h" }, "Execution replay"), h("div", { class: "card-b" }, tl))));
   if (!events.length) box.append(h("p", { class: "small muted" }, "Esta ejecución no tiene eventos guardados (es anterior al registro de eventos)."));
   draw();
+}
+
+/* ------------------------------------------------------------ cables entre tarjetas
+ * Une cada tarjeta con su vecina (derecha y abajo) con trazas tipo circuito.
+ * Si alguna de las dos está trabajando (.v-working), el cable se enciende. */
+function wireGrid(grid) {
+  if (!grid || grid.dataset.wired) return;
+  grid.dataset.wired = "1";
+  grid.classList.add("wired");
+  let t = null;
+  const draw = () => {
+    grid.querySelector(":scope > svg.grid-wires")?.remove();
+    const tiles = [...grid.children].filter((x) => !x.matches("svg"));
+    if (tiles.length < 2) return;
+    const box = grid.getBoundingClientRect();
+    const rects = tiles.map((el) => { const r = el.getBoundingClientRect(); return { el, x: r.left - box.left, y: r.top - box.top, w: r.width, h: r.height, hot: el.matches(".v-working, .v-thinking, .v-reviewing") }; });
+    const layer = svg("svg", { class: "grid-wires", "aria-hidden": "true", width: box.width, height: box.height });
+    const byRow = new Map();
+    rects.forEach((r) => { const k = Math.round(r.y); if (!byRow.has(k)) byRow.set(k, []); byRow.get(k).push(r); });
+    const rows = [...byRow.keys()].sort((a, b) => a - b).map((k) => byRow.get(k).sort((a, b) => a.x - b.x));
+    const add = (d, hot) => {
+      layer.append(svg("path", { d, class: "gw" + (hot ? " hot" : "") }));
+    };
+    const dot = (x, y, hot) => layer.append(svg("circle", { cx: x, cy: y, r: 2.4, class: "gw-port" + (hot ? " hot" : "") }));
+    rows.forEach((row, ri) => {
+      row.forEach((a, i) => {
+        const b = row[i + 1];
+        if (b) {
+          const y = a.y + a.h / 2, x1 = a.x + a.w, x2 = b.x, hot = a.hot || b.hot;
+          add(`M${x1},${y} H${x2}`, hot); dot(x1, y, hot); dot(x2, y, hot);
+        }
+        const below = rows[ri + 1]?.find((c) => Math.abs(c.x - a.x) < 4);
+        if (below) {
+          const x = a.x + 22 + ((i * 7) % 3) * 6, y1 = a.y + a.h, y2 = below.y, hot = a.hot || below.hot;
+          add(`M${x},${y1} V${y2}`, hot); dot(x, y1, hot); dot(x, y2, hot);
+        }
+      });
+    });
+    grid.prepend(layer);
+  };
+  const ro = new ResizeObserver(() => { clearTimeout(t); t = setTimeout(() => { if (!grid.isConnected) return ro.disconnect(); draw(); }, 80); });
+  ro.observe(grid);
+  const isOwn = (n) => n.nodeName.toLowerCase() === "svg";
+  new MutationObserver((muts) => {
+    if (muts.every((m) => [...m.addedNodes, ...m.removedNodes].every(isOwn))) return; // nuestro propio SVG
+    clearTimeout(t); t = setTimeout(draw, 80);
+  }).observe(grid, { childList: true });
 }

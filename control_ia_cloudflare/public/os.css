@@ -327,7 +327,7 @@ hr { border-color: var(--th-border); }
 .ag .ag-ant, .ag .ag-eye { fill: var(--th-robot); }
 .ag .ag-icon { fill: none; stroke: var(--th-text); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .ag .kairo-logo { color: var(--th-text); }
-.v-idle .ag { opacity: .45; filter: grayscale(.6); }
+.v-idle .ag { opacity: .8; filter: grayscale(.35); }
 .v-waiting .ag .ag-ring { stroke-dasharray: 5 4; stroke: var(--th-warn); }
 .v-waiting .ag .ag-eye { fill: var(--th-warn); }
 .v-thinking .ag .ag-ring, .v-planning .ag .ag-ring { stroke: var(--th-run); animation: breathe 2.2s ease-in-out infinite; }
@@ -511,3 +511,116 @@ hr { border-color: var(--th-border); }
 :root[data-tone="light"] .net-badge.ok { color: #fff; }
 :root[data-tone="light"] .theme-swatch .sw { border-color: rgba(15, 23, 42, .12); }
 :root[data-tone="light"] .theme-swatch .sw i:nth-child(3) { background: rgba(15, 23, 42, .18); }
+
+/* --- Menú lateral plegable ---------------------------------------------------- */
+.side-top { display: flex; align-items: center; gap: 6px; padding-bottom: 10px; }
+.side-top .side-brand { flex: 1; min-width: 0; padding-bottom: 6px; }
+.side-brand > span { min-width: 0; overflow: hidden; white-space: nowrap; }
+.nav-toggle { flex: none; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 9px; border: 1px solid var(--th-border); background: transparent; color: var(--th-muted); cursor: pointer; transition: color .15s, background .15s, border-color .15s; }
+.nav-toggle:hover { color: var(--th-text); background: var(--soft); border-color: color-mix(in srgb, var(--th-primary) 40%, var(--th-border)); }
+@media (min-width: 901px) {
+  .layout { transition: grid-template-columns .28s var(--ease); }
+  :root[data-nav="collapsed"] .layout { grid-template-columns: 72px minmax(0, 1fr); }
+  :root[data-nav="collapsed"] .nav { padding: 14px 10px; overflow-x: hidden; }
+  :root[data-nav="collapsed"] .side-top { flex-direction: column; gap: 10px; }
+  :root[data-nav="collapsed"] .side-brand { padding: 4px 0; justify-content: center; }
+  :root[data-nav="collapsed"] .side-brand > span,
+  :root[data-nav="collapsed"] .nav-label,
+  :root[data-nav="collapsed"] .side-pro span { display: none; }
+  :root[data-nav="collapsed"] .nav-sep { font-size: 0; padding: 10px 0 6px; }
+  :root[data-nav="collapsed"] .nav-sep::after { content: ""; display: block; height: 1px; margin: 0 8px; background: var(--th-border); }
+  :root[data-nav="collapsed"] .nav a { justify-content: center; padding: 10px 0; }
+  :root[data-nav="collapsed"] .nav a[aria-current="page"]::before { left: -10px; }
+  :root[data-nav="collapsed"] .nav .count { position: absolute; top: 2px; right: 4px; margin: 0; }
+  :root[data-nav="collapsed"] .side-pro { justify-content: center; padding: 10px 0 !important; }
+}
+@media (max-width: 900px) { .nav-toggle, .side-top { display: none !important; } }
+
+/* --- Red global (página principal) ------------------------------------------- */
+.map-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 4px 26px 0; }
+.map-title { display: grid; gap: 2px; margin-right: auto; }
+.map-title b { font-family: var(--display); font-size: 15px; color: var(--th-text); }
+.map-bar .live { background: color-mix(in srgb, var(--th-run) 18%, transparent); color: var(--th-run); border: 1px solid color-mix(in srgb, var(--th-run) 45%, transparent); font-family: var(--mono); letter-spacing: .08em; padding: 3px 10px; border-radius: 999px; animation: blink 1.6s ease-in-out infinite; }
+.map-custom { margin: 0 26px; animation: dlgIn .2s var(--ease); }
+.map-custom-b { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+.vis-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 4px 12px; max-height: 240px; overflow: auto; margin-top: 8px; padding-right: 4px; }
+.vis-list .switch { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.map { --pcols: 1; }
+.map svg.wires.base { z-index: 0; }
+.map svg.wires.fx { z-index: 2; }
+.map .col { z-index: 3; }
+.map .col.left { display: grid; grid-template-columns: repeat(var(--pcols), minmax(0, 1fr)); gap: 22px 18px; align-content: start; }
+.map .col.left.compact { gap: 14px 16px; }
+.map.dense { grid-template-columns: minmax(0, 1.5fr) 46px minmax(0, 1fr); gap: 0 60px; }
+.map.dense .col.left .node { width: 100%; }
+.map .col.right { gap: 18px; }
+
+/* Nodos: estado LIVE (trabajando) y RX (IA recibiendo datos) */
+.live-tag { margin-left: auto; margin-right: 8px; font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em; padding: 1px 6px; border-radius: 5px; background: color-mix(in srgb, var(--th-run) 22%, transparent); color: var(--th-run); border: 1px solid color-mix(in srgb, var(--th-run) 50%, transparent); animation: blink 1.2s ease-in-out infinite; }
+.map .node.live, .map .node.recv {
+  border-color: color-mix(in srgb, var(--th-run) 60%, var(--th-border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--th-run) 40%, transparent), 0 0 calc(var(--th-glow) * 34px) color-mix(in srgb, var(--th-run) 40%, transparent);
+  animation: nodeGlow 1.8s ease-in-out infinite;
+}
+@keyframes nodeGlow { 50% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--th-run) 70%, transparent), 0 0 calc(var(--th-glow) * 54px) color-mix(in srgb, var(--th-run) 60%, transparent); } }
+.map .node.recv .node-h::before { content: ""; position: absolute; inset: 0; background: linear-gradient(260deg, transparent 20%, color-mix(in srgb, var(--th-run) 55%, transparent) 50%, transparent 80%); transform: translateX(100%); animation: sweepBack 1.4s ease-in-out infinite; }
+@keyframes sweepBack { to { transform: translateX(-100%); } }
+.map .node.pnode.compact .node-b { padding: 6px 12px 8px; }
+.map .node.pnode.compact .chip { padding: 0; font-size: 11.5px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.map .node.pnode.compact .chip i { width: 18px; height: 8px; }
+.map .node .chk .st-mini { margin-left: auto; font-size: 11.5px; color: var(--th-text); }
+.kv.port.model .m-name { font-family: var(--mono); font-size: 11px; color: var(--th-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.kv.port.model.hot .m-name { color: var(--th-run); text-shadow: 0 0 8px color-mix(in srgb, var(--th-run) 70%, transparent); }
+.kv.port.model.hot::before, .kv.port.model.hot::after { background: var(--th-run) !important; box-shadow: 0 0 8px var(--th-run); }
+
+/* Cables: base tenue, enlaces reales visibles, enlaces vivos encendidos */
+.wire.link { stroke: var(--th-conn); stroke-width: 1.3; opacity: .45; stroke-dasharray: 2 5; }
+.wire.hot { stroke: var(--th-run); stroke-width: 2.4; opacity: .95; stroke-dasharray: 10 8; animation: flow .7s linear infinite; }
+.wire.core { stroke: color-mix(in srgb, var(--th-run) 35%, white); stroke-width: 1; opacity: .9; fill: none; }
+.wire.halo { stroke: var(--th-run); stroke-width: 10; opacity: .35; animation: haloWire 1.6s ease-in-out infinite; }
+.g-fx .spark.hot { fill: #fff; filter: drop-shadow(0 0 4px var(--th-run)) drop-shadow(0 0 10px var(--th-run)); }
+.g-fx .spark.back { fill: var(--th-secondary); filter: drop-shadow(0 0 5px var(--th-secondary)); }
+.g-fx .jn { fill: var(--th-run); }
+.g-fx .jn.rx { fill: var(--th-secondary); }
+.spark { fill: color-mix(in srgb, var(--th-conn) 70%, white); filter: drop-shadow(0 0 3px var(--th-conn)); }
+.bus.running { box-shadow: 0 0 0 1px var(--th-border), 0 0 36px color-mix(in srgb, var(--th-run) 45%, transparent); }
+.bus .sheen { background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--th-run) 40%, transparent), transparent); }
+:root[data-anim="off"] .wire.hot, :root[data-anim="off"] .map .node.live, :root[data-anim="off"] .map .node.recv, :root[data-anim="off"] .live-tag { animation: none; }
+@media (max-width: 1100px) { .map-custom-b { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 900px) {
+  .map .col.left { grid-template-columns: minmax(0, 1fr); }
+  .map.dense { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .map-bar, .map-custom { padding-left: 4px; padding-right: 4px; margin-left: 0; margin-right: 0; }
+}
+.map .node-h .title { flex: 1; min-width: 0; }
+.map .node.compact .live-tag { font-size: 8.5px; padding: 0 4px; margin-right: 6px; }
+.map .col.left .kv.port::before { display: none; }
+
+/* --- Robots de agente (estilo rectangular) ---------------------------------- */
+.v-working .ag-bot .ag-ring, .v-reviewing .ag-bot .ag-ring { animation: flow .9s linear infinite; stroke-dasharray: 14 8; transform: none; }
+.ag .ag-corner { fill: none; stroke: color-mix(in srgb, var(--th-node) 55%, transparent); stroke-width: 1.2; stroke-linecap: round; }
+.ag .ag-ear, .ag .ag-neck { fill: color-mix(in srgb, var(--th-node) 45%, var(--th-card)); }
+.ag .ag-visor, .ag .ag-chest { fill: #05080b; stroke: color-mix(in srgb, var(--th-node) 45%, transparent); stroke-width: .8; }
+.ag .ag-eye { fill: var(--th-robot); filter: drop-shadow(0 0 1.6px var(--th-robot)); }
+.ag .ag-led { fill: var(--th-robot); opacity: .8; }
+.ag .ag-mark .ag-icon { stroke: var(--th-robot); stroke-width: 2.6; }
+.ag-bot .ag-body { stroke-width: 1.3; }
+.robot .r-screen, .robot .r-core { fill: #070b10; }
+.robot .r-logo { filter: drop-shadow(0 0 1.5px currentColor); }
+.robot .r-eye { filter: drop-shadow(0 0 2px rgba(56, 214, 255, .9)); }
+.v-working .ag .ag-led, .v-thinking .ag .ag-led { animation: blink .5s steps(2) infinite; }
+.v-idle .ag-bot .ag-eye { filter: none; opacity: .6; }
+
+/* --- Cables entre tarjetas (Agents, Agent Hub) -------------------------------- */
+.wired { position: relative; column-gap: 22px !important; row-gap: 18px !important; }
+.wired > :not(svg) { position: relative; z-index: 1; }
+.grid-wires { position: absolute; inset: 0; pointer-events: none; overflow: visible; z-index: 0; }
+.gw { fill: none; stroke: color-mix(in srgb, var(--th-conn) 45%, var(--th-border)); stroke-width: 1.4; }
+.gw.hot { stroke: var(--th-run); stroke-width: 2; stroke-dasharray: 8 6; animation: flow .8s linear infinite; filter: drop-shadow(0 0 4px var(--th-run)); }
+.gw-port { fill: var(--th-card); stroke: color-mix(in srgb, var(--th-conn) 60%, var(--th-border)); stroke-width: 1.4; }
+.gw-port.hot { fill: var(--th-run); stroke: var(--th-run); }
+.agent-tile .net-glyph { border-radius: 12px; }
+.agent-tile { border-radius: 12px; background: linear-gradient(180deg, color-mix(in srgb, var(--th-node) 5%, var(--th-card)), var(--th-card)); }
+.agent-tile.v-working { border-color: color-mix(in srgb, var(--th-run) 60%, var(--th-border)); box-shadow: 0 0 calc(var(--th-glow) * 24px) color-mix(in srgb, var(--th-run) 30%, transparent); }
+:root[data-tone="light"] .wire.halo { opacity: .16; }

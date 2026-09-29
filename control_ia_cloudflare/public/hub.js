@@ -42,28 +42,43 @@ function providerBadge(provider, model, fallback) {
  */
 function robot(color, state = "idle", size = 64, seed = 0) {
   const c = COLOR_HEX[color] || COLOR_HEX.azul;
-  const eyes = state === "failed" ? "#ea3b4b" : state === "completed" ? "#22b161" : "#1fa3ff";
-  const variant = seed % 3;
-  const head = variant === 0
-    ? svg("rect", { x: 14, y: 16, width: 36, height: 26, rx: 7, fill: "#fff", stroke: "#0e0f11", "stroke-width": 2.5 })
-    : variant === 1
-      ? svg("rect", { x: 12, y: 17, width: 40, height: 24, rx: 12, fill: "#fff", stroke: "#0e0f11", "stroke-width": 2.5 })
-      : svg("path", { d: "M16 42 L16 24 Q16 16 24 16 L40 16 Q48 16 48 24 L48 42 Z", fill: "#fff", stroke: "#0e0f11", "stroke-width": 2.5 });
+  const eyes = state === "failed" ? "#ff4d5e" : state === "completed" ? "#34f5a4" : "#38d6ff";
+  const variant = seed % 3; // tres cabezas distintas: rectangular, visor ancho y cabeza con cresta
+  const INK = "#0e0f11", SCREEN = "#070b10";
+  const head = variant === 1
+    ? svg("rect", { x: 10, y: 12, width: 44, height: 27, rx: 6, fill: "#fff", stroke: INK, "stroke-width": 2.2 })
+    : variant === 2
+      ? svg("path", { d: "M13 39V20q0-8 8-8h22q8 0 8 8v19z", fill: "#fff", stroke: INK, "stroke-width": 2.2 })
+      : svg("rect", { x: 12, y: 11, width: 40, height: 28, rx: 8, fill: "#fff", stroke: INK, "stroke-width": 2.2 });
+  const arm = (side) => {
+    const l = side === "l";
+    return svg("g", { class: `r-arm r-arm-${side}` },
+      svg("line", { x1: l ? 16 : 48, y1: 49, x2: l ? 8 : 56, y2: 58, stroke: INK, "stroke-width": 3.4, "stroke-linecap": "round" }),
+      svg("circle", { cx: l ? 8 : 56, cy: 58.5, r: 2.6, fill: c, stroke: INK, "stroke-width": 1.6 }));
+  };
+  // Hexágono con núcleo: el logo de Kairo en el pecho.
+  const hex = "M32 49.2l4.3 2.5v5l-4.3 2.5-4.3-2.5v-5z";
   return svg("svg", { class: `robot r-${state}`, viewBox: "0 0 64 72", width: size, height: size * 72 / 64, role: "img", "aria-label": `robot ${state}` },
     svg("g", { class: "r-body" },
-      svg("line", { x1: 32, y1: 5, x2: 32, y2: 16, stroke: "#0e0f11", "stroke-width": 2.5 }),
-      svg("circle", { class: "r-antenna", cx: 32, cy: 5, r: 4, fill: c, stroke: "#0e0f11", "stroke-width": 2 }),
+      svg("line", { x1: 32, y1: 4, x2: 32, y2: 11, stroke: INK, "stroke-width": 2.2 }),
+      svg("circle", { class: "r-antenna", cx: 32, cy: 4, r: 3.2, fill: c, stroke: INK, "stroke-width": 1.8 }),
+      svg("rect", { x: 6, y: 19, width: 5, height: 13, rx: 2, fill: c, stroke: INK, "stroke-width": 1.8 }),
+      svg("rect", { x: 53, y: 19, width: 5, height: 13, rx: 2, fill: c, stroke: INK, "stroke-width": 1.8 }),
       head,
-      svg("rect", { x: 20, y: 19, width: 24, height: 4, rx: 2, fill: c, class: "r-visor" }),
-      svg("circle", { class: "r-eye", cx: 25, cy: 30, r: 4, fill: eyes }),
-      svg("circle", { class: "r-eye", cx: 39, cy: 30, r: 4, fill: eyes }),
-      svg("rect", { x: 26, y: 36, width: 12, height: 2.5, rx: 1, fill: "#0e0f11" }),
-      svg("rect", { x: 18, y: 45, width: 28, height: 18, rx: 5, fill: c, stroke: "#0e0f11", "stroke-width": 2.5 }),
-      svg("rect", { class: "r-core", x: 27, y: 50, width: 10, height: 7, rx: 2, fill: "#0e0f11" }),
-      svg("line", { class: "r-arm r-arm-l", x1: 18, y1: 50, x2: 9, y2: 58, stroke: "#0e0f11", "stroke-width": 3, "stroke-linecap": "round" }),
-      svg("line", { class: "r-arm r-arm-r", x1: 46, y1: 50, x2: 55, y2: 58, stroke: "#0e0f11", "stroke-width": 3, "stroke-linecap": "round" }),
-      svg("line", { x1: 25, y1: 63, x2: 25, y2: 69, stroke: "#0e0f11", "stroke-width": 3, "stroke-linecap": "round" }),
-      svg("line", { x1: 39, y1: 63, x2: 39, y2: 69, stroke: "#0e0f11", "stroke-width": 3, "stroke-linecap": "round" })));
+      svg("rect", { class: "r-visor", x: 20, y: 13.6, width: 24, height: 2.4, rx: 1.2, fill: c }),
+      svg("rect", { class: "r-screen", x: 16, y: 18, width: 32, height: 16, rx: 5, fill: SCREEN }),
+      svg("rect", { class: "r-eye", x: 20.5, y: 22.5, width: 7.5, height: 5, rx: 2, fill: eyes }),
+      svg("rect", { class: "r-eye", x: 36, y: 22.5, width: 7.5, height: 5, rx: 2, fill: eyes }),
+      svg("rect", { class: "r-mouth", x: 27, y: 30, width: 10, height: 1.6, rx: .8, fill: eyes }),
+      svg("rect", { x: 27, y: 39, width: 10, height: 5, rx: 1.5, fill: INK }),
+      svg("rect", { x: 16, y: 44, width: 32, height: 20, rx: 6, fill: c, stroke: INK, "stroke-width": 2.2 }),
+      svg("rect", { class: "r-core", x: 24.5, y: 47.5, width: 15, height: 12, rx: 3, fill: SCREEN }),
+      svg("path", { class: "r-logo", d: hex, fill: "none", stroke: eyes, "stroke-width": 1.4, "stroke-linejoin": "round" }),
+      svg("circle", { class: "r-logo", cx: 32, cy: 54.2, r: 1.3, fill: eyes }),
+      svg("circle", { cx: 20, cy: 48, r: 1.2, fill: SCREEN }), svg("circle", { cx: 44, cy: 48, r: 1.2, fill: SCREEN }),
+      arm("l"), arm("r"),
+      svg("rect", { x: 21, y: 64, width: 8, height: 6, rx: 2, fill: INK }),
+      svg("rect", { x: 35, y: 64, width: 8, height: 6, rx: 2, fill: INK })));
 }
 const seedOf = (id) => [...String(id)].reduce((a, ch) => a + ch.charCodeAt(0), 0);
 
@@ -131,6 +146,7 @@ async function viewHub(main) {
         isAdmin ? h("a", { class: "btn small", href: "#/metricas" }, "métricas") : null)),
     grid));
   await load();
+  wireGrid(grid);
 }
 
 function agentCard(a, i, plan) {

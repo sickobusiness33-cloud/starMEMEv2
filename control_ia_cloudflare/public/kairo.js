@@ -46,6 +46,9 @@ const ICONS = {
   grid: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
   back: "M15 5l-7 7 7 7",
   bolt: "M13 3L5 14h6l-1 7 8-11h-6z",
+  network: "M5 5h4v4H5zM15 5h4v4h-4zM10 15h4v4h-4zM9 7h6M7 9l4.5 6M17 9l-4.5 6",
+  sidebar: "M4 4h16v16H4zM9 4v16M15 10l-2 2 2 2",
+  sidebarOpen: "M4 4h16v16H4zM9 4v16M13 10l2 2-2 2",
 };
 
 function icon(name, size = 18, cls = "") {

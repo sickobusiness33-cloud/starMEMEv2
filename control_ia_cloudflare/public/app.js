@@ -303,19 +303,19 @@ function renderAuth(allowSignup, mode = allowSignup ? "register" : "login") {
 
 // [clave, etiqueta, icono, visible en la barra inferior del móvil]
 const NAV = [
-  ["home", "Command", "home", true], ["chat", "Kairo", "kairo", true], ["proyectos", "Proyectos", "projects", true],
+  ["panel", "Red global", "network", true], ["home", "Command", "home", false], ["chat", "Kairo", "kairo", true], ["proyectos", "Proyectos", "projects", true],
   ["hub", "Agentes", "agents", false], ["studio", "Estudio", "studio", false], ["notificaciones", "Avisos", "bell", true],
-  ["panel", "Red global", "panel", false], ["actividad", "Auditoría", "activity", false], ["conectores", "Conectores", "connectors", false],
+  ["actividad", "Auditoría", "activity", false], ["conectores", "Conectores", "connectors", false],
   ["configuracion", "Ajustes", "settings", false], ["apariencia", "Apariencia", "brush", false],
 ];
 const SECTION_TITLE = {
-  home: "Command Center", p: "Project workspace", apariencia: "Apariencia", chat: "Kairo", hub: "Agent Hub", "hub-runs": "Agent Hub", studio: "Estudio", panel: "Panel", proyectos: "Proyectos", notificaciones: "Notificaciones",
+  home: "Command Center", p: "Project workspace", apariencia: "Apariencia", chat: "Kairo", hub: "Agent Hub", "hub-runs": "Agent Hub", studio: "Estudio", panel: "Red global", proyectos: "Proyectos", notificaciones: "Notificaciones",
   actividad: "Actividad", conectores: "Conectores", configuracion: "Ajustes", upgrade: "Control IA Pro", fuentes: "Modelos y licencias", metricas: "Métricas",
 };
 
 function parseRoute() {
   const parts = location.hash.replace(/^#\/?/, "").split("?")[0].split("/").filter(Boolean);
-  return { section: parts[0] || "home", id: parts[1] ? Number(parts[1]) : null, tab: parts[2] || "chat" };
+  return { section: parts[0] || "panel", id: parts[1] ? Number(parts[1]) : null, tab: parts[2] || "chat" };
 }
 
 function route() {
@@ -332,7 +332,7 @@ function route() {
   }).catch(() => { planBadge.textContent = "plan"; });
 
   const isCurrent = (key) => r.section === key || (key === "hub" && ["hub-runs", "fuentes"].includes(r.section)) || (key === "proyectos" && r.section === "p");
-  const navLink = ([key, label, ic, primary]) => h("a", { href: `#/${key}`, class: primary ? "primary" : "secondary", "aria-current": isCurrent(key) ? "page" : null },
+  const navLink = ([key, label, ic, primary]) => h("a", { href: `#/${key}`, class: primary ? "primary" : "secondary", title: label, "aria-current": isCurrent(key) ? "page" : null },
     h("span", { class: "nav-ico" }, icon(ic, 19)), h("span", { class: "nav-label" }, label), key === "actividad" ? pendingBadge : null);
   const moreSheet = h("div", { class: "more-sheet", hidden: true },
     NAV.filter((n) => !n[3]).map(navLink), h("a", { href: "#/upgrade", class: "secondary" }, h("span", { class: "nav-ico" }, icon("star", 19)), h("span", { class: "nav-label" }, "Pro")));
@@ -340,15 +340,26 @@ function route() {
     e.stopPropagation(); moreSheet.hidden = !moreSheet.hidden; moreBtn.setAttribute("aria-expanded", String(!moreSheet.hidden)); } },
     h("span", { class: "nav-ico" }, icon("more", 19)), h("span", { class: "nav-label" }, "Más"));
   document.addEventListener("click", () => { moreSheet.hidden = true; }, { once: true });
+  // Plegar/desplegar el menú lateral (se guarda en las preferencias del usuario).
+  const collapsed = () => document.documentElement.dataset.nav === "collapsed";
+  const navToggle = h("button", { class: "nav-toggle", type: "button", "aria-label": collapsed() ? "Desplegar menú" : "Plegar menú", "aria-expanded": String(!collapsed()),
+    title: "Plegar/desplegar menú", onclick: () => {
+      setPrefs({ ui: { nav: collapsed() ? "open" : "collapsed" } });
+      navToggle.setAttribute("aria-expanded", String(!collapsed()));
+      navToggle.setAttribute("aria-label", collapsed() ? "Desplegar menú" : "Plegar menú");
+      navToggle.replaceChildren(icon(collapsed() ? "sidebarOpen" : "sidebar", 18));
+    } }, icon(collapsed() ? "sidebarOpen" : "sidebar", 18));
   const nav = h("nav", { class: "nav", "aria-label": "Secciones" },
-    h("a", { class: "side-brand", href: "#/home" }, kairoLogo(30), h("span", {}, h("b", {}, "Control IA"), h("small", {}, `${BRAND_NAME} Intelligence`))),
-    h("div", { class: "nav-group" }, NAV.slice(0, 3).map(navLink)),
+    h("div", { class: "side-top" },
+      h("a", { class: "side-brand", href: "#/panel", title: "Control IA" }, kairoLogo(30), h("span", {}, h("b", {}, "Control IA"), h("small", {}, `${BRAND_NAME} Intelligence`))),
+      navToggle),
+    h("div", { class: "nav-group" }, NAV.slice(0, 4).map(navLink)),
     h("div", { class: "nav-sep" }, "Agentes"),
-    h("div", { class: "nav-group" }, NAV.slice(3, 6).map(navLink)),
+    h("div", { class: "nav-group" }, NAV.slice(4, 7).map(navLink)),
     h("div", { class: "nav-sep" }, "Sistema"),
-    h("div", { class: "nav-group" }, NAV.slice(6).map(navLink)),
+    h("div", { class: "nav-group" }, NAV.slice(7).map(navLink)),
     moreBtn, moreSheet,
-    h("a", { class: "side-pro", href: "#/upgrade" }, icon("star", 16), h("span", {}, "Control IA Pro")));
+    h("a", { class: "side-pro", href: "#/upgrade", title: "Control IA Pro" }, icon("star", 16), h("span", {}, "Control IA Pro")));
 
   // Métricas del grafo (estética del panel): solo en la vista Panel.
   let stats = null;
@@ -382,7 +393,7 @@ function route() {
 
   const initials = (S.user.name || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
   const top = h("header", { class: "topbar" },
-    h("a", { class: "top-brand", href: "#/home", "aria-label": "Control IA" }, kairoLogo(26)),
+    h("a", { class: "top-brand", href: "#/panel", "aria-label": "Control IA" }, kairoLogo(26)),
     h("div", { class: "top-title" }, SECTION_TITLE[r.section] || "Control IA"),
     stats,
     h("div", { class: "top-actions" },
@@ -396,7 +407,7 @@ function route() {
   const views = { home: viewHome, p: viewWorkspace, apariencia: viewAppearance, chat: viewChat, hub: viewHub, "hub-runs": viewHubRuns, upgrade: viewUpgrade, fuentes: viewSources, metricas: viewMetrics,
     studio: viewStudio, notificaciones: viewNotifications,
     panel: viewPanel, proyectos: viewProjectsOS, actividad: viewActivity, conectores: viewConnectors, configuracion: viewSettings };
-  (views[r.section] || viewHome)(main, r).catch((err) => main.replaceChildren(h("div", { class: "alert" }, err.message)));
+  (views[r.section] || viewPanel)(main, r).catch((err) => main.replaceChildren(h("div", { class: "alert" }, err.message)));
 }
 
 async function logout() {
@@ -1049,7 +1060,7 @@ async function viewSettings(main) {
 
 const SVGNS = "http://www.w3.org/2000/svg";
 const svg = (tag, attrs = {}, ...kids) => { const el = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); kids.forEach((k) => el.append(k)); return el; };
-const PROVIDER_COLOR = { anthropic: "naranja", openai: "verde", demo: "turquesa" };
+const PROVIDER_COLOR = { anthropic: "naranja", openai: "verde", demo: "turquesa", "workers-ai": "azul" };
 const CONNECTOR_COLOR = { github: "morado", discord_webhook: "azul", slack_webhook: "rosa" };
 const pad2 = (n) => String(n).padStart(2, "0");
 const hhmm = (iso) => { if (!iso) return "—"; const d = new Date(iso); return `${pad2(d.getHours())}.${pad2(d.getMinutes())}`; };
@@ -1073,65 +1084,85 @@ function val(key, v, style) {
   return h("b", { class: changed ? "flash" : null, style }, v);
 }
 
-function projectNode(p, providers) {
+const shortModel = (m) => String(m || "").replace(/^@cf\/[^/]+\//, "").replace(/-instruct.*$/, "").replace(/^claude-/, "claude ");
+const linkKey = (prov, model) => `${prov}|${model}`;
+
+/** Nodo de proyecto. compact = una sola línea (para 10, 20 o más proyectos). */
+function projectNode(p, providers, compact) {
   const prov = providers.find((x) => x.id === p.provider);
-  const k = `p${p.id}`;
-  return h("a", { class: "card node" + (p.active ? " active" : "") + (p.running ? " running" : ""), href: `#/proyectos/${p.id}/chat`, "data-node": k,
-    "aria-label": `Proyecto ${p.name}: ${p.runs} tareas, ${p.active} activas` },
-    h("div", { class: `node-h col-${p.color}` }, h("span", { class: "title" }, slug(p.name) + ".proj")),
+  const k = p.id === "kairo" ? "kairo" : `p${p.id}`;
+  const live = p.live > 0;
+  const model = p.live_links?.[0]?.model || p.used?.[0]?.model || p.model;
+  const provId = p.live_links?.[0]?.provider || p.used?.[0]?.provider || p.provider;
+  const tasks = (p.runs || 0) + (p.kairo_runs || 0);
+  const href = p.id === "kairo" ? "#/chat" : `#/p/${p.id}/overview`;
+  const cls = "card node pnode" + (compact ? " compact" : "") + (live ? " live running" : "") + (p.active ? " active" : "");
+  const head = h("div", { class: `node-h col-${p.color || "azul"}` }, h("span", { class: "title" }, p.id === "kairo" ? "kairo.chat" : slug(p.name) + ".proj"),
+    live ? h("span", { class: "live-tag" }, "LIVE") : null);
+  const chip = h("div", { class: "chip" }, h("i", { class: `col-${PROVIDER_COLOR[provId] || "azul"}` }), model ? shortModel(model) : "auto · Kairo");
+  if (compact) {
+    return h("a", { class: cls, href, "data-node": k, title: `${p.name}: ${tasks} tareas${live ? " · trabajando ahora" : ""}` },
+      head, h("div", { class: "node-b" }, h("div", { class: "kv port" }, chip, val(`${k}.tasks`, tasks))));
+  }
+  return h("a", { class: cls, href, "data-node": k, "aria-label": `Proyecto ${p.name}: ${tasks} tareas${live ? ", trabajando ahora" : ""}` },
+    head,
     h("div", { class: "node-b" },
-      h("div", { class: "chip" }, h("i", { class: `col-${PROVIDER_COLOR[p.provider] || "azul"}` }), p.model || "sin modelo"),
-      h("div", { class: "kv port" }, "tareas", val(`${k}.runs`, p.runs)),
-      h("div", { class: "kv port" }, "hoy", val(`${k}.today`, `${p.runs_today}/${p.limit_per_day}`)),
-      p.failed ? h("div", { class: "kv port" }, "fallos", val(`${k}.failed`, p.failed, "color:var(--err)")) : h("div", { class: "kv port" }, "pasos", val(`${k}.steps`, p.steps)),
-      h("div", { class: "chk" + (p.status === "active" ? " on" : "") }, p.status === "archived" ? "archivado" : "activo"),
-      p.running ? h("div", { class: "row", style: "margin-top:4px" }, pill(RUN_STATUS, "running"))
-        : p.active ? h("div", { class: "row", style: "margin-top:4px" }, h("span", { class: "pill st-warn" }, "wait")) : null,
-      p.provider && (!prov || !prov.connected) ? h("div", { class: "small", style: "color:var(--warn);margin-top:4px" }, "! falta conectar la IA") : null));
+      chip,
+      h("div", { class: "kv port" }, "tareas", val(`${k}.runs`, tasks)),
+      p.id === "kairo" ? null : h("div", { class: "kv port" }, "hoy", val(`${k}.today`, `${p.runs_today}/${p.limit_per_day}`)),
+      p.failed ? h("div", { class: "kv port" }, "fallos", val(`${k}.failed`, p.failed, "color:var(--err)")) : h("div", { class: "kv port" }, "agentes", val(`${k}.ag`, live ? `${p.live_agents} trabajando` : "—")),
+      p.id === "kairo" ? null : h("div", { class: "chk" + (p.status === "active" ? " on" : "") }, p.status === "archived" ? "archivado" : "activo"),
+      p.provider && p.provider !== "demo" && (!prov || !prov.connected) ? h("div", { class: "small", style: "color:var(--warn);margin-top:4px" }, "! falta conectar la IA") : null));
 }
 
-function sideNode(kind, item) {
+/** Nodo de IA (proveedor + modelos en uso, cada modelo es un puerto) o de conector. */
+function sideNode(kind, item, hotModels = new Set()) {
   const isProv = kind === "prov";
   const color = isProv ? PROVIDER_COLOR[item.id] || "azul" : CONNECTOR_COLOR[item.type] || "morado";
   const title = isProv ? `${item.id}.ia` : `${slug(item.name)}.${item.type.split("_")[0]}`;
-  const ok = isProv ? item.connected : item.status === "connected";
+  const platform = isProv && !item.connected;
+  const ok = isProv ? item.connected || platform : item.status === "connected";
   const k = isProv ? `ia-${item.id}` : `c${item.id}`;
-  const stateLabel = isProv ? (item.is_demo ? "demo" : item.connected ? (item.status === "ok" ? "verificada" : item.status === "error" ? "error" : "sin probar") : "sin clave")
+  const stateLabel = isProv ? (item.id === "workers-ai" ? "gratis" : platform ? "plataforma" : item.is_demo ? "demo" : item.connected ? (item.status === "ok" ? "verificada" : item.status === "error" ? "error" : "sin probar") : "sin clave")
     : ({ connected: "verificado", error: "error", untested: "sin probar", pending_config: "pendiente" })[item.status] || item.status;
-  return h("a", { class: "card node", href: isProv ? "#/configuracion" : "#/conectores", "data-node": k,
-    "aria-label": `${isProv ? "IA" : "Conector"} ${item.name}: ${stateLabel}` },
-    h("div", { class: `node-h col-${color}` }, h("span", { class: "title" }, title)),
+  const models = isProv ? item.models || [] : [];
+  const recv = isProv && models.some((m) => hotModels.has(linkKey(item.id, m.model)));
+  return h("a", { class: "card node side" + (recv ? " recv" : ""), href: isProv ? "#/configuracion" : "#/conectores", "data-node": k,
+    "aria-label": `${isProv ? "IA" : "Conector"} ${item.name}: ${stateLabel}${recv ? ", recibiendo datos" : ""}` },
+    h("div", { class: `node-h col-${color}` }, h("span", { class: "title" }, title), recv ? h("span", { class: "live-tag" }, "RX") : null),
     h("div", { class: "node-b" },
-      h("div", { class: "chk" + (ok ? " on" : "") }, isProv ? (item.connected ? "conectada" : "desconectada") : item.enabled ? "activo" : "inactivo"),
-      h("div", { class: "kv port" }, "estado", val(`${k}.st`, stateLabel, !ok ? "color:var(--warn)" : null)),
-      h("div", { class: "kv port" }, "uso", val(`${k}.use`, item.last_used_at ? hhmm(item.last_used_at) : "—"))));
+      h("div", { class: "chk" + (ok ? " on" : "") }, isProv ? (item.connected ? "conectada" : "vía Kairo") : item.enabled ? "activo" : "inactivo",
+        h("b", { class: "st-mini", style: !ok ? "color:var(--warn)" : null }, stateLabel)),
+      models.length
+        ? models.map((m) => h("div", { class: "kv port model" + (hotModels.has(linkKey(item.id, m.model)) ? " hot" : ""), "data-model": m.model, title: m.model },
+          h("span", { class: "m-name" }, shortModel(m.model)), val(`${k}.${m.model}`, m.n ? `${m.n}×` : "—")))
+        : h("div", { class: "kv port" }, "uso", val(`${k}.use`, item.last_used_at ? hhmm(item.last_used_at) : "—"))));
 }
 
-// Dibuja los cables. Solo se redibuja si cambia la estructura (así las animaciones no saltan).
+// Dibuja los cables. Capa base (detrás) + capa de enlaces vivos (encima del bus, debajo de las tarjetas).
+// Solo se redibuja si cambia la estructura, así las animaciones no saltan.
 let wireSig = "";
 function drawWires(map, data, force = false) {
   const box = map.getBoundingClientRect();
-  const bus = map.querySelector(".bus")?.getBoundingClientRect();
-  if (!bus || !box.width || getComputedStyle(map).gridTemplateColumns.split(" ").length < 3) { map.querySelector("svg.wires")?.remove(); wireSig = ""; return; }
-  const hot = new Set(data.projects.filter((p) => p.active).map((p) => `p${p.id}`));
-  const hotSide = new Set();
-  for (const p of data.projects) if (p.active) { hotSide.add(`ia-${p.provider}`); p.connector_ids.forEach((c) => hotSide.add(`c${c}`)); }
+  const busEl = map.querySelector(".bus");
+  const bus = busEl?.getBoundingClientRect();
+  const clear = () => { map.querySelectorAll("svg.wires").forEach((x) => x.remove()); wireSig = ""; };
+  if (!bus || !box.width || getComputedStyle(map).gridTemplateColumns.split(" ").length < 3) return clear();
+  const pp = PREFS.data.panel || {};
   const nodes = [...map.querySelectorAll("[data-node]")];
-  const sig = `${Math.round(box.width)}x${Math.round(box.height)}|${nodes.map((n) => n.dataset.node).join(",")}|${[...hot, ...hotSide].join(",")}`;
+  const links = data.links || [];
+  const sig = `${Math.round(box.width)}x${Math.round(box.height)}|${nodes.map((n) => n.dataset.node + ":" + Math.round(n.getBoundingClientRect().top - box.top)).join(",")}|${links.map((l) => l.from + ">" + l.key + (l.hot ? "*" : "")).join(",")}|${pp.tangle}${pp.particles}`;
   if (!force && sig === wireSig && map.querySelector("svg.wires")) return;
   wireSig = sig;
-  map.querySelector("svg.wires")?.remove();
+  map.querySelectorAll("svg.wires").forEach((x) => x.remove());
 
-  const layer = svg("svg", { class: "wires", "aria-hidden": "true" });
-  const defs = svg("defs");
-  const blur = svg("filter", { id: "glowblur", x: "-20%", y: "-20%", width: "140%", height: "140%" }, svg("feGaussianBlur", { stdDeviation: "6" }));
-  defs.append(blur);
-  layer.append(defs);
-  const gFaint = svg("g", { class: "g-faint" });
-  const gHalo = svg("g", { class: "g-halo", filter: "url(#glowblur)" });
-  const gMain = svg("g", { class: "g-main" });
-  const gFx = svg("g", { class: "g-fx" });
-  layer.append(gFaint, gHalo, gMain, gFx);
+  const base = svg("svg", { class: "wires base", "aria-hidden": "true" });
+  const top = svg("svg", { class: "wires fx", "aria-hidden": "true" });
+  top.append(svg("defs", {}, svg("filter", { id: "glowblur", x: "-20%", y: "-20%", width: "140%", height: "140%" }, svg("feGaussianBlur", { stdDeviation: "5" }))));
+  const gFaint = svg("g", { class: "g-faint" }), gMain = svg("g", { class: "g-main" });
+  base.append(gFaint, gMain);
+  const gLink = svg("g", { class: "g-link" }), gHalo = svg("g", { class: "g-halo", filter: "url(#glowblur)" }), gHot = svg("g", { class: "g-hot" }), gFx = svg("g", { class: "g-fx" });
+  top.append(gLink, gHalo, gHot, gFx);
 
   const bx1 = bus.left - box.left, bx2 = bus.right - box.left, bTop = bus.top - box.top + 24, bH = Math.max(40, bus.height - 48);
   let seed = 11;
@@ -1141,50 +1172,73 @@ function drawWires(map, data, force = false) {
     const mx = x1 + (x2 - x1) * bend;
     return `M${x1.toFixed(1)},${y1.toFixed(1)} C${mx.toFixed(1)},${y1.toFixed(1)} ${mx.toFixed(1)},${y2.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`;
   };
-  const particle = (d, durS, delay, big) => {
-    if (REDUCED) return;
+  const particles = !REDUCED && pp.particles !== false;
+  const particle = (g, d, durS, delay, cls, reverse = false) => {
+    if (!particles) return;
     const id = `w${pid++}`;
-    gFx.append(svg("path", { id, d, class: "wire-ghost" }));
-    const dot = svg("circle", { r: big ? 3.2 : 2, class: big ? "spark hot" : "spark" },
-      svg("animateMotion", { dur: `${durS}s`, begin: `${delay}s`, repeatCount: "indefinite", rotate: "auto" }, svg("mpath", { href: `#${id}` })));
-    gFx.append(dot);
+    g.append(svg("path", { id, d, class: "wire-ghost" }));
+    const motion = { dur: `${durS}s`, begin: `${delay}s`, repeatCount: "indefinite", rotate: "auto" };
+    if (reverse) Object.assign(motion, { keyPoints: "1;0", keyTimes: "0;1", calcMode: "linear" });
+    g.append(svg("circle", { r: cls.includes("hot") ? 3.2 : 2, class: `spark ${cls}` }, svg("animateMotion", motion, svg("mpath", { href: `#${id}` }))));
   };
-
-  nodes.forEach((n, idx) => {
+  const portsOf = (n) => {
     const r = n.getBoundingClientRect();
+    const ports = [...n.querySelectorAll(".kv.port")];
+    return { r, ports: ports.length ? ports.map((p) => ({ el: p, y: p.getBoundingClientRect().top + p.getBoundingClientRect().height / 2 - box.top })) : [{ el: n, y: r.top + r.height / 2 - box.top }] };
+  };
+  const busY = (key, i) => bTop + ((([...key].reduce((a, c) => a * 31 + c.charCodeAt(0), 7) + i * 53) % 1000) / 1000) * bH;
+
+  // 1) Cables base: cada puerto se conecta al bus compartido.
+  const anchors = new Map(); // data-node -> { x, y, left } del puerto principal
+  const modelPorts = new Map(); // "prov|model" -> { x, y }
+  nodes.forEach((n) => {
+    const { r, ports } = portsOf(n);
     const left = r.left + r.width / 2 < bus.left + bus.width / 2;
     const key = n.dataset.node;
-    const isHot = hot.has(key) || hotSide.has(key);
-    const ports = [...n.querySelectorAll(".kv.port")].map((k) => k.getBoundingClientRect());
-    const ys = ports.length ? ports.map((k) => k.top + k.height / 2 - box.top) : [r.top + r.height / 2 - box.top];
     const x = left ? r.right - box.left + 5 : r.left - box.left - 5;
     const bx = left ? bx1 : bx2;
-    // Maraña de fondo, como en el vídeo: muchas curvas tenues que "respiran".
-    for (let k = 0; k < 9; k++) {
-      const y1 = ys[k % ys.length] + (rnd() - 0.5) * 6;
-      const y2 = bTop + rnd() * bH;
-      const far = left ? bx2 + rnd() * 60 : bx1 - rnd() * 60; // algunas cruzan el bus
-      gFaint.append(svg("path", { d: curve(x, y1, k % 4 === 0 ? far : bx, y2, 0.35 + rnd() * 0.4), class: "wire faint", style: `--d:${(rnd() * 4).toFixed(2)}s` }));
-    }
-    ys.forEach((y, i) => {
-      const target = bTop + (((idx * 97 + i * 53) % 1000) / 1000) * bH;
-      const d = curve(x, y, bx, target);
-      edges++;
-      if (i === 0 && isHot) {
-        gHalo.append(svg("path", { d, class: "wire halo" }));
-        gMain.append(svg("path", { d, class: "wire hot" }));
-        particle(d, 1.4 + rnd(), -rnd() * 1.4, true);
-        particle(d, 1.9 + rnd(), -rnd() * 2, true);
-      } else {
-        gMain.append(svg("path", { d, class: "wire" }));
-        if (rnd() < 0.45) particle(d, 3.5 + rnd() * 4, -rnd() * 6, false);
+    anchors.set(key, { x, y: ports[0].y, left });
+    if (pp.tangle !== false) {
+      for (let k = 0; k < (nodes.length > 14 ? 3 : 7); k++) {
+        const y1 = ports[k % ports.length].y + (rnd() - 0.5) * 6;
+        const far = left ? bx2 + rnd() * 60 : bx1 - rnd() * 60;
+        gFaint.append(svg("path", { d: curve(x, y1, k % 4 === 0 ? far : bx, bTop + rnd() * bH, 0.35 + rnd() * 0.4), class: "wire faint", style: `--d:${(rnd() * 4).toFixed(2)}s` }));
       }
-      gMain.append(svg("circle", { cx: bx, cy: target, r: i === 0 && isHot ? 3.6 : 2.3, class: "jn" + (i === 0 && isHot ? " pulse" : "") }));
-      gMain.append(svg("circle", { cx: x, cy: y, r: 1.6, class: "jn port-glow" }));
+    }
+    ports.forEach((p, i) => {
+      if (p.el.dataset?.model) modelPorts.set(linkKey(key.replace(/^ia-/, ""), p.el.dataset.model), { x, y: p.y });
+      const d = curve(x, p.y, bx, busY(key, i));
+      edges++;
+      gMain.append(svg("path", { d, class: "wire" }));
+      if (rnd() < (nodes.length > 14 ? 0.15 : 0.35)) particle(gMain, d, 4 + rnd() * 4, -rnd() * 6, "");
+      gMain.append(svg("circle", { cx: bx, cy: busY(key, i), r: 2.2, class: "jn" }));
+      gMain.append(svg("circle", { cx: x, cy: p.y, r: 1.6, class: "jn port-glow" }));
     });
   });
+
+  // 2) Enlaces reales proyecto → bus → modelo de IA. Encendidos cuando se están usando.
+  for (const l of links) {
+    const a = anchors.get(l.from);
+    const b = modelPorts.get(l.key);
+    if (!a) continue;
+    const ya = busY(l.from, 99), yb = b ? b.y + (busY(l.key, 7) - b.y) * 0.15 : ya;
+    const d = b
+      ? `${curve(a.x, a.y, bx1, ya)} C${(bx1 + (bx2 - bx1) * 0.6).toFixed(1)},${ya.toFixed(1)} ${(bx1 + (bx2 - bx1) * 0.4).toFixed(1)},${yb.toFixed(1)} ${bx2.toFixed(1)},${yb.toFixed(1)} ${curve(bx2, yb, b.x, b.y).replace(/^M[^C]+/, "")}`
+      : curve(a.x, a.y, bx1, ya);
+    if (!l.hot) { gLink.append(svg("path", { d, class: "wire link" })); continue; }
+    edges++;
+    gHalo.append(svg("path", { d, class: "wire halo" }));
+    gHot.append(svg("path", { d, class: "wire hot" }));
+    gHot.append(svg("path", { d, class: "wire core" }));
+    for (let i = 0; i < 3; i++) particle(gFx, d, 2.2, -i * 0.73, "hot");
+    for (let i = 0; i < 2; i++) particle(gFx, d, 2.8, -i * 1.4, "hot back", true);
+    gFx.append(svg("circle", { cx: a.x, cy: a.y, r: 4, class: "jn pulse" }));
+    if (b) gFx.append(svg("circle", { cx: b.x, cy: b.y, r: 4, class: "jn pulse rx" }));
+    gFx.append(svg("circle", { cx: bx1, cy: ya, r: 3.4, class: "jn pulse" }));
+  }
   map.dataset.edges = edges;
-  map.prepend(layer);
+  map.prepend(base);
+  map.append(top);
 }
 
 // Contadores vivos de la cabecera (T y FRAME), como en el vídeo.
@@ -1215,8 +1269,10 @@ async function viewPanel(main) {
   const workers = h("span", { class: "pill tag-dark" }, "—");
   const foot = h("div", { class: "metrics-foot" });
   const fleet = h("div", {});
+  const bar = h("div", { class: "map-bar" });
+  const custom = h("div", { class: "map-custom card", hidden: true });
   main.replaceChildren(h("div", { class: "panel-view" },
-    map, fleet,
+    bar, custom, map, fleet,
     h("div", { class: "panels" },
       h("section", { class: "card panel-card", style: "--k:0" }, h("div", { class: "card-h spread" }, h("span", { class: "grow" }, "Run log"), h("span", { class: "live" }, "LIVE")), h("div", { class: "card-b" }, runlog)),
       h("section", { class: "card panel-card", style: "--k:1" }, h("div", { class: "card-h spread" }, h("span", { class: "grow" }, "Dispatch"), workers), h("div", { class: "card-b" }, dispatch)),
@@ -1228,29 +1284,85 @@ async function viewPanel(main) {
   let data = null;
   const seenRuns = new Set();
   let firstPaint = true;
+  const pp = () => PREFS.data.panel || {};
+  const savePanel = (patch) => { setPrefs({ panel: patch }); render(); requestAnimationFrame(() => drawWires(map, data, true)); };
+  const seg = (label, options, cur, onPick) => h("div", { class: "seg-field" }, h("label", {}, label),
+    h("div", { class: "segctl" }, options.map(([id, l]) => h("button", { type: "button", "aria-selected": cur === id ? "true" : "false", onclick: () => onPick(id) }, l))));
+  const toggle = (label, value, onChange) => {
+    const cb = h("input", { type: "checkbox", checked: value ? true : null });
+    cb.addEventListener("change", () => onChange(cb.checked));
+    return h("label", { class: "switch" }, cb, label);
+  };
+  const renderCustom = () => {
+    const P = pp(), hidden = new Set(P.hidden || []);
+    custom.replaceChildren(
+      h("div", { class: "card-h spread" }, h("span", { class: "grow" }, "Personalizar la red"), h("button", { class: "btn small ghost", type: "button", onclick: () => { custom.hidden = true; } }, icon("close", 16))),
+      h("div", { class: "card-b map-custom-b" },
+        h("div", { class: "stack" },
+          seg("Tamaño de los nodos", [["auto", "Auto"], ["compact", "Compacto"], ["full", "Completo"]], P.size || "auto", (x) => { savePanel({ size: x }); renderCustom(); }),
+          seg("Ordenar proyectos", [["recent", "Recientes"], ["activity", "Actividad"], ["name", "Nombre"]], P.sort || "recent", (x) => { savePanel({ sort: x }); renderCustom(); }),
+          h("div", { class: "toggle-grid" },
+            toggle("Mostrar conectores", P.connectors !== false, (x) => savePanel({ connectors: x })),
+            toggle("Mostrar archivados", !!P.archived, (x) => savePanel({ archived: x })),
+            toggle("Cables de fondo", P.tangle !== false, (x) => savePanel({ tangle: x })),
+            toggle("Partículas de datos", P.particles !== false, (x) => savePanel({ particles: x })))),
+        h("div", {},
+          h("div", { class: "row spread" }, h("label", { style: "margin:0" }, "Proyectos visibles"),
+            h("span", { class: "row" },
+              h("button", { class: "btn small ghost", type: "button", onclick: () => { savePanel({ hidden: [] }); renderCustom(); } }, "Todos"),
+              h("button", { class: "btn small ghost", type: "button", onclick: () => { savePanel({ hidden: data.projects.map((p) => p.id) }); renderCustom(); } }, "Ninguno"))),
+          h("div", { class: "vis-list" }, data.projects.map((p) => toggle(p.name, !hidden.has(p.id), (on) => {
+            const next = new Set(pp().hidden || []); on ? next.delete(p.id) : next.add(p.id); savePanel({ hidden: [...next] });
+          }))))));
+  };
+
   const render = () => {
-    const projects = data.projects;
-    const providers = data.providers.filter((p) => p.connected);
-    const side = [...providers.map((p) => sideNode("prov", p)), ...data.connectors.map((c) => sideNode("conn", c))];
-    const nodes = projects.map((p) => projectNode(p, data.providers));
-    const left = nodes.filter((_, i) => i % 2 === 0);
-    side.unshift(...nodes.filter((_, i) => i % 2 === 1));
-    if (!projects.length) left.push(h("a", { class: "card node", href: "#/proyectos", "data-node": "new" },
-      h("div", { class: "node-h col-azul" }, h("span", { class: "title" }, "nuevo.proj")),
-      h("div", { class: "node-b" }, h("div", { class: "chk" }, "sin proyectos todavía"), h("div", { class: "kv port" }, "siguiente", h("b", {}, "crear →")))));
-    if (!side.length) side.push(h("a", { class: "card node", href: "#/configuracion", "data-node": "ia-none" },
-      h("div", { class: "node-h col-naranja" }, h("span", { class: "title" }, "tu-ia.ia")),
-      h("div", { class: "node-b" }, h("div", { class: "chk" }, "sin conectar"), h("div", { class: "kv port" }, "siguiente", h("b", {}, "conectar →")))));
+    const P = pp(), hidden = new Set(P.hidden || []);
+    let projects = data.projects.filter((p) => !hidden.has(p.id) && (P.archived || p.status !== "archived"));
+    if (P.sort === "name") projects = [...projects].sort((a, b) => a.name.localeCompare(b.name));
+    else if (P.sort === "activity") projects = [...projects].sort((a, b) => (b.live - a.live) || (b.active - a.active) || ((b.runs + b.kairo_runs) - (a.runs + a.kairo_runs)));
+    const kairo = data.kairo && (data.kairo.runs || data.kairo.live) ? { id: "kairo", name: "Kairo", color: "azul", status: "active", runs: 0, kairo_runs: data.kairo.runs, runs_today: 0, limit_per_day: 0, failed: 0, active: data.kairo.live, ...data.kairo } : null;
+    const nodesData = kairo ? [kairo, ...projects] : projects;
+    // IAs conectadas por el usuario + las que Kairo ha usado con la clave de la plataforma.
+    const providers = data.providers.filter((p) => p.connected || (p.models || []).some((m) => m.n > 0));
+    // Enlaces reales: qué modelo usa cada proyecto (encendido si se usa ahora mismo).
+    const links = [];
+    const hotModels = new Set();
+    for (const p of nodesData) {
+      const from = p.id === "kairo" ? "kairo" : `p${p.id}`;
+      const hot = new Set((p.live_links || []).map((l) => linkKey(l.provider, l.model)));
+      hot.forEach((k) => hotModels.add(k));
+      const keys = new Set([...hot, ...(p.used || []).map((u) => linkKey(u.provider, u.model)), ...(p.provider && p.model ? [linkKey(p.provider, p.model)] : [])]);
+      for (const key of keys) links.push({ from, key, hot: hot.has(key) });
+      if (p.live > 0 && !hot.size) links.push({ from, key: "__bus", hot: true });
+    }
+    data.links = links;
+    const compact = P.size === "compact" || (P.size !== "full" && nodesData.length > 6);
+    const left = nodesData.map((p) => projectNode(p, data.providers, compact));
+    const side = [...providers.map((p) => sideNode("prov", p, hotModels)), ...(P.connectors === false ? [] : data.connectors.map((c) => sideNode("conn", c)))];
+    if (!nodesData.length) left.push(h("a", { class: "card node", href: "#/proyectos", "data-node": "new" },
+      h("div", { class: "node-h col-azul" }, h("span", { class: "title" }, data.projects.length ? "ocultos.proj" : "nuevo.proj")),
+      h("div", { class: "node-b" }, h("div", { class: "chk" }, data.projects.length ? "todos ocultos" : "sin proyectos todavía"), h("div", { class: "kv port" }, "siguiente", h("b", {}, data.projects.length ? "personalizar" : "crear →")))));
     [...left, ...side].forEach((n, i) => n.style.setProperty("--k", i));
-    const running = projects.some((p) => p.running);
-    // Se conserva el SVG de cables para que sus animaciones no se reinicien.
+    const running = nodesData.some((p) => p.live > 0 || p.running);
+    const cols = nodesData.length > 18 ? 3 : nodesData.length > 7 ? 2 : 1;
+    map.style.setProperty("--pcols", cols);
+    map.classList.toggle("dense", cols > 1);
+    // Se conservan los SVG de cables para que sus animaciones no se reinicien.
     [...map.children].forEach((ch) => { if (!ch.matches("svg.wires")) ch.remove(); });
     map.append(
-      h("div", { class: "col left" }, left),
+      h("div", { class: "col left" + (compact ? " compact" : "") }, left),
       h("div", { class: "bus" + (running ? " running" : ""), "aria-hidden": "true" },
         h("div", { class: "sheen" }), h("div", { class: "handle" }),
         h("span", { class: "label" }, running ? "shared surface · live" : "shared surface · locked")),
       h("div", { class: "col right" }, side));
+    const liveN = nodesData.filter((p) => p.live > 0).length;
+    bar.replaceChildren(
+      h("div", { class: "map-title" }, h("span", { class: "eyebrow" }, "Control IA · red global"),
+        h("b", {}, `${projects.length} proyecto${projects.length === 1 ? "" : "s"}${kairo ? " + Kairo" : ""} · ${providers.length} IA${providers.length === 1 ? "" : "s"} · ${hotModels.size || 0} modelo${hotModels.size === 1 ? "" : "s"} en uso`)),
+      liveN ? h("span", { class: "live" }, `${liveN} TRABAJANDO`) : h("span", { class: "pill tag-dark" }, "en espera"),
+      h("button", { class: "btn small", type: "button", "aria-expanded": String(!custom.hidden), onclick: (e) => { custom.hidden = !custom.hidden; e.currentTarget.setAttribute("aria-expanded", String(!custom.hidden)); if (!custom.hidden) renderCustom(); } },
+        icon("sliders", 16), " Personalizar"));
     requestAnimationFrame(() => drawWires(map, data));
 
     runlog.replaceChildren(...(data.runs.length ? data.runs.map((r, i) => {
@@ -1317,7 +1429,8 @@ async function viewPanel(main) {
   };
   await load();
   every(3000, load);
-  if (window.__panelResize) window.removeEventListener("resize", window.__panelResize);
-  window.__panelResize = () => { if (data && map.isConnected) drawWires(map, data, true); };
-  window.addEventListener("resize", window.__panelResize);
+  // Redibuja al cambiar el tamaño (ventana, menú lateral plegado…).
+  let rt = null;
+  const ro = new ResizeObserver(() => { clearTimeout(rt); rt = setTimeout(() => { if (!map.isConnected) return ro.disconnect(); if (data) drawWires(map, data); }, 140); });
+  ro.observe(map);
 }
