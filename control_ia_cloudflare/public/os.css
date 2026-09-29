@@ -496,3 +496,18 @@ hr { border-color: var(--th-border); }
 .aiw-live .mission, .mission { grid-auto-flow: row dense; }
 @media (max-width: 1280px) { .mission .mc-cell:nth-child(5) { order: 4; } }
 .aiw-live .mission .mc-cell:nth-child(5) { order: 4; }
+
+/* --- Tono claro (tema White o Custom con fondo claro) ------------------------ */
+:root[data-tone="light"] {
+  color-scheme: light;
+  --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 8px 24px rgba(15, 23, 42, .06);
+  --shadow-lg: 0 2px 4px rgba(15, 23, 42, .08), 0 24px 48px rgba(15, 23, 42, .12);
+  --glow-a: calc(var(--th-glow) * 25%);
+}
+:root[data-tone="light"] .card { backdrop-filter: none; }
+:root[data-tone="light"] .dialog::backdrop, :root[data-tone="light"] .drawer-backdrop { background: rgba(15, 23, 42, .35); }
+:root[data-tone="light"] .md pre.code { background: #f3f5f8; color: var(--th-text); }
+:root[data-tone="light"] .pill { color: #fff; }
+:root[data-tone="light"] .net-badge.ok { color: #fff; }
+:root[data-tone="light"] .theme-swatch .sw { border-color: rgba(15, 23, 42, .12); }
+:root[data-tone="light"] .theme-swatch .sw i:nth-child(3) { background: rgba(15, 23, 42, .18); }

@@ -24,6 +24,7 @@ const THEMES = {
   red: { title: "Red", ...BASE_DARK, bg: "#0a0506", panel: "#120a0c", card: "#180e11", border: "#2c1a1e", text: "#f8ecee", muted: "#b0959a", badge: "#2a1116", primary: "#f43f5e", secondary: "#fb923c", btn: "#f43f5e", btnText: "#ffffff", label: "#fda4af", node: "#f43f5e", conn: "#fb7185", robot: "#f43f5e", run: "#fb923c", err: "#ff2d55" },
   amber: { title: "Amber", ...BASE_DARK, bg: "#090704", panel: "#110d07", card: "#17120a", border: "#2b2214", text: "#f7f0e4", muted: "#ab9d86", badge: "#241b0c", primary: "#f59e0b", secondary: "#fde047", btn: "#f59e0b", btnText: "#1a1002", label: "#fcd34d", node: "#f59e0b", conn: "#fbbf24", robot: "#f59e0b", run: "#fde047" },
   ice: { title: "Ice", ...BASE_DARK, bg: "#050809", panel: "#0a1013", card: "#0f171b", border: "#1d2a30", text: "#eef8fb", muted: "#94aab2", badge: "#11232a", primary: "#67e8f9", secondary: "#c4b5fd", btn: "#67e8f9", btnText: "#021417", label: "#a5f3fc", node: "#67e8f9", conn: "#a5f3fc", robot: "#67e8f9", run: "#c4b5fd" },
+  white: { title: "White", bg: "#ffffff", panel: "#f6f7f9", card: "#ffffff", border: "#e2e6ec", text: "#0f172a", muted: "#5b6576", badge: "#eef2f7", primary: "#2563eb", secondary: "#db2777", btn: "#2563eb", btnText: "#ffffff", label: "#1d4ed8", node: "#2563eb", conn: "#7c3aed", robot: "#2563eb", ok: "#16a34a", run: "#0891b2", warn: "#d97706", err: "#dc2626" },
   mono: { title: "Mono", ...BASE_DARK, bg: "#060606", panel: "#0c0c0c", card: "#121212", border: "#252525", text: "#f2f2f2", muted: "#9a9a9a", badge: "#1c1c1c", primary: "#f2f2f2", secondary: "#9a9a9a", btn: "#f2f2f2", btnText: "#0a0a0a", label: "#d4d4d4", node: "#e5e5e5", conn: "#a3a3a3", robot: "#f2f2f2", run: "#d4d4d4", ok: "#e5e5e5" },
 };
 
@@ -63,11 +64,20 @@ function themeValues() {
   return { ...(THEMES[t.preset] || THEMES.cyber), ...(t.preset === "custom" ? THEMES.cyber : {}), ...(t.custom || {}) };
 }
 
+/** true si el fondo es claro (el tema White o un Custom con fondo claro). */
+function isLight(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+  if (!m) return false;
+  const n = parseInt(m[1], 16);
+  return 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255) > 150;
+}
+
 function applyPrefs() {
   const root = document.documentElement;
   const v = themeValues();
   for (const [key] of THEME_TOKENS) if (v[key]) root.style.setProperty(`--th-${key}`, v[key]);
   const t = PREFS.data.theme, vis = PREFS.data.visuals;
+  root.dataset.tone = isLight(v.bg) ? "light" : "dark";
   root.style.setProperty("--th-glow", String(t.glow ?? 0.6));
   root.style.setProperty("--th-radius", `${t.radius ?? 14}px`);
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;

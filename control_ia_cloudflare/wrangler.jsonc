@@ -1,6 +1,8 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "control-ia",
+  // Conserva las variables añadidas desde el panel de Cloudflare (p. ej. FIREBASE_SERVICE_ACCOUNT).
+  "keep_vars": true,
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
