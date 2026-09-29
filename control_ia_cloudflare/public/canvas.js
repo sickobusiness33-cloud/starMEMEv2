@@ -1,14 +1,13 @@
-/* Lienzo de robots: arrastra agentes sobre un fondo y conéctalos con tus proyectos.
+/* Lienzo → Oficina 3D de robots.
  *
- * - Posiciones y conexiones se guardan en las preferencias del usuario (servidor).
- * - Una conexión robot → proyecto significa «este robot trabaja en este proyecto»:
- *   el botón «Trabajar» del proyecto abre un chat del proyecto en modo manual con
- *   esos robots ya elegidos.
- * - Si el proyecto está trabajando ahora mismo, sus cables se iluminan.
+ * - Cada robot del equipo tiene su mesa con ordenador; cada proyecto, su mesa con holograma.
+ * - Los robots se conectan con proyectos (toca un robot → marca sus proyectos).
+ * - Cuando un proyecto trabaja de verdad (o Kairo usa a un robot en una ejecución), el robot
+ *   se levanta, va al tablón a por la tarea y trabaja en la mesa del proyecto. Si Kairo usa a
+ *   un agente que no está en la oficina, entra por la puerta como visitante.
+ * - Equipo y conexiones se guardan en las preferencias del usuario (servidor).
  */
 "use strict";
-
-const CV = { board: null, W: 2400, H: 1500 };
 
 const cvState = () => {
   const c = PREFS.data.canvas || {};
@@ -16,222 +15,196 @@ const cvState = () => {
 };
 let cvSaveTimer = null;
 function cvSave(st) {
-  PREFS.data.canvas = st; // se aplica ya; el guardado en servidor va con retardo
+  PREFS.data.canvas = st;
   clearTimeout(cvSaveTimer);
   cvSaveTimer = setTimeout(() => setPrefs({ canvas: { nodes: st.nodes, links: st.links, seeded: true } }), 400);
 }
+const assetVersion = () => (document.querySelector('script[src*="canvas.js"]')?.src.match(/v=(\d+)/) || [])[1] || "1";
 
 async function viewCanvas(main) {
-  const [reg, dash] = await Promise.all([api("GET", "/api/chat/agents"), api("GET", "/api/dashboard")]);
+  const [reg, dash0] = await Promise.all([api("GET", "/api/chat/agents"), api("GET", "/api/dashboard")]);
+  let dash = dash0;
   const agents = new Map(reg.agents.map((a) => [a.id, a]));
   let projects = new Map(dash.projects.map((p) => [p.id, p]));
-  let st = cvState();
-
-  // Primera visita: unos cuantos robots y proyectos colocados para empezar.
+  const st = cvState();
   if (!st.seeded) {
-    const bots = reg.agents.filter((a) => !a.locked).slice(0, 5);
     st.nodes = [
-      ...bots.map((a, i) => ({ t: "a", id: a.id, x: 120 + (i % 3) * 170, y: 80 + Math.floor(i / 3) * 210 })),
-      ...dash.projects.slice(0, 4).map((p, i) => ({ t: "p", id: p.id, x: 760, y: 50 + i * 185 })),
+      ...reg.agents.filter((a) => !a.locked).slice(0, 6).map((a) => ({ t: "a", id: a.id, x: 0, y: 0 })),
+      ...dash.projects.slice(0, 4).map((p) => ({ t: "p", id: p.id, x: 0, y: 0 })),
     ];
     st.seeded = true;
     cvSave(st);
   }
-  // Limpia nodos de agentes/proyectos que ya no existen.
   st.nodes = st.nodes.filter((n) => (n.t === "a" ? agents.has(n.id) : projects.has(n.id)));
   st.links = st.links.filter((l) => agents.has(l.a) && projects.has(l.p));
+  let demo = false;
 
-  const board = h("div", { class: "cv-board", style: `width:${CV.W}px;height:${CV.H}px` });
-  const wires = svg("svg", { class: "cv-wires", width: CV.W, height: CV.H, "aria-hidden": "true" });
-  const temp = svg("path", { class: "cv-temp", d: "" });
-  const viewport = h("div", { class: "cv-viewport" }, board);
-  board.append(wires);
-  CV.board = board;
-
-  const count = h("span", { class: "small muted" });
-  const toolbar = h("div", { class: "cv-toolbar" },
-    h("div", { class: "grow" }, h("div", { class: "eyebrow" }, "Agentes · lienzo"), h("h1", { style: "margin:2px 0 0" }, "Lienzo de robots"),
-      h("p", { class: "small muted", style: "margin:4px 0 0" }, "Arrastra los robots por el fondo. Tira del punto ● de un robot hasta un proyecto para conectarlo; pulsa un cable para quitarlo.")),
+  // --- interfaz
+  const stage = h("div", { class: "of-stage", "aria-label": "Oficina 3D de robots" });
+  const panel = h("aside", { class: "of-panel", hidden: true });
+  const count = h("span", { class: "of-count" });
+  const demoBtn = h("button", { class: "btn small", type: "button", "aria-pressed": "false", title: "Ver cómo trabajan sin lanzar una tarea real" }, icon("play", 14), "Modo demo");
+  const toolbar = h("div", { class: "of-toolbar" },
+    h("div", { class: "grow" }, h("div", { class: "eyebrow" }, "Agentes · oficina 3D"), h("h1", {}, "Oficina de robots"),
+      h("p", { class: "small muted" }, "Toca un robot para conectarlo a tus proyectos. Cuando un proyecto trabaja, sus robots se levantan, cogen la tarea del tablón y se ponen a ello.")),
     count,
-    h("button", { class: "btn", type: "button", onclick: () => pickDialog("a") }, icon("plus", 15), "Robot"),
-    h("button", { class: "btn", type: "button", onclick: () => pickDialog("p") }, icon("plus", 15), "Proyecto"),
-    h("button", { class: "btn ghost", type: "button", title: "Colocar en columnas", onclick: () => { autoLayout(); render(); cvSave(st); } }, icon("grid", 15), "Ordenar"));
-  main.replaceChildren(h("div", { class: "cv" }, toolbar, viewport));
+    h("div", { class: "row of-actions" },
+      h("button", { class: "btn small", type: "button", onclick: () => pickDialog("a") }, icon("plus", 14), "Robot"),
+      h("button", { class: "btn small", type: "button", onclick: () => pickDialog("p") }, icon("plus", 14), "Proyecto"),
+      demoBtn));
+  const camBar = h("div", { class: "of-cam" },
+    h("button", { type: "button", "aria-label": "Acercar", onclick: () => off?.zoom(1.2) }, "+"),
+    h("button", { type: "button", "aria-label": "Alejar", onclick: () => off?.zoom(1 / 1.2) }, "−"),
+    h("button", { type: "button", "aria-label": "Girar la vista", onclick: () => off?.rotate() }, icon("refresh", 15)),
+    h("button", { type: "button", "aria-label": "Centrar", onclick: () => off?.reset() }, icon("grid", 15)));
+  const legend = h("div", { class: "of-legend" },
+    h("span", {}, "⌨️ en su mesa"), h("span", {}, "📋 coge tarea"), h("span", {}, "⚡ trabajando"), h("span", {}, "☕💧 descanso"));
+  main.replaceChildren(h("div", { class: "of" }, toolbar, h("div", { class: "of-wrap" }, stage, camBar, legend, panel)));
 
-  const nodeKey = (n) => `${n.t}:${n.id}`;
-  const els = new Map();
-  const live = (pid) => (projects.get(pid)?.live || 0) > 0;
-  const botState = (aid) => (st.links.some((l) => l.a === aid && live(l.p)) ? "running" : "idle");
-
-  function autoLayout() {
-    let ai = 0, pi = 0;
-    for (const n of st.nodes) {
-      if (n.t === "a") { n.x = 80 + (ai % 3) * 170; n.y = 50 + Math.floor(ai / 3) * 230; ai++; }
-      else { n.x = 720; n.y = 40 + pi * 185; pi++; }
-    }
+  let off = null;
+  try {
+    const mod = await import(`/office3d.js?v=${assetVersion()}`);
+    off = mod.mountOffice(stage, {
+      projectName: (id) => projects.get(id)?.name || "proyecto",
+      onBot: (id) => showBot(id),
+      onStation: (id) => showProject(id),
+      onEmpty: () => { panel.hidden = true; },
+    });
+  } catch (err) {
+    stage.replaceChildren(empty("No se pudo cargar la oficina 3D", `Tu navegador no admite WebGL o falló la carga (${err.message}).`));
+    return;
   }
 
-  function nodeEl(n) {
-    const remove = h("button", { class: "cv-x", type: "button", "aria-label": "Quitar del lienzo", onpointerdown: (e) => e.stopPropagation(),
-      onclick: () => { st.nodes = st.nodes.filter((x) => x !== n); st.links = st.links.filter((l) => (n.t === "a" ? l.a !== n.id : l.p !== n.id)); render(); cvSave(st); } }, "×");
-    if (n.t === "a") {
-      const a = agents.get(n.id);
-      const links = st.links.filter((l) => l.a === a.id).length;
-      return h("div", { class: "cv-node bot" + (botState(a.id) === "running" ? " live" : ""), "data-key": nodeKey(n), title: a.description },
-        remove,
-        h("div", { class: "cv-bot" }, agentRobot(a, botState(a.id), 74)),
-        h("b", {}, a.name), h("small", {}, `${a.category_label}${links ? ` · ${links} proyecto${links === 1 ? "" : "s"}` : ""}`),
-        h("span", { class: "cv-port out", "data-port": "a", title: "Arrastra hasta un proyecto" }));
+  const team = () => st.nodes.filter((n) => n.t === "a").map((n) => agents.get(n.id)).filter(Boolean);
+  const officeProjects = () => {
+    const ids = st.nodes.filter((n) => n.t === "p").map((n) => n.id);
+    return (ids.length ? ids : [...projects.keys()].slice(0, 4)).map((id) => projects.get(id)).filter(Boolean);
+  };
+  const rebuild = () => {
+    off.build({
+      agents: team(),
+      projects: officeProjects().map((p) => ({ id: p.id, name: p.name, color: p.color, live: p.live > 0, sub: `${(p.runs || 0) + (p.kairo_runs || 0)} tareas` })),
+    });
+    count.textContent = `${team().length} robots · ${officeProjects().length} proyectos · ${st.links.length} conexiones`;
+    applyWork();
+  };
+
+  // Qué hace cada robot ahora mismo (datos reales + modo demo).
+  const applyWork = () => {
+    const map = new Map();
+    const inOffice = new Set(team().map((a) => a.id));
+    const stationIds = new Set(officeProjects().map((p) => p.id));
+    for (const l of st.links) if (projects.get(l.p)?.live > 0 && inOffice.has(l.a)) map.set(l.a, l.p);
+    const visitors = [];
+    for (const w of dash.working_agents || []) {
+      const where = w.project_id && stationIds.has(w.project_id) ? w.project_id : "kairo";
+      if (inOffice.has(w.agent_id)) map.set(w.agent_id, where);
+      else if (agents.has(w.agent_id) && visitors.length < 6) visitors.push({ agent: agents.get(w.agent_id), work: where });
     }
-    const p = projects.get(n.id);
-    const bots = st.links.filter((l) => l.p === p.id).map((l) => agents.get(l.a)).filter(Boolean);
-    return h("div", { class: "cv-node proj" + (live(p.id) ? " live" : ""), "data-key": nodeKey(n) },
-      remove,
-      h("span", { class: "cv-port in", "data-port": "p", title: "Suelta aquí un robot" }),
-      h("div", { class: `node-h col-${p.color || "azul"}` }, h("span", { class: "title" }, slug(p.name) + ".proj"), live(p.id) ? h("span", { class: "live-tag" }, "LIVE") : null),
-      h("div", { class: "cv-proj-b" },
-        h("div", { class: "cv-mini-bots" }, bots.length ? bots.slice(0, 6).map((a) => h("span", { title: a.name }, agentRobot(a, live(p.id) ? "running" : "idle", 22))) : h("span", { class: "small muted" }, "Sin robots conectados")),
-        h("div", { class: "row", style: "gap:6px;margin-top:8px" },
-          h("button", { class: "btn small primary", type: "button", disabled: bots.length ? null : true, onpointerdown: (e) => e.stopPropagation(), onclick: () => workWith(p, bots) }, icon("bolt", 14), bots.length ? `Trabajar con ${bots.length}` : "Trabajar"),
-          h("a", { class: "btn small ghost", href: `#/p/${p.id}/overview`, onpointerdown: (e) => e.stopPropagation() }, "Abrir"))));
+    if (demo) {
+      let k = 0;
+      for (const a of team()) {
+        const link = st.links.find((l) => l.a === a.id && stationIds.has(l.p));
+        if (link) map.set(a.id, link.p);
+        else if (k++ % 2 === 0) map.set(a.id, "kairo");
+      }
+    }
+    off.setLive(new Set(officeProjects().filter((p) => p.live > 0 || (demo && st.links.some((l) => l.p === p.id))).map((p) => p.id)));
+    off.setWork(map, visitors);
+  };
+
+  demoBtn.addEventListener("click", () => {
+    demo = !demo;
+    demoBtn.setAttribute("aria-pressed", String(demo));
+    demoBtn.replaceChildren(icon(demo ? "stop" : "play", 14), demo ? "Parar demo" : "Modo demo");
+    if (demo && !st.links.length) toast("Consejo: conecta robots a proyectos (toca un robot) para verlos ir a su mesa.");
+    applyWork();
+  });
+
+  // --- paneles de detalle
+  function showBot(id) {
+    const a = agents.get(id);
+    if (!a) return;
+    const onTeam = team().some((x) => x.id === id);
+    const linked = new Set(st.links.filter((l) => l.a === id).map((l) => l.p));
+    panel.hidden = false;
+    panel.replaceChildren(
+      h("div", { class: "of-panel-h" }, h("span", { class: "of-bot" }, agentRobot(a, "idle", 46)),
+        h("div", { class: "grow" }, h("b", {}, a.name), h("small", {}, `${a.category_label}${a.locked ? " · PRO" : ""}${onTeam ? "" : " · visitante"}`)),
+        h("button", { class: "btn small ghost icon-only", type: "button", "aria-label": "Cerrar", onclick: () => { panel.hidden = true; } }, icon("close", 16))),
+      h("p", { class: "small muted" }, a.description),
+      onTeam ? h("div", { class: "stack", style: "gap:6px" }, h("label", {}, "Trabaja en"),
+        ...[...projects.values()].map((p) => {
+          const cb = h("input", { type: "checkbox", checked: linked.has(p.id) ? true : null });
+          cb.addEventListener("change", () => {
+            st.links = cb.checked ? [...st.links, { a: id, p: p.id }] : st.links.filter((l) => !(l.a === id && l.p === p.id));
+            if (cb.checked && !st.nodes.some((n) => n.t === "p" && n.id === p.id)) st.nodes.push({ t: "p", id: p.id, x: 0, y: 0 });
+            cvSave(st); rebuild();
+          });
+          return h("label", { class: "switch" }, cb, p.name, p.live > 0 ? h("span", { class: "live-tag", style: "margin-left:6px" }, "LIVE") : null);
+        })) : h("button", { class: "btn small primary", type: "button", onclick: () => { st.nodes.push({ t: "a", id, x: 0, y: 0 }); cvSave(st); rebuild(); showBot(id); } }, icon("plus", 14), "Contratar en la oficina"),
+      onTeam ? h("button", { class: "btn small danger", type: "button", onclick: () => {
+        st.nodes = st.nodes.filter((n) => !(n.t === "a" && n.id === id)); st.links = st.links.filter((l) => l.a !== id);
+        cvSave(st); panel.hidden = true; rebuild();
+      } }, "Quitar de la oficina") : null);
+  }
+
+  function showProject(id) {
+    const p = projects.get(id);
+    if (!p) return;
+    const bots = st.links.filter((l) => l.p === id).map((l) => agents.get(l.a)).filter(Boolean);
+    panel.hidden = false;
+    panel.replaceChildren(
+      h("div", { class: "of-panel-h" }, h("span", { class: `of-pdot col-${p.color || "azul"}` }),
+        h("div", { class: "grow" }, h("b", {}, p.name), h("small", {}, `${(p.runs || 0) + (p.kairo_runs || 0)} tareas${p.live > 0 ? " · trabajando ahora" : ""}`)),
+        h("button", { class: "btn small ghost icon-only", type: "button", "aria-label": "Cerrar", onclick: () => { panel.hidden = true; } }, icon("close", 16))),
+      h("label", {}, `Robots conectados · ${bots.length}`),
+      bots.length ? h("div", { class: "of-team" }, bots.map((a) => h("button", { type: "button", class: "of-mini", title: a.name, onclick: () => showBot(a.id) }, agentRobot(a, p.live > 0 ? "running" : "idle", 30), h("small", {}, a.name))))
+        : h("p", { class: "small muted" }, "Toca un robot y marca este proyecto para asignarlo."),
+      h("div", { class: "row", style: "gap:8px;margin-top:6px" },
+        h("button", { class: "btn small primary", type: "button", disabled: bots.length ? null : true, onclick: () => workWith(p, bots) }, icon("bolt", 14), bots.length ? `Trabajar con ${bots.length}` : "Trabajar"),
+        h("a", { class: "btn small", href: `#/p/${p.id}/overview` }, "Abrir proyecto")),
+      h("button", { class: "btn small ghost", type: "button", onclick: () => {
+        st.nodes = st.nodes.filter((n) => !(n.t === "p" && n.id === id)); cvSave(st); panel.hidden = true; rebuild();
+      } }, "Quitar mesa de la oficina"));
   }
 
   async function workWith(p, bots) {
     const ids = bots.filter((a) => !a.locked).map((a) => a.id).slice(0, reg.max_agents_per_message);
     if (bots.length > ids.length) toast(`Tu plan permite ${reg.max_agents_per_message} agentes por mensaje: se usan los primeros.`);
-    const t = await api("POST", "/api/chat/threads", { project_id: p.id, title: `${p.name} · lienzo` });
+    const t = await api("POST", "/api/chat/threads", { project_id: p.id, title: `${p.name} · oficina` });
     await api("PATCH", `/api/chat/threads/${t.id}`, { auto_mode: false, manual: { agents: ids, model: null, tools_off: [] } });
     location.hash = `#/chat/${t.id}`;
   }
 
-  function portPos(key, kind) {
-    const el = els.get(key);
-    if (!el) return null;
-    const port = el.querySelector(kind === "a" ? ".cv-port.out" : ".cv-port.in");
-    const r = port.getBoundingClientRect(), b = board.getBoundingClientRect();
-    return { x: r.left + r.width / 2 - b.left, y: r.top + r.height / 2 - b.top };
-  }
-  const curve = (a, b) => {
-    const dx = Math.max(60, Math.abs(b.x - a.x) * 0.5);
-    return `M${a.x},${a.y} C${a.x + dx},${a.y} ${b.x - dx},${b.y} ${b.x},${b.y}`;
-  };
-
-  function drawWires() {
-    wires.replaceChildren(svg("defs", {}, svg("filter", { id: "cvglow", x: "-20%", y: "-20%", width: "140%", height: "140%" }, svg("feGaussianBlur", { stdDeviation: "4" }))));
-    for (const l of st.links) {
-      const a = portPos(`a:${l.a}`, "a"), b = portPos(`p:${l.p}`, "p");
-      if (!a || !b) continue;
-      const d = curve(a, b);
-      const hot = live(l.p);
-      const g = svg("g", { class: "cv-link" + (hot ? " hot" : ""), role: "button", "aria-label": "Quitar conexión" });
-      if (hot) g.append(svg("path", { d, class: "cv-halo", filter: "url(#cvglow)" }));
-      g.append(svg("path", { d, class: "cv-hit" }), svg("path", { d, class: "cv-line" }));
-      if (hot && !REDUCED) {
-        const id = `cvp${l.a.replace(/\W/g, "")}${l.p}`;
-        g.append(svg("path", { id, d, fill: "none", stroke: "none" }));
-        for (let i = 0; i < 3; i++) g.append(svg("circle", { r: 3, class: "cv-spark" }, svg("animateMotion", { dur: "1.8s", begin: `${-i * 0.6}s`, repeatCount: "indefinite" }, svg("mpath", { href: `#${id}` }))));
-      }
-      g.addEventListener("click", async () => {
-        if (!(await confirmDialog({ title: "Quitar conexión", body: `¿Desconectar «${agents.get(l.a)?.name}» de «${projects.get(l.p)?.name}»?`, confirmLabel: "Quitar" }))) return;
-        st.links = st.links.filter((x) => x !== l); render(); cvSave(st);
-      });
-      wires.append(g);
-    }
-    wires.append(temp);
-  }
-
-  function render() {
-    [...board.querySelectorAll(".cv-node")].forEach((x) => x.remove());
-    els.clear();
-    for (const n of st.nodes) {
-      const el = nodeEl(n);
-      el.style.transform = `translate(${n.x}px, ${n.y}px)`;
-      els.set(nodeKey(n), el);
-      board.append(el);
-      bindDrag(el, n);
-    }
-    count.textContent = `${st.nodes.filter((n) => n.t === "a").length} robots · ${st.nodes.filter((n) => n.t === "p").length} proyectos · ${st.links.length} conexiones`;
-    requestAnimationFrame(drawWires);
-  }
-
-  // Arrastrar nodos y crear conexiones (ratón, lápiz y dedo).
-  function bindDrag(el, n) {
-    el.addEventListener("pointerdown", (e) => {
-      if (e.button !== 0) return;
-      const port = e.target.closest(".cv-port");
-      const b = board.getBoundingClientRect();
-      if (port) {
-        e.preventDefault();
-        const from = port.dataset.port; // a: sale de un robot · p: sale de un proyecto
-        const start = portPos(nodeKey(n), from);
-        const move = (ev) => {
-          const pt = { x: ev.clientX - b.left, y: ev.clientY - b.top };
-          temp.setAttribute("d", from === "a" ? curve(start, pt) : curve(pt, start));
-          board.querySelectorAll(".cv-node.drop").forEach((x) => x.classList.remove("drop"));
-          document.elementFromPoint(ev.clientX, ev.clientY)?.closest(`.cv-node.${from === "a" ? "proj" : "bot"}`)?.classList.add("drop");
-        };
-        const up = (ev) => {
-          window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
-          temp.setAttribute("d", "");
-          const target = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".cv-node");
-          board.querySelectorAll(".cv-node.drop").forEach((x) => x.classList.remove("drop"));
-          if (!target) return;
-          const [t, id] = target.dataset.key.split(":");
-          const link = from === "a" && t === "p" ? { a: n.id, p: Number(id) } : from === "p" && t === "a" ? { a: id, p: n.id } : null;
-          if (!link) return;
-          if (st.links.some((l) => l.a === link.a && l.p === link.p)) { toast("Ya estaban conectados"); return; }
-          if (agents.get(link.a)?.locked) toast("Ese robot es PRO: se conecta, pero solo trabajará con Control IA Pro.");
-          st.links.push(link); render(); cvSave(st);
-          toast(`${agents.get(link.a)?.name} → ${projects.get(link.p)?.name}`);
-        };
-        window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
-        return;
-      }
-      if (e.target.closest("button, a")) return;
-      e.preventDefault();
-      el.classList.add("dragging");
-      const ox = e.clientX - b.left - n.x, oy = e.clientY - b.top - n.y;
-      const move = (ev) => {
-        n.x = Math.max(0, Math.min(CV.W - 180, ev.clientX - b.left - ox));
-        n.y = Math.max(0, Math.min(CV.H - 120, ev.clientY - b.top - oy));
-        el.style.transform = `translate(${n.x}px, ${n.y}px)`;
-        drawWires();
-      };
-      const up = () => {
-        el.classList.remove("dragging");
-        window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
-        cvSave(st);
-      };
-      window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
-    });
-  }
-
-  // Añadir robots o proyectos al lienzo.
+  // --- añadir robots / proyectos
   function pickDialog(t) {
     const q = h("input", { type: "search", placeholder: t === "a" ? "Buscar robot" : "Buscar proyecto" });
     const list = h("div", { class: "cv-pick" });
     const onBoard = new Set(st.nodes.filter((n) => n.t === t).map((n) => n.id));
+    const full = t === "a" ? team().length >= 16 : officeProjects().length >= 6 && st.nodes.some((n) => n.t === "p");
     const items = t === "a" ? reg.agents : [...projects.values()];
-    const renderList = () => list.replaceChildren(...items.filter((x) => !onBoard.has(x.id) && (!q.value || x.name.toLowerCase().includes(q.value.toLowerCase()))).map((x) =>
+    const renderList = () => list.replaceChildren(...items.filter((x) => !onBoard.has(x.id) && (!q.value || x.name.toLowerCase().includes(q.value.toLowerCase()))).slice(0, 80).map((x) =>
       h("button", { type: "button", class: "cv-pick-item", onclick: () => {
-        const vp = viewport.getBoundingClientRect();
-        st.nodes.push({ t, id: x.id, x: viewport.scrollLeft + vp.width / 2 - 90 + (Math.random() * 80 - 40), y: viewport.scrollTop + 60 + Math.random() * 80 });
-        closeDialog(true); render(); cvSave(st);
+        st.nodes.push({ t, id: x.id, x: 0, y: 0 }); closeDialog(true); cvSave(st); rebuild();
       } }, t === "a" ? agentRobot(x, "idle", 34) : h("span", { class: `cv-dot col-${x.color || "azul"}` }),
         h("span", { class: "grow" }, h("b", {}, x.name), h("small", {}, t === "a" ? `${x.category_label}${x.locked ? " · PRO" : ""}` : `${(x.runs || 0) + (x.kairo_runs || 0)} tareas`)))));
     q.addEventListener("input", renderList);
     renderList();
-    openDialog(t === "a" ? "Añadir robot al lienzo" : "Añadir proyecto al lienzo", [q, list], [h("button", { class: "btn", type: "button", onclick: () => closeDialog(false) }, "Cerrar")]);
-    if (!items.some((x) => !onBoard.has(x.id))) list.replaceChildren(h("p", { class: "small muted" }, t === "a" ? "Ya están todos los robots en el lienzo." : "No hay más proyectos. Crea uno en Proyectos."));
+    openDialog(t === "a" ? "Contratar robot" : "Añadir mesa de proyecto", [
+      full ? h("div", { class: "note small" }, t === "a" ? "La oficina tiene 16 mesas. Quita un robot para meter otro." : "Caben 6 mesas de proyecto. Quita una para añadir otra.") : null, q, list,
+    ], [h("button", { class: "btn", type: "button", onclick: () => closeDialog(false) }, "Cerrar")]);
   }
 
-  render();
-  // Estado vivo de los proyectos: los cables se encienden cuando trabajan.
-  every(5000, async () => {
-    if (!board.isConnected) return;
-    const d = await api("GET", "/api/dashboard");
-    const before = [...projects.values()].map((p) => p.live).join();
-    projects = new Map(d.projects.map((p) => [p.id, p]));
-    if (before !== d.projects.map((p) => p.live).join()) render();
+  rebuild();
+  off.start();
+  // Estado vivo cada 4 s: proyectos trabajando y agentes en uso por Kairo.
+  every(4000, async () => {
+    if (!stage.isConnected) return;
+    dash = await api("GET", "/api/dashboard");
+    const before = [...projects.values()].map((p) => `${p.id}:${p.live}`).join();
+    projects = new Map(dash.projects.map((p) => [p.id, p]));
+    if (before !== dash.projects.map((p) => `${p.id}:${p.live}`).join()) rebuild();
+    else applyWork();
   });
 }

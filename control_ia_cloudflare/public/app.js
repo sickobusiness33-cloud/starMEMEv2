@@ -304,12 +304,12 @@ function renderAuth(allowSignup, mode = allowSignup ? "register" : "login") {
 // [clave, etiqueta, icono, visible en la barra inferior del móvil]
 const NAV = [
   ["panel", "Red global", "network", true], ["home", "Command", "home", false], ["chat", "Kairo", "kairo", true], ["proyectos", "Proyectos", "projects", true],
-  ["hub", "Agentes", "agents", false], ["lienzo", "Lienzo", "canvas", false], ["studio", "Estudio", "studio", false], ["notificaciones", "Avisos", "bell", true],
+  ["hub", "Agentes", "agents", false], ["lienzo", "Oficina", "canvas", false], ["studio", "Estudio", "studio", false], ["notificaciones", "Avisos", "bell", true],
   ["actividad", "Auditoría", "activity", false], ["conectores", "Conectores", "connectors", false],
   ["configuracion", "Ajustes", "settings", false], ["apariencia", "Apariencia", "brush", false],
 ];
 const SECTION_TITLE = {
-  home: "Command Center", p: "Project workspace", apariencia: "Apariencia", chat: "Kairo", hub: "Agent Hub", "hub-runs": "Agent Hub", studio: "Estudio", panel: "Red global", lienzo: "Lienzo de robots", proyectos: "Proyectos", notificaciones: "Notificaciones",
+  home: "Command Center", p: "Project workspace", apariencia: "Apariencia", chat: "Kairo", hub: "Agent Hub", "hub-runs": "Agent Hub", studio: "Estudio", panel: "Red global", lienzo: "Oficina de robots", proyectos: "Proyectos", notificaciones: "Notificaciones",
   actividad: "Actividad", conectores: "Conectores", configuracion: "Ajustes", upgrade: "Control IA Pro", fuentes: "Modelos y licencias", metricas: "Métricas",
 };
 

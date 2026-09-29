@@ -145,6 +145,8 @@ dashboardRoutes.get("/", async (c) => {
   return c.json({
     agent_runs: agentRuns.map((r) => ({ ...r, stages: loads(r.stages_json, []), stages_json: undefined })),
     kairo,
+    // Agentes trabajando AHORA (la oficina 3D los manda a por su tarea).
+    working_agents: [...new Map(liveRows.filter((r) => r.agent_id && WORKING.has(r.status)).map((r) => [`${r.agent_id}|${r.project_id ?? 0}`, { agent_id: r.agent_id, project_id: r.project_id ?? null }])).values()],
     projects: projects.map((p) => ({
       ...p,
       ...liveOf(p.id),
