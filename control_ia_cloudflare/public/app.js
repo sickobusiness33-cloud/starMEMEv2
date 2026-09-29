@@ -303,8 +303,8 @@ function renderAuth(allowSignup, mode = allowSignup ? "register" : "login") {
 
 // [clave, etiqueta, icono, visible en la barra inferior del móvil]
 const NAV = [
-  ["panel", "Red global", "network", true], ["home", "Command", "home", false], ["chat", "Kairo", "kairo", true], ["proyectos", "Proyectos", "projects", true],
-  ["hub", "Agentes", "agents", false], ["lienzo", "Oficina", "canvas", false], ["studio", "Estudio", "studio", false], ["notificaciones", "Avisos", "bell", true],
+  ["lienzo", "Oficina", "canvas", true], ["home", "Command", "home", true], ["chat", "Kairo", "kairo", true], ["proyectos", "Proyectos", "projects", true],
+  ["hub", "Agentes", "agents", false], ["panel", "Red global", "network", false], ["studio", "Estudio", "studio", false], ["notificaciones", "Avisos", "bell", true],
   ["actividad", "Auditoría", "activity", false], ["conectores", "Conectores", "connectors", false],
   ["configuracion", "Ajustes", "settings", false], ["apariencia", "Apariencia", "brush", false],
 ];
@@ -315,7 +315,7 @@ const SECTION_TITLE = {
 
 function parseRoute() {
   const parts = location.hash.replace(/^#\/?/, "").split("?")[0].split("/").filter(Boolean);
-  return { section: parts[0] || "panel", id: parts[1] ? Number(parts[1]) : null, tab: parts[2] || "chat" };
+  return { section: parts[0] || "lienzo", id: parts[1] ? Number(parts[1]) : null, tab: parts[2] || "chat" };
 }
 
 function route() {
@@ -351,7 +351,7 @@ function route() {
     } }, icon(collapsed() ? "sidebarOpen" : "sidebar", 18));
   const nav = h("nav", { class: "nav", "aria-label": "Secciones" },
     h("div", { class: "side-top" },
-      h("a", { class: "side-brand", href: "#/panel", title: "Control IA" }, kairoLogo(30), h("span", {}, h("b", {}, "Control IA"), h("small", {}, `${BRAND_NAME} Intelligence`))),
+      h("a", { class: "side-brand", href: "#/lienzo", title: "Control IA" }, kairoLogo(30), h("span", {}, h("b", {}, "Control IA"), h("small", {}, `${BRAND_NAME} Intelligence`))),
       navToggle),
     h("div", { class: "nav-group" }, NAV.slice(0, 4).map(navLink)),
     h("div", { class: "nav-sep" }, "Agentes"),
@@ -393,7 +393,7 @@ function route() {
 
   const initials = (S.user.name || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
   const top = h("header", { class: "topbar" },
-    h("a", { class: "top-brand", href: "#/panel", "aria-label": "Control IA" }, kairoLogo(26)),
+    h("a", { class: "top-brand", href: "#/lienzo", "aria-label": "Control IA" }, kairoLogo(26)),
     h("div", { class: "top-title" }, SECTION_TITLE[r.section] || "Control IA"),
     stats,
     h("div", { class: "top-actions" },
@@ -407,7 +407,7 @@ function route() {
   const views = { home: viewHome, p: viewWorkspace, apariencia: viewAppearance, chat: viewChat, hub: viewHub, "hub-runs": viewHubRuns, upgrade: viewUpgrade, fuentes: viewSources, metricas: viewMetrics,
     studio: viewStudio, notificaciones: viewNotifications, lienzo: viewCanvas,
     panel: viewPanel, proyectos: viewProjectsOS, actividad: viewActivity, conectores: viewConnectors, configuracion: viewSettings };
-  (views[r.section] || viewPanel)(main, r).catch((err) => main.replaceChildren(h("div", { class: "alert" }, err.message)));
+  (views[r.section] || viewCanvas)(main, r).catch((err) => main.replaceChildren(h("div", { class: "alert" }, err.message)));
 }
 
 async function logout() {
