@@ -17,6 +17,8 @@ const THEME_TOKENS = [
 const BASE_DARK = { bg: "#05080a", panel: "#0a0f12", card: "#0e1418", border: "#1b262c", text: "#e7f2ee", muted: "#8b9c96", btnText: "#03130c", badge: "#12201b", ok: "#34f5a4", warn: "#fbbf24", err: "#fb4d6d" };
 
 const THEMES = {
+  // El diseño claro de la primera versión: fondo blanco roto, tarjetas blancas, botones negros y cabeceras de color.
+  original: { title: "Original", classic: true, bg: "#f6f6f4", panel: "#fbfbfa", card: "#ffffff", border: "#e3e4e8", text: "#0d0e12", muted: "#62676f", badge: "#f1f2f4", primary: "#3d7cff", secondary: "#22c1ad", btn: "#0d0e12", btnText: "#ffffff", label: "#62676f", node: "#3d7cff", conn: "#0d0e12", robot: "#3d7cff", ok: "#22b161", run: "#3d7cff", warn: "#f2b01e", err: "#ea3b4b" },
   cyber: { title: "Cyber", ...BASE_DARK, primary: "#34f5a4", secondary: "#22d3ee", btn: "#34f5a4", label: "#7ff0c4", node: "#34f5a4", conn: "#34f5a4", robot: "#34f5a4", run: "#22d3ee" },
   emerald: { title: "Emerald", ...BASE_DARK, primary: "#10b981", secondary: "#a3e635", btn: "#10b981", label: "#6ee7b7", node: "#10b981", conn: "#34d399", robot: "#10b981", run: "#a3e635", ok: "#10b981" },
   purple: { title: "Purple", ...BASE_DARK, bg: "#07050c", panel: "#0d0a14", card: "#130f1c", border: "#241d33", text: "#efeaf8", muted: "#9d93b3", badge: "#1c1530", primary: "#a78bfa", secondary: "#f472b6", btn: "#a78bfa", btnText: "#140a26", label: "#c4b5fd", node: "#a78bfa", conn: "#c084fc", robot: "#a78bfa", run: "#f472b6" },
@@ -81,6 +83,7 @@ function applyPrefs() {
   for (const [key] of THEME_TOKENS) if (v[key]) root.style.setProperty(`--th-${key}`, v[key]);
   const t = PREFS.data.theme, vis = PREFS.data.visuals;
   root.dataset.tone = isLight(v.bg) ? "light" : "dark";
+  root.classList.toggle("classic", (THEMES[t.preset] || {}).classic === true);
   root.style.setProperty("--th-glow", String(t.glow ?? 0.6));
   root.style.setProperty("--th-radius", `${t.radius ?? 14}px`);
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;

@@ -624,3 +624,18 @@ hr { border-color: var(--th-border); }
 .agent-tile { border-radius: 12px; background: linear-gradient(180deg, color-mix(in srgb, var(--th-node) 5%, var(--th-card)), var(--th-card)); }
 .agent-tile.v-working { border-color: color-mix(in srgb, var(--th-run) 60%, var(--th-border)); box-shadow: 0 0 calc(var(--th-glow) * 24px) color-mix(in srgb, var(--th-run) 30%, transparent); }
 :root[data-tone="light"] .wire.halo { opacity: .16; }
+
+/* --- Tema «Original» (primera versión clara) --------------------------------- */
+:root.classic { --k-grad: linear-gradient(135deg, #3d7cff 0%, #7a5cff 55%, #22c1ad 100%); --glow-a: 0%; }
+:root.classic .col-azul { background: var(--c-azul); } :root.classic .col-rosa { background: var(--c-rosa); }
+:root.classic .col-morado { background: var(--c-morado); } :root.classic .col-verde { background: var(--c-verde); }
+:root.classic .col-turquesa { background: var(--c-turquesa); } :root.classic .col-naranja { background: var(--c-naranja); }
+:root.classic .node-h { color: #0e0f11; }
+:root.classic .card-h::before { background: var(--k-grad); box-shadow: none; }
+:root.classic .btn.primary { box-shadow: none; }
+:root.classic .btn.primary:hover { background: #23252c; }
+:root.classic .side-pro { background: var(--k-grad) !important; color: #fff !important; }
+:root.classic .g-main .wire { stroke: #16181c; opacity: .55; }
+:root.classic .g-faint .wire { stroke: #16181c; opacity: .12; }
+:root.classic .nav a[aria-current="page"]::before { background: var(--k-grad); box-shadow: none; }
+:root.classic body { background-image: radial-gradient(#e3e4e0 1.1px, transparent 1.2px); background-size: 24px 24px; }
