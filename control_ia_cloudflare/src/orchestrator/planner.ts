@@ -281,7 +281,7 @@ export async function planWithLLM(ctx: CallContext, request: string, history: st
     `- task = instrucción concreta para ese agente. why = una frase para el usuario: qué capacidad aporta a esta petición.\n` +
     `Formato: {"direct": false, "reason": "por qué", "steps": [{"id": "s1", "agent": "<id>", "task": "...", "why": "...", "depends_on": []}]}`;
   try {
-    const res = await generate(ctx, { system, messages: [{ role: "user", content: prompt }], maxTokens: 500, prefer: "free", allowFallback: true, capability: "chat" });
+    const res = await generate(ctx, { system, messages: [{ role: "user", content: prompt }], maxTokens: 500, prefer: "free", allowFallback: true, capability: "chat", cheap: true });
     const m = res.text.match(/\{[\s\S]*\}/);
     if (!m) return null;
     const plan = validatePlan(JSON.parse(m[0]), pool, max, hasImages);

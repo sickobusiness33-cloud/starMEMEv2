@@ -298,3 +298,23 @@ def test_sin_sesion_no_hay_acceso():
     c = httpx.Client(base_url=BASE)
     for url in ("/api/chat/agents", "/api/images/models", "/api/notifications", "/api/ai/settings"):
         assert c.get(url).status_code == 401
+
+
+def test_cupo_gratuito_agotado_da_mensaje_claro(api):
+    """Si Cloudflare AI agota su cupo diario, Kairo lo explica y dice cómo seguir (no «ningún agente pudo…»)."""
+    t = api.post("/api/chat/threads", json={}).json()
+    r = api.post(f"/api/chat/threads/{t['id']}/messages", json={"content": "Investiga la historia del café [forzar-cupo]"})
+    assert r.status_code == 202, r.text
+    run_id = r.json()["run"]["id"]
+    deadline = time.monotonic() + 30
+    st = {}
+    while time.monotonic() < deadline:
+        st = api.get(f"/api/chat/runs/{run_id}").json()
+        if st["run"]["status"] in ("completed", "failed"):
+            break
+        time.sleep(0.5)
+    assert st["run"]["status"] == "failed"
+    assert "cupo gratuito" in st["run"]["error"] and "Conexiones de IA" in st["run"]["error"]
+    assert api.get("/api/ai/status").json()["free"]["quota_ok"] is False
+    time.sleep(3.5)  # en mock el bloqueo dura 3 s
+    assert api.get("/api/ai/status").json()["free"]["quota_ok"] is True

@@ -44,6 +44,8 @@ export interface GenerateRequest {
   capability?: Capability;
   /** Modelo concreto pedido (modo manual o manifiesto del agente). Va primero si está disponible. */
   model?: string;
+  /** Tarea interna ligera (planificar, revisar): usa primero el modelo gratuito más barato. */
+  cheap?: boolean;
 }
 
 export interface CallContext {
@@ -138,6 +140,26 @@ export async function claudeStatus(env: Env) {
   };
 }
 
+// --- cupo gratuito diario de Workers AI ---------------------------------------------------------
+// El plan gratuito de Cloudflare da 10.000 «neuronas» al día (se renuevan a las 00:00 UTC).
+// Al agotarse, Workers AI responde con el error 4006: se deja de intentar hasta la renovación.
+
+const QUOTA_KEY = "workers-ai:daily-quota";
+export const QUOTA_MESSAGE =
+  "Se ha agotado el cupo gratuito diario de Cloudflare AI (se renueva a las 00:00 UTC, las 02:00 en España). " +
+  "Para seguir ahora: conecta tu clave de Claude u OpenAI en el menú del chat (Conexiones de IA) o activa el plan Workers Paid de Cloudflare.";
+export const isQuotaError = (m: string) => /\b4006\b|daily free allocation|neurons/i.test(m);
+const secondsToUtcMidnight = () => {
+  const d = new Date();
+  return Math.max(60, Math.ceil((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1) - d.getTime()) / 1000) + 30);
+};
+export async function freeQuotaAvailable(db: D1Database): Promise<boolean> {
+  return healthy(db, QUOTA_KEY);
+}
+async function markQuotaExhausted(db: D1Database, raw: string, mock = false) {
+  await coolDown(db, QUOTA_KEY, mock ? 3 : secondsToUtcMidnight(), raw); // en tests (mock) solo 3 s
+}
+
 // --- cadena de candidatos ------------------------------------------------------------------
 
 function claudeInfo(id: string): ModelInfo {
@@ -165,7 +187,20 @@ async function buildCandidates(ctx: CallContext, req: GenerateRequest, notices: 
     user.push({ provider: "openai-byok", model: m, modelId: m.id, apiKey: openaiKey });
   }
   const free: Candidate[] = [];
-  const chain = FREE_CHAINS[capability] ?? FREE_CHAINS.chat;
+  const quotaOk = await freeQuotaAvailable(env.DB);
+  const chain = req.cheap ? [env.FREE_MODEL_FALLBACK || "@cf/meta/llama-3.1-8b-instruct-fp8", ...(FREE_CHAINS[capability] ?? FREE_CHAINS.chat)] : FREE_CHAINS[capability] ?? FREE_CHAINS.chat;
+  if (!quotaOk) {
+    // Cupo gratis agotado: si el usuario tiene claves guardadas se usan como respaldo (aunque «Usar mi API» esté apagado).
+    if (!user.length) {
+      const [ak, ok] = await Promise.all([storedKey(env, ctx.userId, "anthropic"), storedKey(env, ctx.userId, "openai")]);
+      if (ak) user.push({ provider: "claude-byok", model: claudeInfo(claudeId), modelId: claudeId, apiKey: ak });
+      if (ok) { const m = MODEL_MAP.get("gpt-5-mini")!; user.push({ provider: "openai-byok", model: m, modelId: m.id, apiKey: ok }); }
+      if (user.length) notices.push("Cupo gratuito de Cloudflare AI agotado por hoy · usando tu API");
+    }
+    const list = [...platform, ...user];
+    if (!list.length) throw new RouterError(QUOTA_MESSAGE, "free_quota");
+    return list;
+  }
   for (const id of [...chain, ...FREE_CHAINS.chat]) {
     const m = MODEL_MAP.get(id);
     if (m && !free.some((c) => c.modelId === id) && (await healthy(env.DB, modelKey(id)))) free.push({ provider: "workers-ai", model: m, modelId: id });
@@ -312,6 +347,14 @@ export async function generate(ctx: CallContext, req: GenerateRequest): Promise<
       } else if (c.provider === "openai-byok") {
         if (more) notices.push(`Tu API de OpenAI falló · usando respaldo`);
         lastError = redact(raw).slice(0, 200);
+      } else if (isQuotaError(raw)) {
+        // Cupo diario agotado: ningún otro modelo de Workers AI responderá hasta mañana.
+        await markQuotaExhausted(ctx.env.DB, raw, ctx.env.AI_MODE === "mock");
+        const rest = list.slice(i + 1).filter((x) => x.provider !== "workers-ai");
+        if (!rest.length) throw new RouterError(QUOTA_MESSAGE, "free_quota");
+        list.splice(i + 1, list.length, ...rest);
+        notices.push("Cupo gratuito de Cloudflare AI agotado por hoy · usando tu API");
+        lastError = "cupo gratuito agotado";
       } else {
         const cd = freeCooldown(raw);
         if (cd) await coolDown(ctx.env.DB, modelKey(c.modelId), cd, raw);
@@ -369,8 +412,16 @@ export async function routeImage(ctx: CallContext, req: ImageRequest): Promise<I
     else push(m.id, m.source === "user" ? openaiKey : undefined);
   }
   if (openaiKey && settings.priority.indexOf("user_api") < settings.priority.indexOf("free")) push("gpt-image-1", openaiKey);
-  for (const id of FREE_CHAINS[cap]) if (await healthy(env.DB, modelKey(id))) push(id);
-  if (!chain.length) for (const id of FREE_CHAINS[cap]) push(id);
+  const quotaOk = await freeQuotaAvailable(env.DB);
+  if (!quotaOk && !openaiKey) {
+    const ok = await storedKey(env, ctx.userId, "openai");
+    if (ok) { push("gpt-image-1", ok); notices.push("Cupo gratuito de Cloudflare AI agotado por hoy · usando tu API de OpenAI"); }
+  }
+  if (quotaOk) {
+    for (const id of FREE_CHAINS[cap]) if (await healthy(env.DB, modelKey(id))) push(id);
+    if (!chain.length) for (const id of FREE_CHAINS[cap]) push(id);
+  }
+  if (!chain.length && !quotaOk) throw new RouterError(QUOTA_MESSAGE, "free_quota");
   if (!chain.length) {
     if (cap === "inpaint") throw new RouterError("El inpainting necesita tu API de OpenAI con «Usar mi API» activado (no hay un modelo gratuito disponible).", "needs_user_api");
     throw new RouterError("No hay ningún modelo que admita esta operación.", "no_models");
@@ -390,7 +441,10 @@ export async function routeImage(ctx: CallContext, req: ImageRequest): Promise<I
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
       await recordUsage(ctx, provider, model.id, i > 0, false, raw, Date.now() - t0);
-      if (provider === "workers-ai") {
+      if (provider === "workers-ai" && isQuotaError(raw)) {
+        await markQuotaExhausted(env.DB, raw, env.AI_MODE === "mock");
+        if (!chain.slice(i + 1).some((c) => c.model.adapter === "openai")) throw new RouterError(QUOTA_MESSAGE, "free_quota");
+      } else if (provider === "workers-ai") {
         const cd = freeCooldown(raw);
         if (cd) await coolDown(env.DB, modelKey(model.id), cd, raw);
       }

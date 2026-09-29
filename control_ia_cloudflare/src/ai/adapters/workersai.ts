@@ -45,6 +45,7 @@ export async function workersText(call: TextCall): Promise<TextOut> {
   if (env.AI_MODE === "mock") {
     const last = textOf(call.messages[call.messages.length - 1]?.content ?? "");
     if (last.includes("[forzar-error-gratis]")) throw new Error("Workers AI no disponible (simulado en test)");
+    if (last.includes("[forzar-cupo]")) throw new Error("4006: you have used up your daily free allocation of 10,000 neurons (simulado)");
     if (last.includes("[forzar-error-modelo]") && call.modelId === "@cf/meta/llama-3.3-70b-instruct-fp8-fast") throw new Error("modelo caído (simulado)");
     if (last.includes("[lento]")) await new Promise((r) => setTimeout(r, 1500));
     // El planificador del orquestador recibe una respuesta vacía en mock: usa su planificador por reglas.

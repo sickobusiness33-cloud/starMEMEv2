@@ -237,6 +237,7 @@ async function viewChat(main) {
   const [threads, reg] = await Promise.all([api("GET", "/api/chat/threads"), api("GET", "/api/chat/agents")]);
   const agentsById = new Map(reg.agents.map((a) => [a.id, a]));
   let thread = null;
+  api("GET", "/api/ai/status").then((st) => { KX.quotaOk = st.free?.quota_ok !== false; if (!KX.quotaOk) renderMenu(); }).catch(() => {});
 
   const newChat = async () => {
     const t = await api("POST", "/api/chat/threads", {});
@@ -276,7 +277,8 @@ async function viewChat(main) {
           if (!auto) openManual();
         } }, l)));
     const provs = h("div", { class: "kx-provs" },
-      h("div", { class: "kx-prov" }, h("span", { class: "dot s-completed" }), h("span", { class: "grow" }, "Cloudflare AI", h("small", {}, "gratis · siempre activo"))),
+      h("div", { class: "kx-prov" }, h("span", { class: "dot " + (KX.quotaOk === false ? "s-error" : "s-completed") }),
+        h("span", { class: "grow" }, "Cloudflare AI", h("small", {}, KX.quotaOk === false ? "cupo gratis agotado hoy · vuelve a las 02:00" : "gratis · cupo diario"))),
       (S.providers || []).filter((p) => !p.is_demo).map((p) => {
         const on = Boolean(p.key_source) || !p.requires_key;
         return h("div", { class: "kx-prov" }, h("span", { class: "dot " + (on ? "s-completed" : "") }),
@@ -426,7 +428,10 @@ async function viewChat(main) {
       stopBtn.hidden = true; sendBtn.hidden = false;
       if (liveNode) {
         const node = state.message ? msgNode(state.message)
-          : h("div", { class: "kx-msg assistant error" }, h("div", { class: "kx-bubble" }, state.run.status === "cancelled" ? "Petición cancelada." : state.run.error || "No se pudo completar la petición."));
+          : h("div", { class: "kx-msg assistant error" }, h("div", { class: "kx-bubble" }, state.run.status === "cancelled" ? "Petición cancelada." : state.run.error || "No se pudo completar la petición.",
+            /cupo gratuito/i.test(state.run.error || "") ? h("div", { class: "row", style: "margin-top:10px;gap:8px" },
+              h("button", { class: "btn small primary", type: "button", onclick: () => { KX.quotaOk = false; renderMenu(); setMenu(true); } }, icon("connectors", 14), "Conectar mi IA"),
+              h("a", { class: "btn small ghost", href: "https://dash.cloudflare.com/?to=/:account/workers/plans", target: "_blank", rel: "noopener" }, "Workers Paid")) : null));
         liveNode.replaceWith(node); liveNode = null;
         if (state.message) thread.messages.push(state.message);
         scroll();

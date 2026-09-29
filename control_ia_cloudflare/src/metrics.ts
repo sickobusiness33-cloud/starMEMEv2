@@ -6,7 +6,7 @@ import { requireAdmin, requireUser } from "./auth";
 import { all, nowIso, one, run } from "./db";
 import { record } from "./audit";
 import type { AppEnv } from "./env";
-import { claudeStatus, DEFAULT_PRIORITY, getAiSettings, type Source } from "./ai/router";
+import { claudeStatus, DEFAULT_PRIORITY, freeQuotaAvailable, getAiSettings, type Source } from "./ai/router";
 import { MODELS, publicModel } from "./ai/models";
 import { fail, jsonBody } from "./http";
 import { getSubscription, PLAN_LIMITS, usageToday } from "./plans";
@@ -37,7 +37,7 @@ metricsRoutes.get("/ai/status", requireUser, async (c) => {
       model: claude.model,
     },
     own_keys: keys.map((k) => k.provider),
-    free: { model: c.env.FREE_MODEL, fallback_model: c.env.FREE_MODEL_FALLBACK, image_model: c.env.IMAGE_MODEL, available: Boolean(c.env.AI) || c.env.AI_MODE === "mock" },
+    free: { model: c.env.FREE_MODEL, fallback_model: c.env.FREE_MODEL_FALLBACK, image_model: c.env.IMAGE_MODEL, available: Boolean(c.env.AI) || c.env.AI_MODE === "mock", quota_ok: await freeQuotaAvailable(c.env.DB) },
   });
 });
 

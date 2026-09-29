@@ -9,7 +9,7 @@
 // Cada cambio de estado se guarda en chat_run_agents y sube chat_runs.version;
 // el stream SSE (/api/chat/runs/:id/stream) lo envía al Activity Panel.
 
-import { generate, RouterError, type CallContext, type ChatMsg } from "../ai/router";
+import { generate, isQuotaError, QUOTA_MESSAGE, RouterError, type CallContext, type ChatMsg } from "../ai/router";
 import { runStage } from "../agents/pipeline";
 import { listAgents, type RegistryAgent } from "../agents/registry";
 import type { Stage } from "../agents/types";
@@ -314,7 +314,11 @@ async function aggregate(c: Ctx, plan: Plan, byId: Map<string, RegistryAgent>, r
   const ok = plan.steps.map((s) => ({ step: s, r: results.get(s.id)! })).filter((x) => x.r?.status === "completed");
   const images = ok.flatMap((x) => (x.r.metadata.images ?? []).map((id) => ({ id, agent: x.step.agent })));
   const failed = plan.steps.filter((s) => results.get(s.id)?.status !== "completed").map((s) => byId.get(s.agent)!.name);
-  if (!ok.length) throw new RouterError(`Ningún agente pudo completar su parte (${failed.join(", ")}).`, "agents_failed");
+  if (!ok.length) {
+    // Si la causa es el cupo gratuito agotado, se dice claramente y qué hacer.
+    if ([...results.values()].some((r) => r.result.includes(QUOTA_MESSAGE) || isQuotaError(r.result))) throw new RouterError(QUOTA_MESSAGE, "free_quota");
+    throw new RouterError(`Ningún agente pudo completar su parte (${failed.join(", ")}).`, "agents_failed");
+  }
   // Un único agente de texto: su resultado ya es la respuesta (sin llamada extra = menos latencia).
   if (ok.length === 1 && !failed.length) {
     const r = ok[0].r;
@@ -390,6 +394,7 @@ async function validate(c: Ctx, draft: { text: string; provider: any; model: any
       prefer: "free",
       allowFallback: true,
       capability: "chat",
+      cheap: true,
     });
     await setAgent(c, rowId, { status: "ANALYZING", action: "Comprobando coherencia", progress: 60, provider: res.provider, model: res.model });
     const m = res.text.match(/\{[\s\S]*\}/);
