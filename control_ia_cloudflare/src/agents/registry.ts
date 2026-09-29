@@ -29,6 +29,7 @@ import video from "./catalog/video";
 import web from "./catalog/web";
 import writing from "./catalog/writing";
 import kairo from "./catalog/kairo";
+import agency from "./catalog/agency";
 import { CATEGORIES, COMPATIBLE_LICENSES, TOOL_INFO, type AgentManifest } from "./types";
 
 export const BUILTIN: AgentManifest[] = [
@@ -51,6 +52,7 @@ export const BUILTIN: AgentManifest[] = [
   ...multi,
   ...browser,
   ...kairo,
+  ...agency, // personas de agency-agents (MIT), generadas por scripts/import_agency_agents.py
 ];
 
 const BUILTIN_MAP = new Map(BUILTIN.map((a) => [a.id, a]));

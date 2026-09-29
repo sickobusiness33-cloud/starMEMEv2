@@ -14,7 +14,7 @@ export interface FrameworkSource {
   name: string;
   license: string;
   status: "compatible" | "restricted" | "incompatible" | "unverifiable";
-  integration: "method" | "reference" | "excluded";
+  integration: "method" | "reference" | "excluded" | "content";
   language: string;
   cloudflare: "no" | "parcial" | "sí";
   notes: string;
@@ -23,6 +23,8 @@ export interface FrameworkSource {
 export const VERIFIED_AT = "2026-09-28";
 
 export const FRAMEWORKS: FrameworkSource[] = [
+  // --- Contenido importado (texto de personas, sin código) ---
+  { repo: "msitarzewski/agency-agents", name: "agency-agents", license: "MIT", status: "compatible", integration: "content", language: "Markdown", cloudflare: "sí", notes: "209 personas de especialistas convertidas en agentes de Kairo (scripts/import_agency_agents.py). Atribución en cada agente." },
   // --- Compatibles (MIT / Apache-2.0) usados como metodología de agentes propios ---
   { repo: "stanford-oval/storm", name: "STORM", license: "MIT", status: "compatible", integration: "method", language: "Python", cloudflare: "no", notes: "Investigación con perspectivas y esquema → base del agente Deep Research." },
   { repo: "assafelovic/gpt-researcher", name: "GPT Researcher", license: "Apache-2.0", status: "compatible", integration: "method", language: "Python", cloudflare: "no", notes: "Patrón planificador → ejecutores → informe; inspira Research Agent." },

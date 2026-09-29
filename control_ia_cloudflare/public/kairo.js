@@ -101,6 +101,14 @@ const CAT_ICON = {
   productivity: "M5 12l4 4 10-10M5 5h6M5 19h14", automation: "M13 3L5 14h6l-1 7 8-11h-6z", writing: "M4 20h4L19 9l-4-4L4 16zM13 7l4 4",
   image: ICONS.image, video: "M4 6h11v12H4zM15 10l5-3v10l-5-3", security: ICONS.shield, business: "M4 8h16v11H4zM9 8V5h6v3",
   general: ICONS.spark, multi: ICONS.agents, browser: "M4 5h16v14H4zM4 9h16M7 7h.01M10 7h.01",
+  design: "M12 3a9 9 0 1 0 0 18c1 0 1.5-.8 1.5-1.6 0-.9-.7-1.3-.7-2.2 0-1 .8-1.7 1.8-1.7H17a4 4 0 0 0 4-4c0-4.7-4-8.5-9-8.5zM7.5 11.5h.01M10 7.5h.01M15 7.5h.01",
+  sales: "M3 17l6-6 4 4 8-8M15 7h6v6", product: "M12 3l8 4.5v9L12 21l-8-4.5v-9zM12 12l8-4.5M12 12v9M12 12L4 7.5",
+  support: "M4 13v-2a8 8 0 0 1 16 0v2M4 13h3v5H4zM17 13h3v5h-3zM20 18a3 3 0 0 1-3 3h-3",
+  testing: "M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.8 3h10.4a2 2 0 0 0 1.8-3l-5-9V3M7.5 15h9",
+  game: "M6 9h12a4 4 0 0 1 4 4v1a3 3 0 0 1-5.4 1.8L15 14H9l-1.6 1.8A3 3 0 0 1 2 14v-1a4 4 0 0 1 4-4zM7 11.5v3M5.5 13h3M16 12h.01M18 14h.01",
+  academic: "M2 9l10-5 10 5-10 5zM6 11v5c3 2 9 2 12 0v-5M22 9v6",
+  spatial: "M3 9a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3h-3l-1.5-2h-3L9 17H6a3 3 0 0 1-3-3z",
+  specialized: "M12 2l2.4 5.6L20 8l-4.3 3.9L17 18l-5-3-5 3 1.3-6.1L4 8l5.6-.4z",
 };
 
 function agentGlyph(agent, size = 34) {
@@ -592,9 +600,11 @@ function renderActivityPanel(root, toggle, reg, agentsById, state) {
   const renderList = () => {
     const term = KX.filter.toLowerCase();
     const usedIds = new Set(active.map((a) => a.agent_id));
-    listBox.replaceChildren(...reg.agents.filter((a) => !term || `${a.name} ${a.category_label} ${a.description}`.toLowerCase().includes(term)).map((a) =>
+    const found = reg.agents.filter((a) => !term || `${a.name} ${a.category_label} ${a.description}`.toLowerCase().includes(term));
+    listBox.replaceChildren(...found.slice(0, term ? 80 : 40).map((a) =>
       h("div", { class: "kx-reg" + (a.locked ? " locked" : "") + (usedIds.has(a.id) ? " used" : ""), title: a.description },
-        h("span", { class: "kx-reg-bot" }, agentRobot(a, "idle", 26)), h("span", { class: "grow" }, a.name), h("span", { class: "kx-reg-st" }, a.locked ? "PRO" : usedIds.has(a.id) ? "EN USO" : "IDLE"))));
+        h("span", { class: "kx-reg-bot" }, agentRobot(a, "idle", 26)), h("span", { class: "grow" }, a.name), h("span", { class: "kx-reg-st" }, a.locked ? "PRO" : usedIds.has(a.id) ? "EN USO" : "IDLE"))),
+      found.length > (term ? 80 : 40) ? h("p", { class: "small muted", style: "padding:6px" }, `+${found.length - (term ? 80 : 40)} más · busca por nombre o especialidad`) : null);
   };
   q.addEventListener("input", () => { KX.filter = q.value; renderList(); });
   renderList();

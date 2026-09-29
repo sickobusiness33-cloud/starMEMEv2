@@ -785,3 +785,4 @@ main.sec-lienzo { padding-bottom: 12px; }
 .cv-dot { width: 14px; height: 14px; border-radius: 4px; flex: none; }
 @media (hover: none) { .cv-x { opacity: 1; } }
 @media (max-width: 900px) { .cv { height: calc(100dvh - 56px - 64px - 40px); } .cv-toolbar h1 { font-size: 22px; } }
+.hub-more { grid-column: 1 / -1; justify-self: center; }

@@ -74,6 +74,61 @@ export function orchestratorPool(agents: RegistryAgent[], plan: PlanId): PoolAge
     .map((a) => ({ ...a, locked: a.tier === "pro" && plan !== "pro" }));
 }
 
+// --- preselección por relevancia --------------------------------------------------------------
+// Con cientos de agentes no se le puede pasar el catálogo entero al planificador: se envían
+// todos los agentes propios de Kairo + los especialistas externos más relevantes para la petición.
+
+const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+const STOP = new Set("para como con una uno unos unas los las del que por mas muy este esta esto sobre desde hasta entre tengo quiero necesito hazme haz dame puedes podrias favor the and for with you your that this from into what how".split(" "));
+// Español → términos en inglés de las descripciones de los especialistas.
+const SYN: Record<string, string> = {
+  ventas: "sales deal pipeline", vender: "sales", cliente: "customer client", clientes: "customer client", diseno: "design ui ux", disenar: "design",
+  marca: "brand", juego: "game", juegos: "game", videojuego: "game", pruebas: "testing test qa", test: "testing qa", seguridad: "security",
+  soporte: "support customer", producto: "product", contabilidad: "accounting finance", finanzas: "finance financial", impuestos: "tax",
+  legal: "legal compliance", contrato: "contract legal", recursos: "hr", contratacion: "recruit hiring", empleo: "recruit", educacion: "education learning",
+  investigacion: "research", academico: "academic", tesis: "academic thesis", redes: "social media", anuncios: "ads paid", campana: "campaign ads",
+  movil: "mobile ios android", aplicacion: "app mobile", web: "web frontend", servidor: "backend server", base: "database", datos: "data",
+  nube: "cloud devops", despliegue: "deploy devops", infraestructura: "infrastructure devops", incidente: "incident", arquitectura: "architecture",
+  realidad: "xr vr ar", virtual: "vr xr", documentacion: "documentation docs", proyecto: "project", proyectos: "project", equipo: "team",
+  estrategia: "strategy", crecimiento: "growth", contenido: "content", video: "video", tiktok: "tiktok", linkedin: "linkedin", seo: "seo search",
+  ia: "ai ml", inteligencia: "ai", modelo: "model ml", salud: "health healthcare", inmobiliaria: "real estate", logistica: "supply chain logistics",
+};
+
+function terms(text: string): string[] {
+  const out: string[] = [];
+  for (const w of norm(text).split(/[^a-z0-9+#]+/)) {
+    if (w.length < 2 || STOP.has(w)) continue;
+    out.push(w);
+    if (SYN[w]) out.push(...SYN[w].split(" "));
+  }
+  return [...new Set(out)];
+}
+
+/** Relevancia aproximada de un agente para una petición (coincidencia de términos). */
+export function relevance(request: string | string[], a: RegistryAgent): number {
+  const req = Array.isArray(request) ? request : terms(request);
+  const hay = norm(`${a.name} ${a.name} ${a.description} ${a.capabilities.join(" ")} ${a.category}`);
+  const words = new Set(hay.split(/[^a-z0-9+#]+/));
+  let score = 0;
+  // Palabras cortas (ux, ui, qa, seo…) solo cuentan como palabra completa.
+  for (const w of req) if (w.length <= 3 ? words.has(w) : hay.includes(w)) score += w.length >= 6 ? 2 : 1;
+  return score;
+}
+
+/** Agentes que ve el planificador: los propios de Kairo + los `extra` especialistas más relevantes. */
+export function shortlist(request: string, agents: PoolAgent[], extra = 16): PoolAgent[] {
+  const req = terms(request);
+  const own = agents.filter((a) => a.source.type !== "external");
+  const ext = agents
+    .filter((a) => a.source.type === "external")
+    .map((a) => ({ a, s: relevance(req, a) }))
+    .filter((x) => x.s > 0)
+    .sort((x, y) => y.s - x.s)
+    .slice(0, extra)
+    .map((x) => x.a);
+  return [...own, ...ext];
+}
+
 /** 0 = análisis/investigación · 1 = producción de contenido · 2 = medios (imagen). */
 export function stageClass(a: RegistryAgent): number {
   const tools = a.stages.filter((s) => s.kind === "tool").map((s) => (s as any).tool as string);
@@ -178,6 +233,11 @@ export function planWithRules(request: string, pool: Map<string, PoolAgent>, max
     const m = re.exec(request);
     if (m) ids.forEach((id) => add(id, `La petición menciona «${m[0].trim()}»`));
   }
+  // Ninguna regla encaja: prueba con el especialista externo más relevante.
+  if (!picked.length) {
+    const best = shortlist(request, [...pool.values()], 1).find((a) => a.source.type === "external");
+    if (best && relevance(request, best) >= 4) add(best.id, `Especialista más cercano a tu petición: ${best.name}`);
+  }
   // Imagen para un post: el post ya genera su imagen, no hace falta otro generador.
   if (picked.includes("social-post-creator") && picked.includes("image-generator")) picked.splice(picked.indexOf("image-generator"), 1);
   const byId = new Map([...pool].map(([k, v]) => [k, v as RegistryAgent]));
@@ -203,7 +263,7 @@ export function planWithRules(request: string, pool: Map<string, PoolAgent>, max
 // --- planificador con modelo ------------------------------------------------------------------
 
 export async function planWithLLM(ctx: CallContext, request: string, history: string, pool: Map<string, PoolAgent>, max: number, hasImages: boolean, project = ""): Promise<Plan | null> {
-  const catalog = [...pool.values()]
+  const catalog = shortlist(request, [...pool.values()])
     .filter((a) => !a.locked && (a.input.image !== "required" || hasImages))
     .map((a) => `${a.id} — ${a.name}: ${a.description}${a.tools.length ? ` [${a.tools.join(", ")}]` : ""}`)
     .join("\n");

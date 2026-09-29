@@ -54,3 +54,31 @@ implementación y los prompts son propios de Control IA:
 La lista completa de proyectos analizados (incluidos los excluidos por
 licencia) está en `src/agents/sources.ts` y en la web: *Agent Hub → fuentes y
 licencias*.
+
+## agency-agents (personas de agentes especialistas)
+
+209 agentes del Agent Hub (categorías Design, Sales, Product, Support, Testing & QA,
+Game Dev, Academic, Spatial / XR, Specialists y parte de Coding, Marketing, Finance,
+Security y Productivity) se generan a partir de las personas de
+[msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents)
+con `scripts/import_agency_agents.py`. Se adaptan (idioma, formato y longitud) y
+solo se importa texto; no se incluye código del proyecto.
+
+MIT License — Copyright (c) 2026 Michael Sitarzewski
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in the
+Software without restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

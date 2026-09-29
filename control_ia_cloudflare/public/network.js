@@ -413,7 +413,7 @@ function wireGrid(grid) {
   let t = null;
   const draw = () => {
     grid.querySelector(":scope > svg.grid-wires")?.remove();
-    const tiles = [...grid.children].filter((x) => !x.matches("svg"));
+    const tiles = [...grid.children].filter((x) => !x.matches("svg, .hub-more, [hidden]"));
     if (tiles.length < 2) return;
     const box = grid.getBoundingClientRect();
     const rects = tiles.map((el) => { const r = el.getBoundingClientRect(); return { el, x: r.left - box.left, y: r.top - box.top, w: r.width, h: r.height, hot: el.matches(".v-working, .v-thinking, .v-reviewing") }; });

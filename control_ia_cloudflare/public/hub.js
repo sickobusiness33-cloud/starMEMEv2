@@ -148,8 +148,20 @@ async function viewHub(main) {
     const qs = new URLSearchParams(Object.entries(HUB).filter(([, v]) => v));
     const data = await api("GET", `/api/hub/agents?${qs}`);
     count.textContent = `${data.total} agentes`;
-    grid.replaceChildren(...(data.agents.length ? data.agents.map((a, i) => agentCard(a, i, data.plan))
-      : [h("div", { class: "card", style: "grid-column:1/-1" }, empty("Ningún agente coincide", "Prueba con otra búsqueda o categoría."))]));
+    // Con cientos de agentes se pintan por tandas (más rápido en iPad y móvil).
+    let shown = 0;
+    const more = h("button", { class: "btn hub-more", type: "button" });
+    const page = () => {
+      const next = data.agents.slice(shown, shown + 48);
+      more.before(...next.map((a, i) => agentCard(a, shown + i, data.plan)));
+      shown += next.length;
+      more.textContent = `Mostrar más · quedan ${data.total - shown}`;
+      more.hidden = shown >= data.agents.length;
+    };
+    more.addEventListener("click", page);
+    if (!data.agents.length) { grid.replaceChildren(h("div", { class: "card", style: "grid-column:1/-1" }, empty("Ningún agente coincide", "Prueba con otra búsqueda o categoría."))); return; }
+    grid.replaceChildren(more);
+    page();
   };
 
   const isAdmin = S.user.role === "admin";
@@ -494,7 +506,7 @@ async function viewSources(main) {
   const statusSel = h("select", { "aria-label": "Estado de licencia" }, ["", "compatible", "restricted", "incompatible", "unverifiable", "pending"].map((s) => h("option", { value: s }, s || "todos los estados")));
   statusSel.addEventListener("change", () => { state.status = statusSel.value; state.page = 0; load(); });
 
-  const INT = { method: ["metodología", "st-ok"], reference: ["referencia", "st-idle"], excluded: ["excluido", "st-err"] };
+  const INT = { content: ["personas importadas", "st-ok"], method: ["metodología", "st-ok"], reference: ["referencia", "st-idle"], excluded: ["excluido", "st-err"] };
   main.replaceChildren(h("div", { class: "stack" },
     h("div", { class: "row spread" }, h("h1", {}, "Fuentes open source y licencias"), h("a", { class: "btn small", href: "#/hub" }, "⬡ Agent Hub")),
     h("div", { class: "info small" }, "Control IA no copia código de otros repositorios. Los agentes son manifiestos propios; algunos siguen metodologías públicas de proyectos con licencia MIT/Apache-2.0/BSD y se citan abajo. ",

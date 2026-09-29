@@ -26,6 +26,15 @@ export const CATEGORIES = [
   { id: "general", label: "General AI" },
   { id: "multi", label: "Multi-Agent" },
   { id: "browser", label: "Browser Agents" },
+  { id: "design", label: "Design" },
+  { id: "sales", label: "Sales" },
+  { id: "product", label: "Product" },
+  { id: "support", label: "Support" },
+  { id: "testing", label: "Testing & QA" },
+  { id: "game", label: "Game Dev" },
+  { id: "academic", label: "Academic" },
+  { id: "spatial", label: "Spatial / XR" },
+  { id: "specialized", label: "Specialists" },
 ] as const;
 export type CategoryId = (typeof CATEGORIES)[number]["id"];
 
