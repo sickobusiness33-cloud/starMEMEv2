@@ -8,6 +8,7 @@ import { all, dumps, loads, nowIso, one, run, update } from "./db";
 import type { AppEnv, Env, Settings } from "./env";
 import { boolOf, fail, intIn, jsonBody, objOf, reqStr, str, toId } from "./http";
 import { ProviderError, availableProviderIds, getProvider } from "./providers";
+import { mirrorLater } from "./firebase";
 import { TEMPLATE_MAP } from "./templates";
 import { TOOLS, toolStatus } from "./tools";
 
@@ -164,6 +165,7 @@ projectRoutes.post("/", async (c) => {
     await run(c.env.DB, "INSERT INTO project_memory (project_id, kind, content, source, created_at, updated_at) VALUES (?, ?, ?, 'user', ?, ?)", id, m.kind, m.content, now, now);
   }
   await record(c.env.DB, { actor: u.email, userId: u.id, projectId: id, action: "proyecto.crear", target: name, detail: `plantilla=${template.id}` });
+  mirrorLater(c, "project", id);
   return c.json(await projectOut(c.env, await getProject(c, id)));
 });
 
@@ -209,6 +211,7 @@ projectRoutes.patch("/:id", async (c) => {
   await update(c.env.DB, "projects", id, fields);
   const action = status && status !== row.status ? (status === "archived" ? "proyecto.archivar" : "proyecto.restaurar") : "proyecto.editar";
   await record(c.env.DB, { actor: u.email, userId: u.id, projectId: id, action, target: row.name, detail: `campos: ${Object.keys(body).join(", ")}` });
+  mirrorLater(c, "project", id);
   return c.json(await projectOut(c.env, await getProject(c, id)));
 });
 

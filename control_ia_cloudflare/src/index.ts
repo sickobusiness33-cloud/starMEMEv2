@@ -18,6 +18,7 @@ import { processAgentRun } from "./agents/runtime";
 import { imageRoutes } from "./images";
 import { notificationRoutes } from "./notifications";
 import { workspaceRoutes } from "./workspace";
+import { firebaseRoutes, mirror, processFirebaseSync } from "./firebase";
 import { processChatRun } from "./orchestrator/executor";
 import { checkRepoLicense } from "./agents/license";
 import { getSubscription, PLAN_LIMITS } from "./plans";
@@ -62,6 +63,7 @@ app.route("/chat", chatRoutes);
 app.route("/images", imageRoutes);
 app.route("/notifications", notificationRoutes);
 app.route("/workspace", workspaceRoutes);
+app.route("/firebase", firebaseRoutes);
 app.route("/billing", billingRoutes);
 app.route("/", metricsRoutes);
 app.route("/", runRoutes);
@@ -110,7 +112,14 @@ export default {
       try {
         if ("runId" in body) await processRun(env, settings, body.runId);
         else if ("agentRunId" in body) await processAgentRun(env, body.agentRunId);
-        else if ("chatRunId" in body) await processChatRun(env, body.chatRunId);
+        else if ("chatRunId" in body) {
+          await processChatRun(env, body.chatRunId);
+          // Copia en Firestore de la tarea, su conversación y su proyecto.
+          const r = await env.DB.prepare("SELECT thread_id, project_id FROM chat_runs WHERE id = ?").bind(body.chatRunId).first<any>();
+          await mirror(env, "run", body.chatRunId);
+          await mirror(env, "thread", r?.thread_id);
+          await mirror(env, "project", r?.project_id);
+        } else if ("firebaseSync" in body) await processFirebaseSync(env, body.firebaseSync);
         else if ("sourceCheck" in body) await checkSources(env, body.sourceCheck);
       } catch (err) {
         console.error("Fallo procesando el mensaje de la cola", JSON.stringify(body).slice(0, 200), redact(String(err)));

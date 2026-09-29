@@ -20,6 +20,7 @@ import { listAgents } from "./agents/registry";
 import { CATEGORIES } from "./agents/types";
 import { runState } from "./orchestrator/executor";
 import { orchestratorPool, roleOf } from "./orchestrator/planner";
+import { mirrorLater } from "./firebase";
 import { TEMPLATES, TEMPLATE_MAP } from "./templates";
 
 export const workspaceRoutes = new Hono<AppEnv>();
@@ -192,6 +193,7 @@ workspaceRoutes.post("/projects/:id/memory", async (c) => {
     p.id, kind, content, body.pinned === false ? 0 : 1, body.source === "kairo" ? "kairo" : "user", now, now,
   );
   await record(c.env.DB, { actor: c.get("user").email, userId: c.get("user").id, projectId: p.id, action: "proyecto.memoria.crear", target: kind });
+  mirrorLater(c, "project", p.id);
   return c.json(await one(c.env.DB, "SELECT * FROM project_memory WHERE id = ?", id), 201);
 });
 
@@ -214,12 +216,14 @@ workspaceRoutes.patch("/memory/:mid", async (c) => {
   if (!MEMORY_KINDS.includes(kind)) fail(422, "Tipo de memoria no válido.");
   const pinned = body.pinned === undefined ? m.pinned : body.pinned ? 1 : 0;
   await run(c.env.DB, "UPDATE project_memory SET content = ?, kind = ?, pinned = ?, updated_at = ? WHERE id = ?", content, kind, pinned, nowIso(), m.id);
+  mirrorLater(c, "project", m.project_id);
   return c.json(await one(c.env.DB, "SELECT * FROM project_memory WHERE id = ?", m.id));
 });
 
 workspaceRoutes.delete("/memory/:mid", async (c) => {
   const m = await ownMemory(c);
   await run(c.env.DB, "DELETE FROM project_memory WHERE id = ?", m.id);
+  mirrorLater(c, "project", m.project_id);
   return c.json({ ok: true });
 });
 
@@ -371,6 +375,7 @@ workspaceRoutes.post("/command/run", async (c) => {
     );
     for (const m of tpl.memory) await run(c.env.DB, "INSERT INTO project_memory (project_id, kind, content, source, created_at, updated_at) VALUES (?, ?, ?, 'user', ?, ?)", projectId, m.kind, m.content, now, now);
     await record(c.env.DB, { actor: user.email, userId: user.id, projectId, action: "proyecto.crear", target: name, detail: "desde el centro de comandos" });
+    mirrorLater(c, "project", projectId);
   } else if (target.type !== "standalone") fail(422, "Destino no válido.");
   const threadId = await createThread(c.env.DB, user.id, { title: text.replace(/\s+/g, " ").slice(0, 60), projectId });
   const thread = await one<any>(c.env.DB, "SELECT * FROM chat_threads WHERE id = ?", threadId);

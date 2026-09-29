@@ -12,6 +12,7 @@ import { hashPassword, randomToken, safeEqual, sha256, verifyPassword } from "./
 import { all, nowIso, one, run } from "./db";
 import type { AppEnv, User } from "./env";
 import { EMAIL, fail, jsonBody, reqStr } from "./http";
+import { mirrorLater } from "./firebase";
 import { notify } from "./notify";
 import { hit, reset } from "./ratelimit";
 
@@ -117,6 +118,7 @@ authRoutes.post("/register", async (c) => {
   await record(c.env.DB, { actor: email, userId: id, action: "auth.registro", detail: `rol=${role}` });
   await notify(c.env, id, { category: "cuenta", title: `Bienvenido a Control IA, ${name}`, body: "Escribe lo que necesites en el chat: Kairo elegirá los agentes adecuados por ti.", link: "#/chat" });
   const user = (await one<User>(c.env.DB, "SELECT * FROM users WHERE id = ?", id))!;
+  mirrorLater(c, "user", id);
   return c.json({ user: publicUser(user), csrf_token: csrf });
 });
 
