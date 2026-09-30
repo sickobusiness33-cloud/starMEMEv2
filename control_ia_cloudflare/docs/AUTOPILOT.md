@@ -99,7 +99,7 @@ Cron (cada 5 min) ──► Cola ──► ORCHESTRATOR (ciclo por objetivo)
 ## 8. Cómo usarlo
 
 1. **Conectores → GitHub**: token *fine-grained* limitado al repositorio, con permisos
-   Contents (read/write), Pull requests (read/write), Issues (read/write) y Checks (read).
+   Contents (read/write), Pull requests (read/write), Issues (read/write) y Actions (read-only).
 2. Vincula ese conector a un proyecto.
 3. **Autopilot → + Objetivo**: elige el proyecto, la frecuencia y el presupuesto de tokens/día.
 4. El cron (cada 5 min) abre ciclos; los agentes leen el código, investigan, abren issues

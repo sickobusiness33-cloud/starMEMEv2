@@ -123,8 +123,19 @@ export class GitHubConnector extends Connector {
 
   /** Resultado real de CI (GitHub Actions / checks) de una rama o commit. */
   async ciStatus(ref: string) {
-    const runs = await this.api(`/commits/${encodeURIComponent(ref)}/check-runs?per_page=50`, {}, "los checks");
-    const list = ((runs as any).check_runs as any[]).map((r) => ({ name: r.name, status: r.status, conclusion: r.conclusion, url: r.html_url, summary: String(r.output?.summary ?? "").slice(0, 400) }));
+    // Los tokens fine-grained no tienen permiso «Checks»: se usa Actions (Read-only) y, si no, check-runs.
+    let list: { name: string; status: string; conclusion: string | null; url: string; summary: string }[];
+    try {
+      const wr = await this.api(`/actions/runs?branch=${encodeURIComponent(ref)}&per_page=20`, {}, "las ejecuciones de Actions");
+      let items = (wr as any).workflow_runs as any[];
+      if (!items.length) items = ((await this.api(`/actions/runs?head_sha=${encodeURIComponent(ref)}&per_page=20`, {}, "las ejecuciones de Actions")) as any).workflow_runs;
+      const latest = new Map<string, any>();
+      for (const r of items) if (!latest.has(r.name)) latest.set(r.name, r); // la más reciente de cada workflow
+      list = [...latest.values()].map((r) => ({ name: r.name, status: r.status, conclusion: r.conclusion, url: r.html_url, summary: String(r.display_title ?? "").slice(0, 400) }));
+    } catch {
+      const runs = await this.api(`/commits/${encodeURIComponent(ref)}/check-runs?per_page=50`, {}, "los checks");
+      list = ((runs as any).check_runs as any[]).map((r) => ({ name: r.name, status: r.status, conclusion: r.conclusion, url: r.html_url, summary: String(r.output?.summary ?? "").slice(0, 400) }));
+    }
     const pending = list.some((r) => r.status !== "completed");
     const failed = list.filter((r) => r.conclusion && !["success", "skipped", "neutral"].includes(r.conclusion));
     return { total: list.length, pending, failed: failed.length, state: !list.length ? "none" : pending ? "pending" : failed.length ? "failure" : "success", checks: list };
