@@ -35,6 +35,13 @@ export const CATEGORIES = [
   { id: "academic", label: "Academic" },
   { id: "spatial", label: "Spatial / XR" },
   { id: "specialized", label: "Specialists" },
+  { id: "personal", label: "Personal" },
+  { id: "health", label: "Health" },
+  { id: "education", label: "Education" },
+  { id: "legal", label: "Legal" },
+  { id: "industry", label: "Industry" },
+  { id: "public", label: "Public Sector" },
+  { id: "sports", label: "Sports" },
 ] as const;
 export type CategoryId = (typeof CATEGORIES)[number]["id"];
 

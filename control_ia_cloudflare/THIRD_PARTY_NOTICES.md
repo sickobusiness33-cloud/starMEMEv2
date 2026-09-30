@@ -87,3 +87,11 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 `public/vendor/three.min.js` es three.js 0.186.1 empaquetado sin cambios.
 MIT License — Copyright © 2010-2026 three.js authors. https://github.com/mrdoob/three.js
+
+## agent-directory (lista de nombres)
+
+Los nombres de los agentes de `src/agents/catalog/directory.ts` proceden de la lista pública
+«agent-directory». Ese repositorio no declara licencia, por lo que **no se ha copiado ningún texto**:
+solo se usan los títulos genéricos de los agentes (p. ej. «Meal Planner») y su sector.
+Descripciones, instrucciones y etapas son plantillas propias de Control IA
+(`src/agents/catalog/_directory.ts`, `scripts/import_agent_directory.py`).

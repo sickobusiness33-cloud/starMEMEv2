@@ -258,7 +258,7 @@ const agents: AgentManifest[] = [
  },
  {
   "id": "aa-image-prompt-engineer",
-  "name": "Image Prompt Engineer",
+  "name": "Image Prompt Engineer (Agency)",
   "description": "Expert photography prompt engineer specializing in crafting detailed, evocative prompts for AI image generation. Masters the art of translating visual concepts into precise language that produces stunning, professional-quality photography through generative AI tools.",
   "category": "design",
   "version": "1.0.0",
@@ -817,7 +817,7 @@ const agents: AgentManifest[] = [
  },
  {
   "id": "aa-code-reviewer",
-  "name": "Code Reviewer",
+  "name": "Code Reviewer (Agency)",
   "description": "Expert code reviewer who provides constructive, actionable feedback focused on correctness, maintainability, security, and performance — not style preferences.",
   "category": "coding",
   "version": "1.0.0",

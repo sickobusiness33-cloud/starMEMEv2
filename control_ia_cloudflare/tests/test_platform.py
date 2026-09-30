@@ -76,7 +76,7 @@ def _claude_ok():
 
 def test_catalogo_categorias_busqueda_y_filtros(api):
     cats = api.get("/api/hub/categories").json()
-    assert len(cats) == 27 and all(c["count"] >= 3 for c in cats)
+    assert len(cats) == 34 and all(c["count"] >= 3 for c in cats)
     data = api.get("/api/hub/agents").json()
     assert data["total"] >= 54 and data["plan"] == "free"
     a = data["agents"][0]

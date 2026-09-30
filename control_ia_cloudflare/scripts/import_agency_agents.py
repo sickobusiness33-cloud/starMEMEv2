@@ -99,7 +99,7 @@ for f in sorted(SRC.glob("*/*.md")):
     vibe = (meta.get("vibe") or desc)[:190]
     instructions = HEAD + clip(re.sub(r"\n{3,}", "\n\n", body), 6000 - len(HEAD) - 10)
     agents.append({
-        "id": aid, "name": name[:60], "description": desc if len(desc) <= 300 else desc[:297].rstrip() + "…",
+        "id": aid, "name": (name[:50] + " (Agency)") if aid.startswith("aa-") else name[:60], "description": desc if len(desc) <= 300 else desc[:297].rstrip() + "…",
         "category": cat, "version": "1.0.0", "tier": "free", "color": hex_color(meta.get("color", "blue")),
         "model": {"prefer": "free", "allowFallback": True, "capability": cap},
         "input": {"label": "Tu petición", "placeholder": vibe},

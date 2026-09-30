@@ -86,8 +86,8 @@ async function viewCanvas(main) {
       projects: officeProjects().map((p) => ({ id: p.id, name: p.name, color: p.color, live: p.live > 0, sub: `${(p.runs || 0) + (p.kairo_runs || 0)} tareas` })),
     });
     const teamIds = new Set(team().map((a) => a.id));
-    off.setCrowd(reg.agents.filter((a) => !teamIds.has(a.id)));
-    count.textContent = `${team().length} en tu equipo · ${reg.agents.length} agentes en la nave · ${st.links.length} conexiones`;
+    off.setCrowd(reg.agents.filter((a) => !teamIds.has(a.id)).slice(0, 280)); // la nave tiene 288 puestos; el resto entra como visitante al trabajar
+    count.textContent = `${team().length} en tu equipo · ${Math.min(280, reg.agents.length)} en la nave · ${reg.agents.length} agentes en total · ${st.links.length} conexiones`;
     applyWork();
   };
 

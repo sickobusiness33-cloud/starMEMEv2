@@ -108,6 +108,10 @@ const CAT_ICON = {
   game: "M6 9h12a4 4 0 0 1 4 4v1a3 3 0 0 1-5.4 1.8L15 14H9l-1.6 1.8A3 3 0 0 1 2 14v-1a4 4 0 0 1 4-4zM7 11.5v3M5.5 13h3M16 12h.01M18 14h.01",
   academic: "M2 9l10-5 10 5-10 5zM6 11v5c3 2 9 2 12 0v-5M22 9v6",
   spatial: "M3 9a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3h-3l-1.5-2h-3L9 17H6a3 3 0 0 1-3-3z",
+  personal: ICONS.user, health: "M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.5-7 10-7 10zM9 11h6M12 8v6",
+  education: "M2 9l10-5 10 5-10 5zM6 11v5c3 2 9 2 12 0v-5", legal: "M12 3v18M5 21h14M6 7h12M6 7l-3 7h6zM18 7l-3 7h6z",
+  industry: "M3 21V11l6 4V11l6 4V7l6-4v18z", public: "M3 10l9-6 9 6M5 10v9M9 10v9M15 10v9M19 10v9M3 21h18",
+  sports: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM3.5 9h17M3.5 15h17M12 3c-3 3-3 15 0 18M12 3c3 3 3 15 0 18",
   specialized: "M12 2l2.4 5.6L20 8l-4.3 3.9L17 18l-5-3-5 3 1.3-6.1L4 8l5.6-.4z",
 };
 
