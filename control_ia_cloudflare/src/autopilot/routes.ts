@@ -57,6 +57,15 @@ autopilotRoutes.post("/goals", async (c) => {
     const p = await one<any>(c.env.DB, "SELECT id FROM projects WHERE id = ? AND owner_id = ?", Number(b.project_id), u.id);
     if (!p) fail(404, "Ese proyecto no existe.");
     projectId = p.id;
+    // Si el proyecto no tiene GitHub pero el usuario tiene uno verificado y activo, se vincula solo.
+    const linked = await one<any>(c.env.DB, "SELECT 1 FROM project_connectors pc JOIN connectors k ON k.id = pc.connector_id WHERE pc.project_id = ? AND k.type = 'github' AND k.enabled = 1 AND k.status = 'connected'", projectId);
+    if (!linked) {
+      const gh = await one<any>(c.env.DB, "SELECT id, name FROM connectors WHERE owner_id = ? AND type = 'github' AND enabled = 1 AND status = 'connected' ORDER BY id LIMIT 1", u.id);
+      if (gh) {
+        await run(c.env.DB, "INSERT OR IGNORE INTO project_connectors (project_id, connector_id) VALUES (?, ?)", projectId, gh.id);
+        await record(c.env.DB, { actor: u.email, userId: u.id, projectId, action: "conector.vincular", target: gh.name, detail: "automático al crear un objetivo del Autopilot" });
+      }
+    }
   }
   const now = nowIso();
   const id = await run(c.env.DB,

@@ -94,7 +94,7 @@ async function viewMission(main) {
     };
     openDialog("Nuevo objetivo 24/7", [
       field("Objetivo", title), field("Detalles", desc),
-      field("Proyecto", proj, "Para trabajo real sobre código, el proyecto debe tener un conector de GitHub verificado."),
+      field("Proyecto", proj, "Tu conector de GitHub activo se vincula solo a este proyecto."),
       h("div", { class: "row" }, h("div", { class: "grow" }, field("Frecuencia", cad)), h("div", { class: "grow" }, field("Tokens / día", budget))),
       h("p", { class: "small muted" }, "Riesgo BAJO: automático · MEDIO: automático + registro + revisión · ALTO (Pull Requests, pagos, auth, migraciones): necesita tu aprobación · CRÍTICO (claves, fondos, producción, borrados): bloqueado siempre."),
     ], [h("button", { class: "btn", type: "button", onclick: () => closeDialog(false) }, "Cancelar"), h("button", { class: "btn primary", type: "button", onclick: create }, "Crear y arrancar")]);
