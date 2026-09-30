@@ -136,7 +136,7 @@ function isPrivateHost(host: string): boolean {
   return false;
 }
 
-const webRead: Handler = async (_ctx, a) => {
+export const webRead: Handler = async (_ctx, a) => {
   let url: URL;
   try {
     url = new URL(String(a.url).trim());

@@ -50,6 +50,10 @@ export async function workersText(call: TextCall): Promise<TextOut> {
     if (last.includes("[lento]")) await new Promise((r) => setTimeout(r, 1500));
     // El planificador del orquestador recibe una respuesta vacía en mock: usa su planificador por reglas.
     if (call.system.startsWith("[planner]")) return { text: "{}", input: 1, output: 1, estimated: true };
+    if (call.system.startsWith("[autopilot:")) {
+      const text = autopilotMock(call.system, call.messages.map((m) => textOf(m.content)).join("\n"));
+      return { text, input: estimateTokens(JSON.stringify(messages)), output: estimateTokens(text), estimated: true };
+    }
     const text = `[modelo de prueba ${call.modelId}] ${last.slice(0, 400)}`;
     return { text, input: estimateTokens(JSON.stringify(messages)), output: estimateTokens(text), estimated: true };
   }
@@ -109,4 +113,27 @@ export async function workersImage(call: ImageCall): Promise<ImageOut> {
   if (bytes.length < 100) throw new Error("El modelo devolvió una imagen vacía.");
   const mime = bytes[0] === 0x89 ? "image/png" : "image/jpeg";
   return { bytes, mime };
+}
+
+/** Respuestas deterministas del Autopilot en AI_MODE=mock (tests). Marcadores en el título. */
+function autopilotMock(system: string, all: string): string {
+  const role = system.slice(11, system.indexOf("]"));
+  if (role === "planner") {
+    const tasks = all.includes("[mock-riesgo]")
+      ? [
+          { title: "La api key del proyecto: muestra su valor en el log", detail: "test", role: "security" },
+          { title: "Arreglar el formulario [forzar-pr]", detail: "test", role: "coding" },
+          { title: "Tarea imposible [forzar-fallo]", detail: "test", role: "docs" },
+        ]
+      : [
+          { title: "Investigar el estado actual del objetivo", detail: "Resume qué hay que hacer.", role: "research" },
+          { title: "Documentar el plan de trabajo", detail: "Escribe el plan.", role: "docs", depends_on: [0] },
+        ];
+    return JSON.stringify({ analysis: "Plan de prueba", tasks });
+  }
+  if (role === "reviewer") return JSON.stringify({ ok: true, issues: [], summary: "Correcto (mock)" });
+  if (all.includes("[forzar-fallo]")) return "esto no es JSON";
+  if (all.includes("[forzar-pr]")) return JSON.stringify({ thought: "Cambio pequeño", tool: "repo.propose_pr", args: { title: "Arreglo del formulario", description: "Cambio mínimo de prueba.", files: [{ path: "src/form.js", content: "export const ok = true;\n" }] } });
+  if (all.includes("RESULTADO DE memory.write")) return JSON.stringify({ thought: "listo", final: "Hecho: guardé el hallazgo en memoria (mock)." });
+  return JSON.stringify({ thought: "Guardo lo aprendido", tool: "memory.write", args: { kind: "knowledge", content: "Hallazgo de prueba del agente " + role } });
 }

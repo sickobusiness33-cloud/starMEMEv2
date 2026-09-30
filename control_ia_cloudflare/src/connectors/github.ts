@@ -121,6 +121,15 @@ export class GitHubConnector extends Connector {
     return `Pull Request #${pr.number} abierto: ${pr.html_url} (rama ${branch}, ${files.length} archivo(s)). Revísalo y fusiónalo tú en GitHub.`;
   }
 
+  /** Resultado real de CI (GitHub Actions / checks) de una rama o commit. */
+  async ciStatus(ref: string) {
+    const runs = await this.api(`/commits/${encodeURIComponent(ref)}/check-runs?per_page=50`, {}, "los checks");
+    const list = ((runs as any).check_runs as any[]).map((r) => ({ name: r.name, status: r.status, conclusion: r.conclusion, url: r.html_url, summary: String(r.output?.summary ?? "").slice(0, 400) }));
+    const pending = list.some((r) => r.status !== "completed");
+    const failed = list.filter((r) => r.conclusion && !["success", "skipped", "neutral"].includes(r.conclusion));
+    return { total: list.length, pending, failed: failed.length, state: !list.length ? "none" : pending ? "pending" : failed.length ? "failure" : "success", checks: list };
+  }
+
   async listIssues(state = "open", limit = 10) {
     const items = await this.api(`/issues?state=${state}&per_page=${Math.max(1, Math.min(limit, 50))}`, {}, "los issues");
     return (items as any[])

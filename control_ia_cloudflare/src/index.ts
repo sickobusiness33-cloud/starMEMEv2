@@ -7,6 +7,8 @@ import { authRoutes, requireUser } from "./auth";
 import { CONNECTORS, connectorRoutes } from "./connectors";
 import { redact } from "./crypto";
 import { dashboardRoutes } from "./dashboard";
+import { autopilotRoutes } from "./autopilot/routes";
+import { autopilotTick, runCycle, runTask } from "./autopilot/engine";
 import { type AppEnv, type Env, type RunMessage, publicSettings, settingsFrom } from "./env";
 import { processRun } from "./executor";
 import { HttpError } from "./http";
@@ -65,6 +67,7 @@ app.route("/notifications", notificationRoutes);
 app.route("/workspace", workspaceRoutes);
 app.route("/firebase", firebaseRoutes);
 app.route("/billing", billingRoutes);
+app.route("/autopilot", autopilotRoutes);
 app.route("/", metricsRoutes);
 app.route("/", runRoutes);
 
@@ -121,10 +124,16 @@ export default {
           await mirror(env, "project", r?.project_id);
         } else if ("firebaseSync" in body) await processFirebaseSync(env, body.firebaseSync);
         else if ("sourceCheck" in body) await checkSources(env, body.sourceCheck);
+        else if ("apCycle" in body) await runCycle(env, body.apCycle);
+        else if ("apTask" in body) await runTask(env, body.apTask);
       } catch (err) {
         console.error("Fallo procesando el mensaje de la cola", JSON.stringify(body).slice(0, 200), redact(String(err)));
       }
       msg.ack();
     }
+  },
+  // Kairo Autopilot 24/7: el cron abre ciclos, recupera tareas caídas y reanuda las que esperaban cupo.
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(autopilotTick(env).catch((err) => console.error("autopilot tick", redact(String(err)))));
   },
 } satisfies ExportedHandler<Env, RunMessage>;
