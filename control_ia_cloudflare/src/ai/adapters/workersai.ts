@@ -39,9 +39,50 @@ function parseText(res: any): string {
   return res?.response ? JSON.stringify(res.response) : "";
 }
 
+// Ventana de contexto (tokens) de cada modelo de texto. Por defecto, la más pequeña conocida.
+const CONTEXT: Record<string, number> = {
+  "@cf/meta/llama-3.3-70b-instruct-fp8-fast": 24_000,
+  "@cf/meta/llama-3.1-8b-instruct-fp8": 32_000,
+  "@cf/mistralai/mistral-small-3.1-24b-instruct": 128_000,
+  "@cf/qwen/qwen2.5-coder-32b-instruct": 32_000,
+  "@cf/qwen/qwq-32b": 24_000,
+  "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b": 80_000,
+  "@cf/openai/gpt-oss-120b": 128_000,
+};
+// Estimación prudente (español ≈ 3 caracteres por token) para no pasarse nunca de la ventana.
+const tok = (s: string) => Math.ceil(s.length / 3);
+const clipText = (s: string, maxTok: number) => (tok(s) <= maxTok ? s : `${s.slice(0, Math.floor(maxTok * 0.35 * 3))}\n\n[… recortado para caber en el modelo …]\n\n${s.slice(-Math.floor(maxTok * 0.6 * 3))}`);
+const partsTok = (c: any) => (typeof c === "string" ? tok(c) : c.reduce((n: number, p: any) => n + (p.type === "text" ? tok(p.text) : 1200), 0));
+
+/** Ajusta sistema + historial a la ventana del modelo: quita los mensajes más antiguos y recorta los enormes. */
+export function fitContext(msgs: any[], modelId: string, maxTokens: number): { msgs: any[]; maxTokens: number } {
+  const window = CONTEXT[modelId] ?? 24_000;
+  const out = Math.min(maxTokens, Math.floor(window * 0.25));
+  const budget = window - out - 500;
+  const total = () => msgs.reduce((n, m) => n + partsTok(m.content) + 8, 0);
+  if (total() <= budget) return { msgs, maxTokens: out };
+  msgs = msgs.map((m) => ({ ...m }));
+  if (typeof msgs[0].content === "string") msgs[0].content = clipText(msgs[0].content, Math.floor(budget * 0.3));
+  // Quita historial antiguo (conserva sistema y el último mensaje) mientras no quepa.
+  while (msgs.length > 2 && total() > budget) msgs.splice(1, 1);
+  // Si aún no cabe, recorta los textos más largos.
+  for (const m of [...msgs].sort((a, b) => partsTok(b.content) - partsTok(a.content))) {
+    if (total() <= budget) break;
+    const rest = total() - partsTok(m.content);
+    const room = Math.max(1000, budget - rest);
+    if (typeof m.content === "string") m.content = clipText(m.content, room);
+    else m.content = m.content.map((p: any) => (p.type === "text" ? { ...p, text: clipText(p.text, room) } : p));
+  }
+  // Los modelos de chat esperan que tras el sistema venga un mensaje del usuario.
+  if (msgs[1]?.role === "assistant") msgs.splice(1, 1);
+  return { msgs, maxTokens: out };
+}
+
 export async function workersText(call: TextCall): Promise<TextOut> {
   const { env } = call;
-  const messages = toWorkersMessages(call);
+  const fitted = fitContext(toWorkersMessages(call), call.modelId, call.maxTokens);
+  const messages = fitted.msgs;
+  call = { ...call, maxTokens: fitted.maxTokens };
   if (env.AI_MODE === "mock") {
     const last = textOf(call.messages[call.messages.length - 1]?.content ?? "");
     if (last.includes("[forzar-error-gratis]")) throw new Error("Workers AI no disponible (simulado en test)");
@@ -60,7 +101,7 @@ export async function workersText(call: TextCall): Promise<TextOut> {
   if (!env.AI) throw new Error("El binding de Workers AI no está configurado.");
   const input =
     call.model.format === "responses"
-      ? { instructions: call.system, input: messages.slice(1).map((m) => ({ role: m.role, content: typeof m.content === "string" ? m.content : textOf(m.content) })), max_output_tokens: call.maxTokens }
+      ? { instructions: messages[0].content, input: messages.slice(1).map((m) => ({ role: m.role, content: typeof m.content === "string" ? m.content : textOf(m.content) })), max_output_tokens: Math.max(call.maxTokens, 2048), reasoning: { effort: "low" } }
       : { messages, max_tokens: call.maxTokens };
   const res: any = await env.AI.run(call.modelId as any, input as any);
   const text = stripThinking(parseText(res));

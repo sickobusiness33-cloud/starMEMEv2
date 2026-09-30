@@ -228,7 +228,12 @@ async function buildCandidates(ctx: CallContext, req: GenerateRequest, notices: 
         );
       }
       // Solo se avisa si el usuario esperaba premium (Pro o su API activada), no en cada respuesta del plan gratuito.
-      if (PLAN_LIMITS[ctx.plan].claude || settings.use_my_api) notices.push("Modelo premium no disponible · usando el modelo gratuito de respaldo");
+      if (PLAN_LIMITS[ctx.plan].claude || settings.use_my_api) {
+        const saved = !settings.use_my_api && (await storedKey(env, ctx.userId, "anthropic"));
+        notices.push(saved
+          ? "Modelo premium no disponible · tienes tu clave de Claude guardada: activa «Usar mi API» en Ajustes para usarla"
+          : "Modelo premium no disponible · usando el modelo gratuito de respaldo");
+      }
     }
     // Se respeta el orden configurado por el usuario (si pone «gratis» primero, va primero).
     list = req.allowFallback ? order.flatMap((s) => bySource[s]) : premium;
@@ -279,6 +284,8 @@ function freeCooldown(message: string): number {
   if (low.includes("not found") || low.includes("no such model") || low.includes("invalid model") || low.includes("unknown model")) return 30 * 60;
   if (low.includes("capacity") || low.includes("overloaded") || low.includes("429") || low.includes("rate")) return 60;
   if (low.includes("simulado")) return 0; // tests
+  // Petición demasiado larga para ESTE modelo: no es culpa del modelo, no se aparta para los demás.
+  if (low.includes("context window") || low.includes("5021")) return 0;
   return 20;
 }
 
