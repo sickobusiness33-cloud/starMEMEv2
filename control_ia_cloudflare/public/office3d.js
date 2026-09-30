@@ -9,6 +9,8 @@
 import * as THREE from "/vendor/three.min.js";
 
 const TAU = Math.PI * 2;
+// Solo para pruebas: ?officeSpeed=20 acelera el tiempo de la oficina.
+const SPEED = Math.min(40, Math.max(1, Number(new URLSearchParams(location.search).get("officeSpeed")) || 1));
 const rand = (a, b) => a + Math.random() * (b - a);
 const HEX = { azul: 0x5b8cf5, rosa: 0xf26b8a, morado: 0xa97cf2, verde: 0x58cc6c, turquesa: 0x22c1ad, naranja: 0xf6a33c, amarillo: 0xf7c12e };
 const hashOf = (s) => [...String(s)].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 1000003, 7);
@@ -312,246 +314,353 @@ function makeDesk(scene, kit, x, z, screenMat, idleMat) {
   return { g, screen, screenMat, idleMat, monitor, seat: [x, z + 0.75], lane: [x, z + 1.75], chair };
 }
 
-// ------------------------------------------------------------------ Dubái: cielo, ciudad y torre
-const CITY_Y = -260; // el suelo de la ciudad queda muy por debajo: estamos en lo alto de una torre
+// ------------------------------------------------------------------ Nave industrial gigante
+// La oficina de tu equipo es una entreplanta acristalada; abajo, la nave con todos los agentes.
+const FLOOR_Y = -16;                       // suelo de la nave (la entreplanta está 16 m por encima)
+const HALL = { x0: -310, x1: 140, z0: -250, z1: 105, h: 48 };
 
-function skyTex() {
+function hallBgTex() {
   return canvasTex(64, 512, (g, w, h) => {
     const gr = g.createLinearGradient(0, 0, 0, h);
-    gr.addColorStop(0, "#050817"); gr.addColorStop(0.3, "#141a3d"); gr.addColorStop(0.5, "#3d2d63");
-    gr.addColorStop(0.64, "#b0607a"); gr.addColorStop(0.74, "#f08c5a"); gr.addColorStop(0.8, "#ffc27a"); gr.addColorStop(1, "#1a1626");
+    gr.addColorStop(0, "#0b0e13"); gr.addColorStop(0.5, "#161b22"); gr.addColorStop(1, "#0d1015");
     g.fillStyle = gr; g.fillRect(0, 0, w, h);
   });
 }
-
-/**
- * Fachada de cristal generada en el shader a partir de la posición real en el mundo:
- * las ventanas miden lo mismo en todos los edificios (plantas de 4 m, paneles de 3 m),
- * con montantes, forjados, cristal que refleja el atardecer y oficinas encendidas.
- * A distancia se promedia el patrón para que no haya ruido ni parpadeo.
- */
-function facadeMaterial(env, { tint = 0x25364a, lit = 0.32, warm = 0xffd29a, floorH = 4, panel = 3 } = {}) {
-  const mat = new THREE.MeshStandardMaterial({ color: tint, metalness: 0.85, roughness: 0.18, envMap: env, envMapIntensity: 1.25 });
-  mat.onBeforeCompile = (sh) => {
-    sh.uniforms.uLit = { value: lit };
-    sh.uniforms.uWarm = { value: new THREE.Color(warm) };
-    sh.uniforms.uCell = { value: new THREE.Vector2(panel, floorH) };
-    sh.vertexShader = sh.vertexShader
-      .replace("#include <common>", "#include <common>\nvarying vec3 vWPos; varying vec3 vWNrm;")
-      .replace("#include <project_vertex>", `#include <project_vertex>
-        vec4 wpF = vec4(transformed, 1.0);
-        vec3 nF = objectNormal;
-        #ifdef USE_INSTANCING
-          wpF = instanceMatrix * wpF; nF = mat3(instanceMatrix) * nF;
-        #endif
-        wpF = modelMatrix * wpF; vWPos = wpF.xyz; vWNrm = normalize(mat3(modelMatrix) * nF);`);
-    sh.fragmentShader = sh.fragmentShader
-      .replace("#include <common>", `#include <common>
-        varying vec3 vWPos; varying vec3 vWNrm;
-        uniform float uLit; uniform vec3 uWarm; uniform vec2 uCell;
-        float hF(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }`)
-      .replace("#include <emissivemap_fragment>", `#include <emissivemap_fragment>
-        {
-          vec3 n = normalize(vWNrm);
-          if (abs(n.y) < 0.6) {
-            vec2 tng = normalize(vec2(-n.z, n.x) + 1e-5);
-            vec2 uv = vec2(dot(vWPos.xz, tng), vWPos.y) / uCell;
-            vec2 cell = floor(uv), f = fract(uv);
-            float aa = clamp(length(fwidth(uv)) * 1.6, 0.0, 1.0);           // lejos: se promedia
-            float mull = step(0.9, f.x) + step(0.86, f.y);                   // montantes y forjados
-            float frame = clamp(mull, 0.0, 1.0);
-            float floorSeed = hF(vec2(cell.y, floor(cell.x / 6.0)) + floor(vWPos.xz / 60.0));
-            float on = step(1.0 - uLit, hF(cell + floor(vWPos.xz / 60.0) * 7.0)) * step(0.35, floorSeed);
-            float tone = 0.65 + 0.35 * hF(cell * 1.7);
-            vec3 glow = uWarm * tone * on * (1.0 - frame);
-            vec3 avg = uWarm * uLit * 0.45;
-            totalEmissiveRadiance += mix(glow * 1.25, avg, aa);
-            diffuseColor.rgb *= mix(mix(1.0, 0.35, frame), 0.8, aa);
-          } else {
-            diffuseColor.rgb *= 0.35;                                         // azoteas
-          }
-        }`);
-  };
-  return mat;
-}
-
-/** Suelo de la ciudad: manzanas, calles con farolas y reflejo cálido. */
-function cityGroundTex() {
-  const t = canvasTex(512, 512, (g, w, h) => {
-    g.fillStyle = "#231c1d"; g.fillRect(0, 0, w, h);
-    for (let i = 0; i < 6; i++) for (let j = 0; j < 6; j++) {
-      g.fillStyle = ["#2b2426", "#2f2729", "#272022"][(i + j) % 3];
-      g.fillRect(i * 85 + 10, j * 85 + 10, 65, 65);
-      for (let k = 0; k < 6; k++) { g.fillStyle = `rgba(255,${190 + Math.random() * 40},120,${0.15 + Math.random() * 0.3})`; g.fillRect(i * 85 + 14 + Math.random() * 56, j * 85 + 14 + Math.random() * 56, 2, 2); }
-    }
-    g.fillStyle = "rgba(255,190,110,.55)";
-    for (let i = 0; i <= 6; i++) for (let k = 0; k < 512; k += 12) { g.fillRect(i * 85 + 3, k, 2, 2); g.fillRect(k, i * 85 + 3, 2, 2); }
+/** Entorno para reflejos: interior oscuro con franjas de lucernario. */
+function hallEnvTex() {
+  return canvasTex(256, 128, (g, w, h) => {
+    g.fillStyle = "#1a1f27"; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 12; i++) { g.fillStyle = "rgba(220,235,255,.85)"; g.fillRect(i * 22 + 4, 8, 10, 40); }
+    g.fillStyle = "#2a2f38"; g.fillRect(0, h * 0.6, w, h * 0.4);
   });
-  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(55, 55); t.anisotropy = 8;
+}
+function concreteTex() {
+  const t = canvasTex(512, 512, (g, w, h) => {
+    g.fillStyle = "#8b8f95"; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 2500; i++) { const c = 95 + Math.random() * 40; g.fillStyle = `rgba(${c},${c},${c + 4},.18)`; g.fillRect(Math.random() * w, Math.random() * h, 2 + Math.random() * 6, 2 + Math.random() * 6); }
+    g.strokeStyle = "rgba(30,32,36,.35)"; g.lineWidth = 2;
+    for (let i = 0; i <= 4; i++) { g.beginPath(); g.moveTo(i * 128, 0); g.lineTo(i * 128, h); g.stroke(); g.beginPath(); g.moveTo(0, i * 128); g.lineTo(w, i * 128); g.stroke(); }
+  });
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(70, 45); t.anisotropy = 8;
+  return t;
+}
+function corrugatedTex() {
+  const t = canvasTex(256, 64, (g, w, h) => {
+    for (let x = 0; x < w; x += 8) { const gr = g.createLinearGradient(x, 0, x + 8, 0); gr.addColorStop(0, "#39414b"); gr.addColorStop(.5, "#56606c"); gr.addColorStop(1, "#39414b"); g.fillStyle = gr; g.fillRect(x, 0, 8, h); }
+  });
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(90, 6);
+  return t;
+}
+function rackTex() {
+  const t = canvasTex(64, 256, (g, w, h) => {
+    g.fillStyle = "#0b0f14"; g.fillRect(0, 0, w, h);
+    for (let y = 4; y < h; y += 8) { g.fillStyle = "#1a212b"; g.fillRect(4, y, w - 8, 6); for (let k = 0; k < 4; k++) { g.fillStyle = ["#22ff9a", "#38d6ff", "#ffb020", "#22ff9a"][(y + k) % 4]; if (Math.random() < .55) g.fillRect(8 + k * 12, y + 2, 3, 2); } }
+  });
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
   return t;
 }
 
-function dubai(scene, env) {
-  const group = new THREE.Group(); scene.add(group);
-  const glassBlue = facadeMaterial(env, { tint: 0x22364c, lit: 0.3 });
-  const glassTeal = facadeMaterial(env, { tint: 0x1f4448, lit: 0.26, warm: 0xfff0d0 });
-  const glassGold = facadeMaterial(env, { tint: 0x5a4a30, lit: 0.34, warm: 0xffcf8a });
-  const glassSilver = facadeMaterial(env, { tint: 0x6f7c8a, lit: 0.28, warm: 0xe8f1ff });
-  const mats = [glassBlue, glassTeal, glassGold, glassSilver];
-
-  // Suelo, mar y agua de la marina
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000), new THREE.MeshStandardMaterial({ map: cityGroundTex(), roughness: .95, emissive: 0xffffff, emissiveMap: null }));
-  ground.material.emissiveMap = ground.material.map; ground.material.emissiveIntensity = 0.55;
-  ground.rotation.x = -Math.PI / 2; ground.position.y = CITY_Y; group.add(ground);
-  const sea = new THREE.Mesh(new THREE.PlaneGeometry(5000, 9000), new THREE.MeshStandardMaterial({ color: 0x0d2233, roughness: 0.06, metalness: 0.9, envMap: env, envMapIntensity: 1.4 }));
-  sea.rotation.x = -Math.PI / 2; sea.position.set(-3500, CITY_Y + 0.6, 0); group.add(sea);
-
-  // Autopista (Sheikh Zayed Road) con coches
-  const ROAD_Z = -330;
-  const road = new THREE.Mesh(new THREE.PlaneGeometry(6000, 46), new THREE.MeshStandardMaterial({ color: 0x15161b, roughness: .8 }));
-  road.rotation.x = -Math.PI / 2; road.position.set(0, CITY_Y + 0.7, ROAD_Z); group.add(road);
-  const CARS = 420;
-  const carPos = new Float32Array(CARS * 3), carCol = new Float32Array(CARS * 3), carV = [];
-  for (let i = 0; i < CARS; i++) {
-    const dir = i % 2 ? 1 : -1;
-    carPos.set([rand(-2800, 2800), CITY_Y + 2, ROAD_Z + (dir > 0 ? -10 : 10) + rand(-6, 6)], i * 3);
-    carCol.set(dir > 0 ? [1, 0.22, 0.15] : [1, 0.94, 0.78], i * 3); carV.push(dir * rand(50, 95));
-  }
-  const carGeo = new THREE.BufferGeometry();
-  carGeo.setAttribute("position", new THREE.BufferAttribute(carPos, 3));
-  carGeo.setAttribute("color", new THREE.BufferAttribute(carCol, 3));
-  group.add(new THREE.Points(carGeo, new THREE.PointsMaterial({ size: 6, vertexColors: true, transparent: true, opacity: .95, depthWrite: false })));
-
-  // ---------- plan de la ciudad: distritos con estilos distintos
-  const towers = [];
-  const clear = (x, z, r) => towers.every((t) => Math.hypot(t.x - x, t.z - z) > r + t.r);
-  const add = (t) => { if (clear(t.x, t.z, t.r + 8)) { towers.push(t); return true; } return false; };
-  const TYPES = ["stack", "stack", "box", "round", "hex", "twist", "slab"];
-  const district = (cx, cz, radius, n, hMin, hMax) => {
-    for (let i = 0, tries = 0; i < n && tries < n * 30; tries++) {
-      const a = rand(0, TAU), rr = Math.sqrt(Math.random()) * radius;
-      const x = cx + Math.cos(a) * rr, z = cz + Math.sin(a) * rr;
-      const dOwn = Math.hypot(x, z);
-      if (dOwn < 230 || x < -1450 || Math.abs(z - ROAD_Z) < 45) continue;
-      const cap = 60 + (dOwn - 230) * 0.6; // cerca de nuestra torre, por debajo de la oficina
-      const h = Math.min(rand(hMin, hMax), cap);
-      const r = rand(16, 34);
-      if (add({ x, z, r, h, type: TYPES[Math.floor(Math.random() * TYPES.length)], mat: Math.floor(Math.random() * mats.length), rot: rand(0, Math.PI) })) i++;
-    }
+/** Estructura de la nave: suelo, muros de chapa, pilares, cerchas, lucernarios, lámparas, puente grúa, racks... */
+function industrialHall(scene, env, accentCss) {
+  const g = new THREE.Group(); scene.add(g);
+  const { x0, x1, z0, z1, h } = HALL;
+  const W = x1 - x0, D = z1 - z0, cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+  const steel = new THREE.MeshStandardMaterial({ color: 0x2b3038, metalness: .8, roughness: .45, envMap: env });
+  const colMat = new THREE.MeshStandardMaterial({ color: 0x5b6572, metalness: .6, roughness: .5, envMap: env });
+  const yellow = new THREE.MeshStandardMaterial({ color: 0xf2b705, metalness: .5, roughness: .45, envMap: env });
+  const geoBox = new THREE.BoxGeometry(1, 1, 1);
+  const ceil = new THREE.Group(); g.add(ceil); // techo: se oculta al mirar desde arriba
+  const inst = (geo, mat, list, cast = false, parent = g) => {
+    const m = new THREE.InstancedMesh(geo, mat, list.length);
+    list.forEach(([x, y, z, sx, sy, sz, ry = 0], i) => m.setMatrixAt(i, new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, ry, 0)), new THREE.Vector3(sx, sy, sz))));
+    m.castShadow = cast; m.receiveShadow = true; parent.add(m); return m;
   };
-  // Avenida de rascacielos a ambos lados de la autopista
-  for (let x = -1300; x <= 1500; x += rand(55, 85)) for (const side of [-1, 1]) {
-    if (Math.random() < 0.15) continue;
-    const dOwn = Math.hypot(x, ROAD_Z);
-    add({ x, z: ROAD_Z + side * rand(62, 80), r: rand(18, 28), h: Math.min(rand(180, 420), 60 + Math.max(0, dOwn - 230) * 0.7), type: TYPES[Math.floor(Math.random() * TYPES.length)], mat: Math.floor(Math.random() * mats.length), rot: 0 });
+  // Suelo de hormigón pulido con pasillos pintados
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(W, D), new THREE.MeshStandardMaterial({ map: concreteTex(), roughness: .55, metalness: .1, envMap: env, envMapIntensity: .5 }));
+  floor.rotation.x = -Math.PI / 2; floor.position.set(cx, FLOOR_Y, cz); floor.receiveShadow = true; g.add(floor);
+  const lineMat = new THREE.MeshBasicMaterial({ color: 0xf2c200 });
+  const lines = [];
+  for (const z of [-140, -96, -30, 26, 64]) lines.push([cx, FLOOR_Y + 0.03, z, W - 20, 0.02, 0.5]);
+  for (const x of [-160, -26, 30, 100]) lines.push([x, FLOOR_Y + 0.03, cz, 0.5, 0.02, D - 20]);
+  inst(geoBox, lineMat, lines);
+  // Muros de chapa con franja de ventanas altas
+  const wallMat = new THREE.MeshStandardMaterial({ map: corrugatedTex(), metalness: .6, roughness: .5, envMap: env });
+  const wallH = h;
+  const walls = [[cx, FLOOR_Y + wallH / 2, z0, W, wallH, 1], [cx, FLOOR_Y + wallH / 2, z1, W, wallH, 1], [x0, FLOOR_Y + wallH / 2, cz, 1, wallH, D], [x1, FLOOR_Y + wallH / 2, cz, 1, wallH, D]];
+  walls.forEach(([x, y, z, sx, sy, sz]) => { const m = new THREE.Mesh(geoBox, wallMat); m.position.set(x, y, z); m.scale.set(sx, sy, sz); m.receiveShadow = true; g.add(m); });
+  const winMat = new THREE.MeshBasicMaterial({ color: 0xbcd6f5 });
+  inst(geoBox, winMat, [[cx, FLOOR_Y + wallH - 7, z0 + 0.8, W - 10, 5, 0.2], [x0 + 0.8, FLOOR_Y + wallH - 7, cz, 0.2, 5, D - 10], [cx, FLOOR_Y + wallH - 7, z1 - 0.8, W - 10, 5, 0.2], [x1 - 0.8, FLOOR_Y + wallH - 7, cz, 0.2, 5, D - 10]]);
+  // Portones enrollables amarillos
+  const doors = [];
+  for (let x = x0 + 40; x < x1 - 30; x += 70) doors.push([x, FLOOR_Y + 9, z0 + 0.7, 22, 18, 0.4]);
+  inst(geoBox, new THREE.MeshStandardMaterial({ color: 0xd9a400, roughness: .6, metalness: .4 }), doors);
+  // Rótulo gigante en el muro del fondo
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(120, 16), new THREE.MeshBasicMaterial({ map: textTex("KAIRO INTELLIGENCE", { w: 2048, h: 272, color: "#ffffff", font: "700 200px Space Grotesk, Inter, sans-serif" }), transparent: true, toneMapped: false }));
+  sign.position.set(-95, FLOOR_Y + 36, z0 + 1.2); g.add(sign);
+  const bar = new THREE.Mesh(geoBox, new THREE.MeshBasicMaterial({ color: new THREE.Color(accentCss), toneMapped: false })); bar.scale.set(120, 0.6, 0.3); bar.position.set(-95, FLOOR_Y + 27, z0 + 1.2); g.add(bar);
+  // Pilares (H) y cerchas de cubierta
+  const cols = [], trusses = [], purlins = [];
+  for (let x = x0 + 30; x < x1; x += 60) for (let z = z0 + 30; z < z1; z += 60) {
+    if (x > -40 && x < 40 && z > -30 && z < 45) continue; // alrededor de la entreplanta, despejado
+    cols.push([x, FLOOR_Y + h / 2, z, 0.8, h, 0.8]);
   }
-  district(-560, -820, 420, 70, 150, 480);   // Downtown / Business Bay
-  district(900, -700, 380, 45, 120, 380);    // DIFC
-  district(-1150, 450, 330, 45, 140, 420);   // Dubai Marina (junto al mar)
-  district(300, 500, 700, 110, 40, 220);     // barrios medios
-  district(0, 0, 1900, 160, 30, 140);        // resto de la ciudad
+  for (let x = x0 + 24; x < x1; x += 30) {
+    trusses.push([x, FLOOR_Y + h - 1, cz, 0.9, 1.4, D]);        // cordón inferior
+    trusses.push([x, FLOOR_Y + h + 3, cz, 0.7, 0.9, D]);        // cordón superior
+    for (let z = z0 + 6; z < z1; z += 8) trusses.push([x, FLOOR_Y + h + 1, z, 0.3, 4, 0.3]); // montantes
+  }
+  for (let z = z0 + 12; z < z1; z += 18) purlins.push([cx, FLOOR_Y + h + 3.6, z, W, 0.5, 0.5]);
+  inst(geoBox, colMat, cols); inst(geoBox, steel, trusses, false, ceil); inst(geoBox, steel, purlins, false, ceil);
+  // Cubierta con lucernarios
+  const roof = new THREE.Mesh(new THREE.PlaneGeometry(W, D), new THREE.MeshStandardMaterial({ color: 0x1a1d22, roughness: .9, side: THREE.DoubleSide }));
+  roof.rotation.x = Math.PI / 2; roof.position.set(cx, FLOOR_Y + h + 4.2, cz); ceil.add(roof);
+  const sky = [];
+  for (let x = x0 + 39; x < x1; x += 30) sky.push([x, FLOOR_Y + h + 4.0, cz, 9, 0.2, D - 30]);
+  inst(geoBox, new THREE.MeshBasicMaterial({ color: 0xdfeaff }), sky, false, ceil);
+  // Lámparas industriales colgantes (campanas con brillo)
+  const lampPos = [];
+  for (let x = x0 + 30; x < x1; x += 22) for (let z = z0 + 20; z < z1; z += 22) if (!(x > -24 && x < 24 && z > -20 && z < 22)) lampPos.push([x, FLOOR_Y + h - 6, z, 2.4, 1.4, 2.4]);
+  inst(new THREE.ConeGeometry(0.6, 1, 16, 1, true), new THREE.MeshStandardMaterial({ color: 0x20252c, metalness: .7, roughness: .4, side: THREE.DoubleSide }), lampPos, false, ceil);
+  inst(new THREE.CircleGeometry(0.55, 16).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xfff1d6, side: THREE.DoubleSide }), lampPos.map(([x, y, z]) => [x, y - 0.75, z, 2.4, 1, 2.4]), false, ceil);
+  const cable = lampPos.map(([x, y, z]) => [x, y + 3.2, z, 0.06, 5, 0.06]);
+  inst(geoBox, steel, cable, false, ceil);
+  // Luz de las lámparas: halos en el suelo (baratos) y unas pocas luces reales
+  const pool = new THREE.MeshBasicMaterial({ color: 0xffe2b0, transparent: true, opacity: .11, depthWrite: false });
+  inst(new THREE.CircleGeometry(1, 24).rotateX(-Math.PI / 2), pool, lampPos.map(([x, , z]) => [x, FLOOR_Y + 0.05, z, 9, 1, 9]));
+  // Racks de servidores con LEDs a lo largo del muro derecho y del fondo
+  const racks = [];
+  for (let z = z0 + 30; z < z1 - 20; z += 2.2) racks.push([x1 - 6, FLOOR_Y + 2.2, z, 1.6, 4.4, 1.9]);
+  for (let x = 30; x < x1 - 10; x += 2.2) racks.push([x, FLOOR_Y + 2.2, z0 + 8, 1.9, 4.4, 1.6]);
+  const rt = rackTex(); rt.repeat.set(1, 1);
+  inst(geoBox, new THREE.MeshStandardMaterial({ color: 0x0f141b, emissive: 0xffffff, emissiveMap: rt, emissiveIntensity: 1.1, map: rt, roughness: .4, metalness: .6 }), racks);
+  // Palés y cajas en la zona de carga (izquierda)
+  const crates = [];
+  for (let x = x0 + 12; x < x0 + 60; x += 3.2) for (let z = -40; z < 80; z += 3.2) if (Math.random() < .55) { const lv = 1 + Math.floor(Math.random() * 3); for (let k = 0; k < lv; k++) crates.push([x, FLOOR_Y + 0.6 + k * 1.2, z, 2.6, 1.1, 2.6, Math.random() * 0.1]); }
+  inst(geoBox, new THREE.MeshStandardMaterial({ color: 0x9c7a52, roughness: .9 }), crates);
+  // Puente grúa amarillo que recorre la nave
+  const crane = new THREE.Group(); ceil.add(crane);
+  const beam = new THREE.Mesh(geoBox, yellow); beam.scale.set(3, 2.4, D - 12); beam.position.set(0, FLOOR_Y + h - 4, cz); crane.add(beam);
+  const trolley = new THREE.Mesh(geoBox, yellow); trolley.scale.set(4, 2, 5); trolley.position.set(0, FLOOR_Y + h - 6, cz); crane.add(trolley);
+  const hook = new THREE.Mesh(geoBox, steel); hook.scale.set(0.3, 14, 0.3); hook.position.set(0, FLOOR_Y + h - 14, cz); crane.add(hook);
+  const railMat = steel;
+  for (const z of [z0 + 5, z1 - 5]) { const r = new THREE.Mesh(geoBox, railMat); r.scale.set(W, 1.2, 1.2); r.position.set(cx, FLOOR_Y + h - 3, z); ceil.add(r); }
+  // Vehículos autónomos (AGV) con luz que recorren los pasillos
+  const agvs = [];
+  const agvMat = new THREE.MeshStandardMaterial({ color: 0xe8ecf1, roughness: .4, metalness: .3 });
+  const agvLight = new THREE.MeshBasicMaterial({ color: new THREE.Color(accentCss) });
+  for (let i = 0; i < 7; i++) {
+    const a = new THREE.Group();
+    const body = new THREE.Mesh(geoBox, agvMat); body.scale.set(2.2, 0.7, 1.4); body.position.y = 0.45; a.add(body);
+    const box = new THREE.Mesh(geoBox, new THREE.MeshStandardMaterial({ color: 0xb08650 })); box.scale.set(1.4, 1, 1); box.position.y = 1.3; a.add(box);
+    const led = new THREE.Mesh(geoBox, agvLight); led.scale.set(2.25, 0.12, 1.45); led.position.y = 0.82; a.add(led);
+    a.position.set(rand(x0 + 30, x1 - 30), FLOOR_Y, [-140, -96, -30, 26, 64][i % 5]); a.userData = { v: (i % 2 ? 1 : -1) * rand(4, 7) };
+    g.add(a); agvs.push(a);
+  }
+  // Soportes de la entreplanta y escalera
+  const sup = [];
+  for (const x of [-15, -5, 5, 15]) for (const z of [-11.5, 0.5, 12.5]) sup.push([x, FLOOR_Y / 2 - 0.2, z, 0.8, -FLOOR_Y - 0.4, 0.8]);
+  inst(geoBox, steel, sup);
+  const under = new THREE.Mesh(geoBox, new THREE.MeshStandardMaterial({ color: 0x1b1f25, metalness: .6, roughness: .5 })); under.scale.set(31.4, 1.4, 25.4); under.position.set(0, -1.05, 0.5); g.add(under);
+  const edgeLed = new THREE.Mesh(geoBox, new THREE.MeshBasicMaterial({ color: new THREE.Color(accentCss), toneMapped: false })); edgeLed.scale.set(31.6, 0.12, 25.6); edgeLed.position.set(0, -1.8, 0.5); g.add(edgeLed);
+  const steps = [];
+  for (let i = 0; i < 32; i++) steps.push([-14 - i * 0.62 * 0 + 0, -0.5 - i * 0.5, 14 + i * 0.7, 3, 0.18, 0.75]);
+  inst(geoBox, steel, steps);
 
-  // ---------- geometría instanciada (pocas llamadas de dibujo)
-  const geoBox = new THREE.BoxGeometry(1, 1, 1); geoBox.translate(0, 0.5, 0);
-  const geoRound = new THREE.CylinderGeometry(0.5, 0.5, 1, 28); geoRound.translate(0, 0.5, 0);
-  const geoHex = new THREE.CylinderGeometry(0.5, 0.56, 1, 6); geoHex.translate(0, 0.5, 0);
-  const parts = new Map(); // `${geo}|${mat}` → matrices
-  const push = (geo, mat, x, y, z, sx, sy, sz, ry) => {
-    const k = `${geo}|${mat}`;
-    if (!parts.has(k)) parts.set(k, []);
-    const m = new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, ry, 0)), new THREE.Vector3(sx, sy, sz));
-    parts.get(k).push(m);
+  let craneX = 0, craneDir = 1;
+  return {
+    tick(now, dt, camY = 0) {
+      ceil.visible = camY < FLOOR_Y + h - 4;
+      craneX += craneDir * dt * 6; if (craneX > x1 - 30 || craneX < x0 + 30) craneDir *= -1;
+      crane.position.x = craneX;
+      trolley.position.z = cz + Math.sin(now * 0.05) * (D / 2 - 30); hook.position.z = trolley.position.z;
+      for (const a of agvs) { a.position.x += a.userData.v * dt; if (a.position.x > x1 - 25 || a.position.x < x0 + 25) { a.userData.v *= -1; } a.rotation.y = a.userData.v > 0 ? 0 : Math.PI; }
+      agvLight.color.setHSL(0.45, 1, 0.45 + Math.sin(now * 6) * 0.15);
+    },
   };
-  const crowns = [], beaconsPos = [], spires = [];
-  for (const t of towers) {
-    const w = t.r * 1.6, y0 = CITY_Y;
-    // podio en la base
-    push("box", "p", t.x, y0, t.z, w * 1.5, Math.min(14, t.h * 0.1), w * 1.5, t.rot);
-    let top = y0 + t.h;
-    if (t.type === "stack") {           // escalonada (setbacks)
-      const tiers = 3 + Math.floor(Math.random() * 2); let y = y0, s = 1;
-      for (let i = 0; i < tiers; i++) { const hh = t.h / tiers; push("box", t.mat, t.x, y, t.z, w * s, hh, w * s * 0.8, t.rot); y += hh; s *= 0.8; }
-    } else if (t.type === "round") push("round", t.mat, t.x, y0, t.z, w, t.h, w, 0);
-    else if (t.type === "hex") push("hex", t.mat, t.x, y0, t.z, w * 1.1, t.h, w * 1.1, t.rot);
-    else if (t.type === "twist") {      // retorcida (como la Cayan Tower)
-      const n = 16;
-      for (let i = 0; i < n; i++) push("box", t.mat, t.x, y0 + (t.h / n) * i, t.z, w * 0.85, t.h / n + 0.3, w * 0.85, t.rot + (i / n) * Math.PI / 2);
-    } else if (t.type === "slab") push("box", t.mat, t.x, y0, t.z, w * 1.5, t.h, w * 0.55, t.rot);
-    else push("box", t.mat, t.x, y0, t.z, w, t.h, w, t.rot);
-    if (t.h > 200) {
-      if (Math.random() < 0.45) { spires.push([t.x, top, t.z, Math.min(70, t.h * 0.18)]); top += Math.min(70, t.h * 0.18); }
-      else crowns.push([t.x, top, t.z, w * (t.type === "stack" ? 0.55 : 1)]);
-      beaconsPos.push([t.x, top + 2, t.z]);
-    }
-  }
-  const GEOS = { box: geoBox, round: geoRound, hex: geoHex };
-  const podium = new THREE.MeshStandardMaterial({ color: 0x3a3238, roughness: .7, emissive: 0x2a1c14, emissiveIntensity: .4 });
-  for (const [k, list] of parts) {
-    const [geo, mi] = k.split("|");
-    const mesh = new THREE.InstancedMesh(GEOS[geo], mi === "p" ? podium : mats[Number(mi)], list.length);
-    list.forEach((m, i) => mesh.setMatrixAt(i, m));
-    group.add(mesh);
-  }
-  // Agujas, coronas LED y luces de aviación
-  const spireMat = new THREE.MeshStandardMaterial({ color: 0xd6dde5, metalness: 1, roughness: .2, envMap: env });
-  const spireMesh = new THREE.InstancedMesh(new THREE.ConeGeometry(1, 1, 8).translate(0, 0.5, 0), spireMat, spires.length);
-  spires.forEach(([x, y, z, h], i) => spireMesh.setMatrixAt(i, new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion(), new THREE.Vector3(5, h, 5))));
-  group.add(spireMesh);
-  const crownMat = new THREE.MeshBasicMaterial({ color: 0xffffff, fog: true });
-  const crownMesh = new THREE.InstancedMesh(new THREE.TorusGeometry(0.5, 0.04, 6, 24).rotateX(Math.PI / 2), crownMat, crowns.length);
-  const crownCols = [0x7de3ff, 0xffd08a, 0xc9a2ff, 0x9dffcf];
-  crowns.forEach(([x, y, z, w], i) => { crownMesh.setMatrixAt(i, new THREE.Matrix4().compose(new THREE.Vector3(x, y - 3, z), new THREE.Quaternion(), new THREE.Vector3(w, 3, w))); crownMesh.setColorAt(i, new THREE.Color(crownCols[i % 4])); });
-  group.add(crownMesh);
-  const beacons = new THREE.InstancedMesh(new THREE.SphereGeometry(1.3, 8, 6), new THREE.MeshBasicMaterial({ color: 0xff2a2a }), beaconsPos.length);
-  beaconsPos.forEach(([x, y, z], i) => beacons.setMatrixAt(i, new THREE.Matrix4().makeTranslation(x, y, z)));
-  group.add(beacons);
+}
 
-  // ---------- iconos de Dubái
-  // Burj Khalifa: planta en Y escalonada, cristal plateado y aguja
-  const burj = new THREE.Group(); burj.position.set(-560, CITY_Y, -960); group.add(burj);
-  let y = 0;
-  [[70, 150], [60, 130], [50, 120], [40, 110], [31, 100], [23, 90], [16, 80], [10, 70]].forEach(([r, hh], i) => {
-    for (let k = 0; k < 3; k++) {
-      const wing = new THREE.Mesh(geoBox, glassSilver);
-      const a = (k / 3) * TAU + i * 0.25;
-      wing.scale.set(r * 0.55, hh, r * 1.05); wing.rotation.y = a; wing.position.set(Math.cos(a) * r * 0.32, y, Math.sin(a) * r * 0.32); burj.add(wing);
+// ------------------------------------------------------------------ multitud: todos los agentes en sus mesas
+// Instanciado: cada pieza del robot (torso, cabeza, visor, ojos, brazos, piernas) es un solo dibujo para los 271.
+// Tres zonas de mesas alrededor de la entreplanta y diez mesas conjuntas entre ellas.
+const CROWD_FIELDS = [
+  { x0: -150, z0: -128, group: 6, groups: 4, rows: 5 },
+  { x0: -150, z0: 34, group: 6, groups: 4, rows: 4 },
+  { x0: 44, z0: -128, group: 6, groups: 2, rows: 6 },
+];
+const CROWD_DX = 3.4, CROWD_AISLE = 10, CROWD_DZ = 6.4;
+const TEAM_TABLES = (() => {
+  const out = [];
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 2; j++) out.push({ x: -130 + i * 30, z: -80 + j * 26, seats: 14 });
+  out.push({ x: 66, z: -70, seats: 14 }, { x: 66, z: -44, seats: 14 });
+  return out;
+})();
+
+function crowdLayout(n) {
+  const slots = [];
+  for (const f of CROWD_FIELDS) for (let r = 0; r < f.rows && slots.length < n; r++) {
+    for (let gi = 0; gi < f.groups && slots.length < n; gi++) for (let k = 0; k < f.group && slots.length < n; k++) {
+      const gx = f.x0 + gi * (f.group * CROWD_DX + CROWD_AISLE);
+      const x = gx + k * CROWD_DX, z = f.z0 + r * CROWD_DZ;
+      slots.push({ x, z, seat: [x, z + 0.75], lane: [x, z + 1.9], aisle: gx - CROWD_AISLE / 2 - CROWD_DX / 2 });
     }
-    const core = new THREE.Mesh(geoHex, glassSilver); core.scale.set(r * 0.7, hh, r * 0.7); core.position.y = y; burj.add(core);
-    y += hh;
+  }
+  // Si hubiera más agentes que puestos, filas extra al final.
+  for (let i = 0; slots.length < n; i++) { const x = -150 + (i % 36) * CROWD_DX, z = 70 + Math.floor(i / 36) * CROWD_DZ; slots.push({ x, z, seat: [x, z + 0.75], lane: [x, z + 1.9], aisle: -158 }); }
+  return slots;
+}
+
+function makeCrowd(scene, agents, codeTex, accentCss) {
+  const N = agents.length;
+  const slots = crowdLayout(N);
+  const geoBox = new THREE.BoxGeometry(1, 1, 1);
+  // Mesas con ordenador (instanciadas)
+  const deskParts = [
+    [geoBox, new THREE.MeshStandardMaterial({ color: 0xf2f2ef, roughness: .35 }), (s) => [s.x, FLOOR_Y + 0.76, s.z, 2.1, 0.05, 0.95]],
+    [geoBox, new THREE.MeshStandardMaterial({ color: 0x15181d, roughness: .4, metalness: .4 }), (s) => [s.x - 0.98, FLOOR_Y + 0.37, s.z, 0.05, 0.74, 0.8]],
+    [geoBox, new THREE.MeshStandardMaterial({ color: 0x15181d, roughness: .4, metalness: .4 }), (s) => [s.x + 0.98, FLOOR_Y + 0.37, s.z, 0.05, 0.74, 0.8]],
+    [geoBox, new THREE.MeshStandardMaterial({ color: 0x0c0e12, roughness: .3, metalness: .5 }), (s) => [s.x, FLOOR_Y + 1.36, s.z - 0.28, 1.1, 0.62, 0.04]],
+    [geoBox, new THREE.MeshBasicMaterial({ map: codeTex, toneMapped: false }), (s) => [s.x, FLOOR_Y + 1.36, s.z - 0.255, 1.02, 0.55, 0.01]],
+    [geoBox, new THREE.MeshStandardMaterial({ color: 0x1f2329, roughness: .8 }), (s) => [s.x, FLOOR_Y + 0.47, s.z + 0.75, 0.55, 0.08, 0.5]],
+    [geoBox, new THREE.MeshStandardMaterial({ color: 0x1f2329, roughness: .8 }), (s) => [s.x, FLOOR_Y + 0.85, s.z + 1.02, 0.55, 0.66, 0.06]],
+  ];
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), v = new THREE.Vector3(), sc = new THREE.Vector3();
+  for (const [geo, mat, f] of deskParts) {
+    const mesh = new THREE.InstancedMesh(geo, mat, N);
+    slots.forEach((s, i) => { const [x, y, z, sx, sy, sz] = f(s); mesh.setMatrixAt(i, m4.compose(v.set(x, y, z), q.identity(), sc.set(sx, sy, sz))); });
+    mesh.receiveShadow = true; scene.add(mesh);
+  }
+  // Mesas conjuntas (grandes, de 14 plazas) con pantalla central
+  const tableMat = new THREE.MeshStandardMaterial({ color: 0x2b2f36, roughness: .35, metalness: .5 });
+  const tableTop = new THREE.MeshStandardMaterial({ color: 0xf4f3ef, roughness: .3 });
+  const tables = TEAM_TABLES.map((t, ti) => {
+    const grp = new THREE.Group(); grp.position.set(t.x, FLOOR_Y, t.z); scene.add(grp);
+    const top = new THREE.Mesh(geoBox, tableTop); top.scale.set(16, 0.08, 3.2); top.position.y = 0.78; grp.add(top);
+    for (const sx of [-7, 0, 7]) { const leg = new THREE.Mesh(geoBox, tableMat); leg.scale.set(0.3, 0.74, 2.6); leg.position.set(sx, 0.37, 0); grp.add(leg); }
+    const scr = new THREE.Mesh(new THREE.PlaneGeometry(6, 2.2), new THREE.MeshBasicMaterial({ map: codeTex, toneMapped: false, side: THREE.DoubleSide }));
+    scr.position.set(0, 2.6, 0); grp.add(scr);
+    const glow = new THREE.Mesh(new THREE.RingGeometry(9, 9.6, 64).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: new THREE.Color(accentCss), transparent: true, opacity: 0, toneMapped: false }));
+    glow.scale.set(1, 1, 0.34); glow.position.y = 0.05; grp.add(glow);
+    const seats = [];
+    for (let k = 0; k < t.seats / 2; k++) for (const side of [-1, 1]) seats.push({ spot: [t.x - 6 + k * 2, t.z + side * 2.1], face: side > 0 ? Math.PI : 0 });
+    return { ...t, id: ti, grp, glow, seats, busy: 0, until: 0, members: [], real: false };
   });
-  const needle = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 6, 220, 10).translate(0, 110, 0), spireMat); needle.position.y = y; burj.add(needle);
-  const bLight = new THREE.Mesh(new THREE.SphereGeometry(6, 10, 8), new THREE.MeshBasicMaterial({ color: 0xff3030 })); bLight.position.y = y + 222; burj.add(bLight);
-  const burjGlow = new THREE.PointLight(0xbfd8ff, 0, 0); burj.add(burjGlow);
-  // Burj Al Arab (vela) en el mar
-  const sail = new THREE.Shape();
-  sail.moveTo(0, 0); sail.quadraticCurveTo(110, 150, 10, 330); sail.lineTo(0, 330); sail.lineTo(0, 0);
-  const sailMesh = new THREE.Mesh(new THREE.ExtrudeGeometry(sail, { depth: 50, bevelEnabled: false, curveSegments: 32 }),
-    new THREE.MeshStandardMaterial({ color: 0xf6f2ea, emissive: 0x7a8fd0, emissiveIntensity: .45, roughness: .35, envMap: env }));
-  sailMesh.position.set(-1600, CITY_Y, 760); sailMesh.rotation.y = Math.PI / 3; group.add(sailMesh);
-  const mast = new THREE.Mesh(new THREE.CylinderGeometry(2.5, 3.5, 380, 8), spireMat); mast.position.set(-1591, CITY_Y + 190, 752); group.add(mast);
-  // Museo del Futuro (anillo) y Dubai Frame (marco dorado)
-  const museum = new THREE.Mesh(new THREE.TorusGeometry(46, 20, 20, 48), new THREE.MeshStandardMaterial({ color: 0xc8ced6, metalness: 1, roughness: .2, envMap: env, emissive: 0x223044, emissiveIntensity: .5 }));
-  museum.scale.set(1, 1.35, 0.8); museum.position.set(620, CITY_Y + 62, -560); museum.rotation.y = 0.5; group.add(museum);
-  const frameMat = new THREE.MeshStandardMaterial({ color: 0xd4a94f, metalness: 1, roughness: .25, envMap: env, emissive: 0x6b4a14, emissiveIntensity: .6 });
-  const frame = new THREE.Group(); frame.position.set(260, CITY_Y, -1250); frame.rotation.y = 0.3; group.add(frame);
-  for (const sx of [-45, 45]) { const p = new THREE.Mesh(geoBox, frameMat); p.scale.set(18, 150, 18); p.position.x = sx; frame.add(p); }
-  const topBar = new THREE.Mesh(geoBox, frameMat); topBar.scale.set(108, 18, 18); topBar.position.y = 150; frame.add(topBar);
 
-  // La torre en la que estamos: fachada bajo la oficina
-  const own = new THREE.Mesh(geoBox, facadeMaterial(env, { tint: 0x2a3a50, lit: 0.36 }));
-  own.scale.set(33, -CITY_Y - 0.4, 27); own.position.set(0, CITY_Y, 0.5); group.add(own);
+  // Robots instanciados
+  const mk = (geo, mat) => { const m = new THREE.InstancedMesh(geo, mat, N); m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); m.castShadow = false; scene.add(m); return m; };
+  const body = new THREE.MeshStandardMaterial({ roughness: .45, metalness: .15 });
+  const parts = {
+    torso: mk(new THREE.CapsuleGeometry(0.27, 0.36, 4, 10), body),
+    head: mk(new THREE.SphereGeometry(0.27, 14, 10), new THREE.MeshStandardMaterial({ color: 0xf4f6fa, roughness: .35 })),
+    visor: mk(geoBox, new THREE.MeshStandardMaterial({ color: 0x0c1118, roughness: .3, metalness: .4 })),
+    eyes: mk(geoBox, new THREE.MeshBasicMaterial({ toneMapped: false })),
+    armL: mk(new THREE.CapsuleGeometry(0.065, 0.36, 3, 6), body), armR: mk(new THREE.CapsuleGeometry(0.065, 0.36, 3, 6), body),
+    legL: mk(new THREE.CapsuleGeometry(0.08, 0.38, 3, 6), new THREE.MeshStandardMaterial({ color: 0x14171c })),
+    legR: mk(new THREE.CapsuleGeometry(0.08, 0.38, 3, 6), new THREE.MeshStandardMaterial({ color: 0x14171c })),
+  };
+  const eyeCols = [0x38d6ff, 0x7cffb2, 0xffd166, 0xff7ab8, 0xb69cff];
+  const bots = agents.map((a, i) => {
+    const col = new THREE.Color(HEX[a.color] || HEX.azul);
+    parts.torso.setColorAt(i, col); parts.armL.setColorAt(i, col); parts.armR.setColorAt(i, col);
+    parts.eyes.setColorAt(i, new THREE.Color(eyeCols[hashOf(a.id) % 5]));
+    const s = slots[i];
+    return { i, agent: a, slot: s, pos: [...s.seat], face: Math.PI, rot: Math.PI, state: "sit", path: [], table: null, phase: rand(0, TAU), speed: rand(1.8, 2.3) };
+  });
+  for (const k of ["torso", "armL", "armR", "eyes"]) parts[k].instanceColor.needsUpdate = true;
+
+  const route = (b, to, lane) => {
+    const s = b.slot;
+    if (b.state === "sit") return [s.lane, [s.aisle, s.lane[1]], [s.aisle, lane[1]], lane, to];
+    return [lane, [s.aisle, lane[1]], [s.aisle, s.lane[1]], s.lane, to];
+  };
+  const tableLane = (t, seat) => [seat.spot[0], t.z + (seat.spot[1] > t.z ? 3.6 : -3.6)];
+  const sendTo = (b, t) => {
+    const seat = t.seats.find((x) => !x.b);
+    if (!seat) return false;
+    seat.b = b; b.table = t; b.seat = seat;
+    b.path = route(b, seat.spot, tableLane(t, seat)); b.state = "walk"; b.going = "table";
+    t.members.push(b);
+    return true;
+  };
+  const sendHome = (b) => {
+    const t = b.table;
+    if (b.seat) b.seat.b = null;
+    if (t) t.members = t.members.filter((x) => x !== b);
+    b.path = route({ ...b, state: "table" }, b.slot.seat, tableLane(t, b.seat));
+    b.table = null; b.seat = null; b.state = "walk"; b.going = "desk";
+  };
+
+  // Matrices de pose (reutilizadas: sin crear objetos en cada fotograma)
+  const base = new THREE.Matrix4(), tmp = new THREE.Matrix4(), local = new THREE.Matrix4();
+  const P = new THREE.Vector3(), Q = new THREE.Quaternion(), SC = new THREE.Vector3(), ONE = new THREE.Vector3(1, 1, 1), AX = new THREE.Vector3(1, 0, 0), AY = new THREE.Vector3(0, 1, 0);
+  const put = (mesh, i, x, y, z, q, sx = 1, sy = 1, sz = 1) => { local.compose(P.set(x, y, z), q, sx === 1 && sy === 1 && sz === 1 ? ONE : SC.set(sx, sy, sz)); tmp.multiplyMatrices(base, local); mesh.setMatrixAt(i, tmp); };
+  const QI = new THREE.Quaternion(), QY = new THREE.Quaternion();
+  const limb = (mesh, i, px, py, ang, len) => { const L = len / 2 + 0.07; Q.setFromAxisAngle(AX, ang); put(mesh, i, px, py - L * Math.cos(ang), -L * Math.sin(ang), Q); };
+  let nextDispatch = 2, realIds = new Set();
 
   return {
+    count: N,
+    idOf: (i) => agents[i]?.id,
+    pick: [parts.torso, parts.head],
+    setReal(ids) { realIds = ids; },
+    tables,
     tick(now, dt) {
-      for (let i = 0; i < CARS; i++) {
-        let x = carPos[i * 3] + carV[i] * dt;
-        if (x > 2800) x = -2800; if (x < -2800) x = 2800;
-        carPos[i * 3] = x;
+      // Equipos que se forman: 10-15 agentes cercanos van a una mesa conjunta libre.
+      if (now > nextDispatch) {
+        nextDispatch = now + rand(6, 12);
+        const free = tables.filter((t) => !t.members.length);
+        if (free.length) {
+          const t = free[Math.floor(Math.random() * free.length)];
+          const size = 10 + Math.floor(Math.random() * 6);
+          const idle = bots.filter((b) => b.state === "sit").sort((a, b) => Math.hypot(a.pos[0] - t.x, a.pos[1] - t.z) - Math.hypot(b.pos[0] - t.x, b.pos[1] - t.z)).slice(0, size * 2);
+          idle.sort(() => Math.random() - .5).slice(0, size).forEach((b) => sendTo(b, t));
+          t.until = Infinity; t.started = false; t.real = false;
+        }
       }
-      carGeo.attributes.position.needsUpdate = true;
-      const blink = Math.sin(now * 2.4) > 0.3;
-      beacons.visible = blink; bLight.visible = !blink;
-      museum.rotation.y += dt * 0.02;
+      // Agentes que Kairo está usando de verdad: van a la mesa más cercana libre y se marca LIVE.
+      for (const b of bots) if (realIds.has(b.agent.id) && b.state === "sit") {
+        const t = tables.find((x) => x.real && x.seats.some((s) => !s.b)) || tables.find((x) => !x.members.length);
+        if (t) { t.real = true; t.until = Infinity; sendTo(b, t); }
+      }
+      for (const t of tables) {
+        if (t.real && !t.members.some((b) => realIds.has(b.agent.id))) { t.real = false; t.started = true; t.until = now + 4; }
+        // El tiempo de trabajo cuenta desde que el equipo se ha sentado.
+        if (!t.real && !t.started && t.members.length && t.members.every((b) => b.state === "work")) { t.started = true; t.until = now + rand(25, 45); }
+        if (now > t.until && t.members.length) [...t.members].forEach((b) => { if (b.state === "work" || b.state === "walk") sendHome(b); });
+        const on = t.members.some((b) => b.state === "work");
+        t.glow.material.opacity += ((on ? 0.8 + Math.sin(now * 4) * 0.15 : 0) - t.glow.material.opacity) * Math.min(1, dt * 3);
+      }
+      for (const b of bots) {
+        if (b.state === "walk") {
+          const tgt = b.path[0];
+          if (!tgt) { b.state = b.going === "table" ? "work" : "sit"; b.face = b.going === "table" ? b.seat.face : Math.PI; }
+          else {
+            const dx = tgt[0] - b.pos[0], dz = tgt[1] - b.pos[1], d = Math.hypot(dx, dz), st = b.speed * dt;
+            if (d <= st) { b.pos = [tgt[0], tgt[1]]; b.path.shift(); } else { b.pos = [b.pos[0] + dx / d * st, b.pos[1] + dz / d * st]; b.face = Math.atan2(dx, dz); }
+          }
+        }
+        let da = b.face - b.rot; da = Math.atan2(Math.sin(da), Math.cos(da)); b.rot += da * Math.min(1, dt * 10);
+        const t = now + b.phase;
+        const walking = b.state === "walk" && b.path.length;
+        const sitting = b.state === "sit";
+        const hy = sitting ? 0.18 : 0.62 + (walking ? Math.abs(Math.cos(t * 9)) * 0.05 : 0);
+        base.makeRotationY(b.rot).setPosition(b.pos[0], FLOOR_Y, b.pos[1]);
+        const s = Math.sin(t * 9);
+        const typing = sitting || b.state === "work";
+        const aL = walking ? -s * 0.6 : typing ? -1.15 + Math.sin(t * 13) * 0.1 : 0;
+        const aR = walking ? s * 0.6 : typing ? -1.15 + Math.cos(t * 12) * 0.1 : 0;
+        const lg = walking ? s * 0.7 : sitting ? -1.45 : 0;
+        put(parts.torso, b.i, 0, hy + 0.36, 0, QI);
+        const yaw = typing ? Math.sin(t * 0.4) * 0.2 : 0, sy = Math.sin(yaw), cy = Math.cos(yaw);
+        const qYaw = QY.setFromAxisAngle(AY, yaw);
+        put(parts.head, b.i, 0, hy + 1.02, 0, qYaw);
+        put(parts.visor, b.i, 0.21 * sy, hy + 1.04, 0.21 * cy, qYaw, 0.42, 0.16, 0.08);
+        put(parts.eyes, b.i, 0.255 * sy, hy + 1.04, 0.255 * cy, qYaw, 0.3, 0.05, 0.02);
+        limb(parts.armL, b.i, -0.34, hy + 0.58, aL, 0.36);
+        limb(parts.armR, b.i, 0.34, hy + 0.58, aR, 0.36);
+        limb(parts.legL, b.i, -0.13, hy + 0.02, walking ? lg : sitting ? lg : 0, 0.38);
+        limb(parts.legR, b.i, 0.13, hy + 0.02, walking ? -lg : sitting ? lg : 0, 0.38);
+      }
+      for (const k in parts) parts[k].instanceMatrix.needsUpdate = true;
     },
   };
 }
@@ -609,13 +718,11 @@ export function mountOffice(container, api) {
 
   const scene = new THREE.Scene();
   // Cielo de atardecer en Dubái + reflejos (entorno generado a partir del propio cielo)
-  const sky = skyTex();
-  scene.background = sky;
-  scene.fog = new THREE.FogExp2(0x8a6078, 0.00055);
+  scene.background = hallBgTex();
+  scene.fog = new THREE.FogExp2(0x1b2129, 0.0027);
   const pmrem = new THREE.PMREMGenerator(renderer);
   const envScene = new THREE.Scene();
-  const skySphere = new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), new THREE.MeshBasicMaterial({ map: sky, side: THREE.BackSide }));
-  envScene.add(skySphere);
+  envScene.add(new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), new THREE.MeshBasicMaterial({ map: hallEnvTex(), side: THREE.BackSide })));
   const env = pmrem.fromScene(envScene, 0.04).texture;
   pmrem.dispose();
 
@@ -632,9 +739,9 @@ export function mountOffice(container, api) {
     renderer.setSize(w, h, false);
   };
 
-  scene.add(new THREE.HemisphereLight(0xdfe6ff, 0x2a2d35, 1.05));
-  const sun = new THREE.DirectionalLight(0xffc596, 2.0); // sol bajo del atardecer, entra por las cristaleras
-  sun.position.set(-26, 16, -20); sun.castShadow = true;
+  scene.add(new THREE.HemisphereLight(0xeef3ff, 0x3a3e46, 1.6));
+  const sun = new THREE.DirectionalLight(0xfff3e2, 1.9); // luz cenital de los lucernarios
+  sun.position.set(-18, 40, -12); sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   Object.assign(sun.shadow.camera, { left: -24, right: 24, top: 24, bottom: -24, near: 1, far: 90 });
   sun.shadow.bias = -0.0004; sun.shadow.radius = 4;
@@ -642,7 +749,8 @@ export function mountOffice(container, api) {
   const fill = new THREE.DirectionalLight(0x9fb8ff, 0.7); fill.position.set(20, 18, 16); scene.add(fill);
 
   const kit = office(scene, accent, accentCss, env);
-  const city = dubai(scene, env);
+  const city = industrialHall(scene, env, accentCss);
+  let crowd = null;
   const code = codeScreen(accentCss);
   const busyScreen = new THREE.MeshBasicMaterial({ map: code.tex });
   const idleScreen = new THREE.MeshBasicMaterial({ map: textTex("K", { w: 256, h: 160, bg: "#0e1726", color: accentCss, font: "700 90px Space Grotesk, Inter, sans-serif" }) });
@@ -835,7 +943,7 @@ export function mountOffice(container, api) {
     pointers.set(e.pointerId, [e.clientX, e.clientY]);
     if (pinch && pointers.size === 2) {
       const [a, b] = [...pointers.values()];
-      view.zoom = Math.min(3.2, Math.max(0.35, pinch.z * Math.hypot(a[0] - b[0], a[1] - b[1]) / pinch.d)); placeCam(); return;
+      view.zoom = Math.min(3.2, Math.max(0.16, pinch.z * Math.hypot(a[0] - b[0], a[1] - b[1]) / pinch.d)); placeCam(); return;
     }
     if (!drag) return;
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
@@ -856,14 +964,15 @@ export function mountOffice(container, api) {
       const r = el.getBoundingClientRect();
       ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
       ray.setFromCamera(ndc, cam);
-      const hit = ray.intersectObjects(clickables, false)[0];
-      if (hit?.object.userData.botId) api.onBot(hit.object.userData.botId, e);
+      const hit = ray.intersectObjects(crowd ? [...clickables, ...crowd.pick] : clickables, false)[0];
+      if (hit && crowd?.pick.includes(hit.object) && hit.instanceId != null) api.onBot(crowd.idOf(hit.instanceId), e);
+      else if (hit?.object.userData.botId) api.onBot(hit.object.userData.botId, e);
       else if (hit?.object.userData.stationId != null && hit.object.userData.stationId !== "kairo") api.onStation(hit.object.userData.stationId, e);
       else api.onEmpty?.();
     }
     drag = null;
   });
-  el.addEventListener("wheel", (e) => { e.preventDefault(); view.zoom = Math.min(3.2, Math.max(0.35, view.zoom * (e.deltaY < 0 ? 1.1 : 0.9))); placeCam(); }, { passive: false });
+  el.addEventListener("wheel", (e) => { e.preventDefault(); view.zoom = Math.min(3.2, Math.max(0.16, view.zoom * (e.deltaY < 0 ? 1.1 : 0.9))); placeCam(); }, { passive: false });
   const ro = new ResizeObserver(() => placeCam());
   ro.observe(container);
 
@@ -872,8 +981,8 @@ export function mountOffice(container, api) {
   const loop = (ms) => {
     if (!alive) return;
     if (!container.isConnected) { destroy(); return; }
-    const now = ms / 1000, dt = Math.min(0.05, (ms - last) / 1000); last = ms;
-    kit.tick(now, dt); city.tick(now, dt);
+    const now = (ms / 1000) * SPEED, dt = Math.min(0.05, (ms - last) / 1000) * SPEED; last = ms;
+    kit.tick(now, dt); city.tick(now, dt, cam.position.y); crowd?.tick(now, dt);
     codeT += dt; if (codeT > 0.18) { codeT = 0; code.tick(); }
     for (const b of bots.values()) { think(b, now); animate(b, dt, now); }
     for (const [id, b] of bots) if (b.gone) { scene.remove(b.g); bots.delete(id); tags.get("b" + id)?.remove(); tags.delete("b" + id); }
@@ -907,6 +1016,14 @@ export function mountOffice(container, api) {
       tag.hidden = !txt;
       place(tag, st.g.position.x, 2.75, st.g.position.z);
     }
+    if (crowd) for (const t of crowd.tables) {
+      const tag = tagFor("t" + t.id, "of-station team");
+      const n = t.members.filter((b) => b.state === "work").length;
+      const txt = n ? `${t.real ? "● LIVE · Kairo · " : "⚡ Equipo · "}${n} agentes` : "";
+      if (tag.textContent !== txt) tag.textContent = txt;
+      tag.hidden = !txt;
+      if (txt) place(tag, t.x, FLOOR_Y + 4.2, t.z);
+    }
     renderer.render(scene, cam);
     requestAnimationFrame(loop);
   };
@@ -922,22 +1039,17 @@ export function mountOffice(container, api) {
     build,
     /** Estado vivo: qué quiere hacer cada robot ahora mismo. */
     setWork(map, visitors = []) {
-      for (const b of bots.values()) if (!b.visitor) b.wantWork = map.get(b.id) ?? null;
-      // Agentes que Kairo está usando pero no están en la oficina: entran por la puerta.
-      for (const v of visitors) {
-        let b = bots.get(v.agent.id);
-        if (!b) {
-          const g = makeBot(v.agent); scene.add(g);
-          b = { id: v.agent.id, agent: v.agent, g, p: g.userData.parts, pos: [...DOOR], lane: [CORRIDOR_X, 10.6], face: Math.PI, state: "idle", path: [], speed: 2, phase: rand(0, TAU), work: null, visitor: true, nextBreak: Infinity };
-          g.position.set(DOOR[0], 0, DOOR[1]); bots.set(v.agent.id, b);
-          scene.traverse((o) => { if (o.isMesh && o.userData.botId === v.agent.id) clickables.push(o); });
-        }
-        b.wantWork = v.work;
-      }
-      for (const b of bots.values()) if (b.visitor && !visitors.some((v) => v.agent.id === b.id)) b.wantWork = null;
+      for (const b of bots.values()) b.wantWork = map.get(b.id) ?? null;
+      // Agentes que Kairo usa y no están en la entreplanta: en la nave se levantan y van a una mesa conjunta (LIVE).
+      crowd?.setReal(new Set(visitors.map((v) => v.agent.id)));
+    },
+    /** Todos los agentes del registro, cada uno en su mesa de la nave. */
+    setCrowd(agents) {
+      if (crowd || !agents.length) return;
+      crowd = makeCrowd(scene, agents, code.tex, accentCss);
     },
     setLive(ids) { for (const [id, st] of stations) st.live = ids.has(id); },
-    zoom(k) { view.zoom = Math.min(3.2, Math.max(0.35, view.zoom * k)); placeCam(); },
+    zoom(k) { view.zoom = Math.min(3.2, Math.max(0.16, view.zoom * k)); placeCam(); },
     rotate() { view.angle += Math.PI / 2; placeCam(); },
     reset() { view.target.set(0, 5, 0.5); view.zoom = container.clientWidth < 700 ? 0.75 : 1; view.angle = Math.PI / 4; placeCam(); },
     destroy,

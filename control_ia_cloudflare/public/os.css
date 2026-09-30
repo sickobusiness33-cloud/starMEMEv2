@@ -830,3 +830,4 @@ main.sec-lienzo { padding: 0; }
 }
 .of-panel .switch { display: flex; align-items: center; gap: 8px; width: 100%; padding: 4px 2px; }
 .of-panel .stack { display: flex; flex-direction: column; }
+.of-station.team { background: #f2b705; color: #1a1300; box-shadow: 0 0 16px rgba(242, 183, 5, .6); }

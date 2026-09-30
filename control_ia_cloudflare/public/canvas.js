@@ -85,7 +85,9 @@ async function viewCanvas(main) {
       agents: team(),
       projects: officeProjects().map((p) => ({ id: p.id, name: p.name, color: p.color, live: p.live > 0, sub: `${(p.runs || 0) + (p.kairo_runs || 0)} tareas` })),
     });
-    count.textContent = `${team().length} robots · ${officeProjects().length} proyectos · ${st.links.length} conexiones`;
+    const teamIds = new Set(team().map((a) => a.id));
+    off.setCrowd(reg.agents.filter((a) => !teamIds.has(a.id)));
+    count.textContent = `${team().length} en tu equipo · ${reg.agents.length} agentes en la nave · ${st.links.length} conexiones`;
     applyWork();
   };
 
