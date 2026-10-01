@@ -179,7 +179,6 @@ function harness(o: HarnessOpts = {}) {
   async function at(offsetMs: number, s: TokenSnapshot): Promise<void> {
     t = T0 + offsetMs;
     const observed = { ...s, ts: t };
-    db.upsertToken(observed);
     db.insertSnapshot(observed);
     await pipeline.process(observed, t);
   }
@@ -378,17 +377,27 @@ describe('cooldown and follow-ups', () => {
     expect(h.db.lastArticleFor('solana', ADDRESS)?.id).toBe(followUp.id);
   });
 
-  it('allows a same-severity follow-up when the score jumps by 15', async () => {
-    let mentions: number | null = null;
-    const h = harness({ mentions: async () => mentions, config: { thresholds: { WATCH: 45, ALERT: 62, BREAKING: 95 } } });
-    await h.at(0, alert()); // 66
-    mentions = 15;
-    await h.at(5 * MIN, breaking()); // 80, still ALERT with these thresholds
-    expect(h.articles.map((a) => [a.severity, a.score])).toEqual([
-      ['ALERT', 66],
+  it('allows a same-severity follow-up only when the score jumps by at least 15', async () => {
+    // BREAKING out of reach so both articles stay ALERT
+    const thresholds = { WATCH: 45, ALERT: 62, BREAKING: 95 };
+    const run = async (firstStory: TokenSnapshot) => {
+      let mentions: number | null = null;
+      const h = harness({ mentions: async () => mentions, config: { thresholds } });
+      await h.at(0, firstStory);
+      mentions = 15;
+      await h.at(5 * MIN, breaking()); // 80
+      return h.articles;
+    };
+
+    const plus14 = await run(alert()); // 66 → 80
+    expect(plus14.map((a) => a.score)).toEqual([66]);
+
+    const plus16 = await run(pumping({ buyShare: 0.5, buyersM5: 100, priceH1: 60 })); // 64 → 80
+    expect(plus16.map((a) => [a.severity, a.score])).toEqual([
+      ['ALERT', 64],
       ['ALERT', 80],
     ]);
-    expect(h.articles[1]?.updateOf).toBe(h.articles[0]?.id);
+    expect(plus16[1]?.updateOf).toBe(plus16[0]?.id);
   });
 });
 

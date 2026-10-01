@@ -19,10 +19,10 @@ const RADAR_RETENTION_MS = 7 * 24 * HOUR_MS;
 /**
  * A refresh that returns exactly the same market data as the last stored
  * observation of a token is not stored again unless this much time has passed.
- * Quiet young tokens are refreshed every ~20 s and mostly do not change; this
- * keeps the snapshot table an order of magnitude smaller without losing any
- * information that history-based metrics rely on (the oldest row of an
- * unchanged run is the one kept).
+ * Quiet young tokens are refreshed every ~20 s and often do not change; this
+ * keeps the snapshot table much smaller without losing any information that
+ * history-based metrics rely on (the oldest row of an unchanged run is kept,
+ * and the token row still records the sighting).
  */
 const SNAPSHOT_COALESCE_MS = 5 * 60_000;
 
@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS tokens (
   json       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tokens_chain_last_seen ON tokens(chain, last_seen);
-CREATE INDEX IF NOT EXISTS idx_tokens_last_seen ON tokens(last_seen);
+CREATE INDEX IF NOT EXISTS idx_tokens_last_seen ON tokens(last_seen, chain);
 
 CREATE TABLE IF NOT EXISTS snapshots (
   id    INTEGER PRIMARY KEY,
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS snapshots (
   json  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_key_ts ON snapshots(key, ts);
-CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts, chain, key);
+CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts);
 
 CREATE TABLE IF NOT EXISTS detections (
   id       TEXT PRIMARY KEY,
@@ -143,7 +143,29 @@ export class Db {
 
   /* ───────────── tokens & snapshots ───────────── */
 
+  /** Registers a token or refreshes its row; an older observation never overwrites a newer one. */
   upsertToken(s: TokenSnapshot): void {
+    this.writeToken(s, JSON.stringify(s));
+  }
+
+  /**
+   * Records one observation. Also keeps the token row current (a snapshot always
+   * implies a known token), so callers need not call `upsertToken` as well.
+   */
+  insertSnapshot(s: TokenSnapshot): void {
+    const json = JSON.stringify(s);
+    this.writeToken(s, json);
+
+    const key = tokenKey(s.chain, s.address);
+    const hash = marketFingerprint(s);
+    const last = this.lastStored.get(key);
+    if (last && last.hash === hash && s.ts >= last.ts && s.ts - last.ts < SNAPSHOT_COALESCE_MS) return;
+
+    this.run('INSERT INTO snapshots (key, chain, ts, json) VALUES (?, ?, ?, ?)', key, s.chain, s.ts, json);
+    if (!last || s.ts >= last.ts) this.lastStored.set(key, { ts: s.ts, hash });
+  }
+
+  private writeToken(s: TokenSnapshot, json: string): void {
     this.run(
       `INSERT INTO tokens (key, chain, address, symbol, name, created_at, first_seen, last_seen, json)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -166,18 +188,8 @@ export class Db {
       s.createdAt,
       s.ts,
       s.ts,
-      JSON.stringify(s),
+      json,
     );
-  }
-
-  insertSnapshot(s: TokenSnapshot): void {
-    const key = tokenKey(s.chain, s.address);
-    const hash = marketFingerprint(s);
-    const last = this.lastStored.get(key);
-    if (last && last.hash === hash && s.ts >= last.ts && s.ts - last.ts < SNAPSHOT_COALESCE_MS) return;
-
-    this.run('INSERT INTO snapshots (key, chain, ts, json) VALUES (?, ?, ?, ?)', key, s.chain, s.ts, JSON.stringify(s));
-    if (!last || s.ts >= last.ts) this.lastStored.set(key, { ts: s.ts, hash });
   }
 
   /** Snapshots of one token observed at or after `sinceTs`, oldest → newest. */
@@ -355,13 +367,12 @@ export class Db {
   counts(sinceTs: number): DbCounts {
     const perChainTokens: Record<string, number> = {};
     let tokensAnalyzed = 0;
-    for (const r of this.rows(
-      'SELECT chain, COUNT(DISTINCT key) AS n FROM snapshots WHERE ts >= ? GROUP BY chain',
-      sinceTs,
-    )) {
+    // Every snapshot refreshes its token's last_seen, so "distinct tokens with a snapshot since"
+    // is a count over the small tokens table instead of a COUNT(DISTINCT) over all snapshots.
+    for (const r of this.rows('SELECT chain, COUNT(*) AS n FROM tokens WHERE last_seen >= ? GROUP BY chain', sinceTs)) {
       const n = Number(r.n);
       perChainTokens[String(r.chain)] = n;
-      tokensAnalyzed += n; // keys embed the chain, so per-chain distinct counts add up exactly
+      tokensAnalyzed += n;
     }
     const detections = this.rows(
       `SELECT COUNT(*) AS anomalies, COALESCE(SUM(severity = 'BREAKING'), 0) AS breaking

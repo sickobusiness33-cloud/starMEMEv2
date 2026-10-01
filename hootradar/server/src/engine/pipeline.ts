@@ -290,9 +290,9 @@ export class Pipeline {
     };
 
     db.insertArticle(article);
-    this.recordDetection(a, now, article.id, { dedupe: false });
     this.enqueueDistribution(article);
     bus.emit('article', article);
+    this.recordDetection(a, now, article.id, { dedupe: false });
     log.info('article published', {
       chain: s.chain,
       symbol: s.symbol,

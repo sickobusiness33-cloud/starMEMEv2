@@ -18,7 +18,7 @@ const PROCESS_CONCURRENCY = 4;
 const COUNTS_TTL_MS = 30_000;
 const FIRST_PRUNE_DELAY_MS = MINUTE_MS;
 const PRUNE_INTERVAL_MS = 60 * MINUTE_MS;
-const MIN_TICK_DELAY_MS = 250;
+const MIN_TICK_DELAY_MS = 100;
 
 type CycleKind = 'discover' | 'refresh';
 
@@ -190,9 +190,11 @@ export class Scanner {
     if (snapshots === null) return; // nothing to refresh yet
 
     const fetchedAt = Date.now();
+    const firstSuccess = c.lastSuccessAt == null;
     c.lastSuccessAt = fetchedAt;
     c.lastAttempt[kind] = { at: fetchedAt, error: null };
     await this.ingest(snapshots);
+    if (firstSuccess) this.tokenCounts = null; // do not keep serving counts cached before this chain's first data
     log.debug(`${kind} done`, { chain, tokens: snapshots.length, ms: Date.now() - started });
     this.d.bus.emit('scan', { chain, kind, ok: true, tokens: snapshots.length, error: null, at: Date.now() });
   }
@@ -212,8 +214,7 @@ export class Scanner {
     await forEachLimit(snapshots, PROCESS_CONCURRENCY, async (s) => {
       if (!this.active) return;
       try {
-        this.d.db.upsertToken(s);
-        this.d.db.insertSnapshot(s);
+        this.d.db.insertSnapshot(s); // also upserts the token row
       } catch (e) {
         log.error('storing snapshot failed', { chain: s.chain, address: s.address, error: errMsg(e) });
         return;

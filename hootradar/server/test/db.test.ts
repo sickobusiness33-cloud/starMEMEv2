@@ -255,6 +255,17 @@ describe('tokens and snapshots', () => {
       [40_000 + 5 * MIN, 1.1],
     ]);
   });
+
+  it('a snapshot registers its token, and a coalesced one still counts as a sighting', () => {
+    const s = snap({ createdAt: T0 - HOUR, liquidityUsd: 9000 });
+    db.insertSnapshot(s);
+    db.insertSnapshot({ ...s, ts: T0 + 20_000 }); // identical → no new row, but the token was seen
+
+    expect(db.history('solana', SOL_A, 0)).toHaveLength(1);
+    expect(db.trackedAddresses('solana', 24, 10, T0)).toEqual([SOL_A]);
+    expect(db.counts(T0 + 10_000).tokensAnalyzed).toBe(1);
+    expect(db.counts(T0 + 30_000).tokensAnalyzed).toBe(0);
+  });
 });
 
 describe('detections', () => {
