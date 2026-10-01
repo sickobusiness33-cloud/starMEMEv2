@@ -31,7 +31,15 @@ export interface IntelTerms {
   /** name or symbol identifies the token without corroboration */
   distinctive: boolean;
   /** strongest evidence that `text` mentions the token, or null */
-  match(text: string): MatchedOn | null;
+  match(text: string, opts?: MatchOpts): MatchedOn | null;
+}
+
+export interface MatchOpts {
+  /**
+   * The source is not about crypto (e.g. Hacker News): a bare name or symbol
+   * only counts next to crypto vocabulary — "bonk" is also an English verb.
+   */
+  needsContext?: boolean;
 }
 
 export const MIN_SYMBOL_CHARS = 3;
@@ -51,6 +59,10 @@ const COMMON_WORDS = new Set([
   'rocket', 'sell', 'shib', 'sol', 'solana', 'sun', 'test', 'the', 'token', 'trump', 'usa', 'wagmi', 'web3',
   'wow', 'world',
 ]);
+
+/** Crypto vocabulary that makes a bare word in general-audience text read as a token reference. */
+const CRYPTO_CONTEXT =
+  /(?<![\p{L}\p{N}_])(?:crypto(?:s|currency|currencies)?|bitcoin|btc|ethereum|solana|binance|coinbase|blockchains?|defi|dex|dexscreener|web3|nfts?|airdrops?|(?:meme|shit|alt)[\s-]?coins?|on-?chain|pump\.fun|raydium|uniswap|rug[\s-]?pull\w*|market[\s-]?cap)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_$])\$[a-z][a-z0-9]{1,9}(?![\p{L}\p{N}_])/iu;
 
 const WORD_BEFORE = '(?<![\\p{L}\\p{N}_])';
 const WORD_AFTER = '(?![\\p{L}\\p{N}_])';
@@ -76,7 +88,7 @@ export function intelTerms(t: IntelQuery): IntelTerms {
 
 type TermFlags = Omit<IntelTerms, 'distinctive' | 'match'>;
 
-function buildMatcher(t: TermFlags): (text: string) => MatchedOn | null {
+function buildMatcher(t: TermFlags): IntelTerms['match'] {
   const sym = t.symbolUsable ? escapeRegExp(t.symbol) : null;
   const name = t.name.length >= MIN_SYMBOL_CHARS ? phrasePattern(t.name) : null;
 
@@ -87,11 +99,12 @@ function buildMatcher(t: TermFlags): (text: string) => MatchedOn | null {
   const symbolTicker = sym ? new RegExp(`${tickerNoun(sym)}|\\(\\$?${sym}\\)`, 'iu') : null;
   const nameTicker = name ? new RegExp(tickerNoun(name), 'iu') : null;
 
-  return (text) => {
+  return (text, opts = {}) => {
     if (containsAddress(text, t.address)) return 'contract';
     if (cashtag?.test(text)) return 'symbol';
-    if (namePhrase?.test(text)) return 'name';
-    if (bareSymbol?.test(text)) return 'symbol';
+    const word = namePhrase?.test(text) ? 'name' : bareSymbol?.test(text) ? 'symbol' : null;
+    if (word && (!opts.needsContext || CRYPTO_CONTEXT.test(text))) return word;
+    // ticker forms carry their own context
     if (symbolTicker?.test(text)) return 'symbol';
     if (nameTicker?.test(text)) return 'name';
     return null;

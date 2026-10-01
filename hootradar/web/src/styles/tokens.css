@@ -1,0 +1,69 @@
+/* HootRadar design tokens — values from docs/DESIGN.md. Extend here, never fork. */
+:root {
+  color-scheme: dark;
+
+  /* surfaces */
+  --bg: #050607; /* page */
+  --bg-1: #0a0c0e; /* bars, rails */
+  --bg-2: #0e1114; /* cards */
+  --bg-3: #141a1e; /* raised / hover / expanded */
+  --line: #1a2026; /* hairlines */
+  --line-2: #26303a; /* stronger borders, focus base */
+
+  /* text */
+  --text: #e8ecef;
+  --text-2: #a1abb4;
+  --text-3: #66717b;
+
+  /* signal colors — each has exactly one job */
+  --green: #3dff8f; /* live, BREAKING, positive, primary action */
+  --green-dim: rgb(61 255 143 / 0.12);
+  --on-green: #03140a;
+  --cyan: #2fe0ff; /* AI, ALERT, links, focus */
+  --cyan-dim: rgb(47 224 255 / 0.12);
+  --red: #ff5a6a; /* risk only (risk outlook, risk flags, sells) */
+  --red-dim: rgb(255 90 106 / 0.12);
+  --amber: #ffc04d; /* degraded chain status only */
+  --amber-dim: rgb(255 192 77 / 0.12);
+
+  /* motion (from the animate skill — do not invent curves) */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --dur-press: 120ms; /* press feedback */
+  --dur-hover: 150ms; /* hover color */
+  --dur-ui: 200ms; /* indicator slides, small popovers */
+  --dur-enter: 220ms; /* list entries, accordion */
+
+  /* type */
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  /* shape */
+  --radius: 10px;
+  --radius-sm: 6px;
+
+  /* layout */
+  --gutter: 16px;
+  --topbar-h: 52px;
+  --tabbar-h: 40px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --header-h: calc(var(--topbar-h) + var(--tabbar-h) + var(--safe-top));
+  --bottombar-h: 0px;
+  --content-max: 1440px;
+}
+
+@media (min-width: 720px) {
+  :root {
+    --gutter: 24px;
+  }
+}
+
+/* Phones: the tab bar moves to a fixed bottom bar; the top bar grows a stats row. */
+@media (max-width: 719.98px) {
+  :root {
+    --topbar-h: 92px;
+    --tabbar-h: 0px;
+    --bottombar-h: calc(58px + var(--safe-bottom));
+  }
+}

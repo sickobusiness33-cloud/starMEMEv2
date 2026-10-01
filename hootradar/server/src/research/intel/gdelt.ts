@@ -11,13 +11,14 @@ import { cleanTerm, intelTerms, stableId, type IntelQuery, type IntelTerms, type
 
 const GDELT_API = 'https://api.gdeltproject.org/api/v2/doc/doc';
 const CACHE_TTL_MS = 120_000;
-const REQUEST_TIMEOUT_MS = 15_000;
+/** GDELT often takes 5–15 s, even to say "slow down"; stays inside the 20 s provider budget */
+const REQUEST_TIMEOUT_MS = 18_000;
 const MAX_RECORDS = 30;
 /** GDELT rejects keywords shorter than this */
 const MIN_KEYWORD_CHARS = 3;
 
 /** Article must also talk about crypto: cuts "Bonk" the sound effect, "Cat" the pet. */
-const CRYPTO_CONTEXT = ['crypto', 'cryptocurrency', 'token', 'memecoin', 'blockchain', 'defi'];
+const CONTEXT_KEYWORDS = ['crypto', 'cryptocurrency', 'token', 'memecoin', 'blockchain', 'defi'];
 
 export async function search(t: IntelQuery): Promise<IntelItem[]> {
   const terms = intelTerms(t);
@@ -35,6 +36,8 @@ export async function search(t: IntelQuery): Promise<IntelItem[]> {
     limiter: 'gdelt',
     cacheTtlMs: CACHE_TTL_MS,
     timeoutMs: REQUEST_TIMEOUT_MS,
+    // GDELT throttles per IP for several seconds: a quick retry only fails again and hides the 429
+    retries: 0,
   });
   return parseGdeltArticles(decodeGdeltBody(body), Date.now(), queryMatchedOn(terms));
 }
@@ -51,7 +54,7 @@ export function buildGdeltQuery(terms: IntelTerms): string | null {
   const address = keyword(terms.address);
   const tokenTerms = tokenKeywords(terms);
   if (tokenTerms.length === 0) return address;
-  return `${orGroup([...tokenTerms, ...(address ? [address] : [])])} ${orGroup(CRYPTO_CONTEXT)}`;
+  return `${orGroup([...tokenTerms, ...(address ? [address] : [])])} ${orGroup(CONTEXT_KEYWORDS)}`;
 }
 
 function tokenKeywords(t: IntelTerms): string[] {

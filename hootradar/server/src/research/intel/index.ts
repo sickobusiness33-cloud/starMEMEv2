@@ -60,6 +60,9 @@ const FULL_TEXT_TRUST: Record<string, 'always' | 'distinctive'> = {
   gdelt: 'distinctive',
 };
 
+/** General-audience sources, where a token name is often just a word (GDELT queries add crypto context themselves). */
+const NEEDS_CRYPTO_CONTEXT = new Set(['hn']);
+
 export async function gatherIntel(
   t: IntelQuery,
   now: number,
@@ -84,11 +87,7 @@ interface ProviderRun {
 
 async function runProvider(p: Provider, t: IntelQuery): Promise<ProviderRun> {
   try {
-    const items = await withTimeout(
-      Promise.resolve().then(() => p.search(t)),
-      p.timeoutMs,
-      p.name,
-    );
+    const items = await withTimeout(Promise.resolve().then(() => p.search(t)), p.timeoutMs, p.name);
     return { name: p.name, items: items.filter(isWellFormed), error: null };
   } catch (e) {
     log.warn('intel provider failed', { provider: p.name, symbol: t.symbol, error: errMsg(e) });
@@ -113,7 +112,9 @@ export function filterRelevant(items: IntelItem[], q: IntelQuery | IntelTerms, n
 
 function relevanceOf(item: IntelItem, terms: IntelTerms): MatchedOn | null {
   if (item.sourceType === 'official') return 'project';
-  const found = terms.match(`${item.title}\n${item.snippet ?? ''}\n${urlText(item.url)}`);
+  const found = terms.match(`${item.title}\n${item.snippet ?? ''}\n${urlText(item.url)}`, {
+    needsContext: NEEDS_CRYPTO_CONTEXT.has(item.provider),
+  });
   if (found) return found;
   const trust = FULL_TEXT_TRUST[item.provider];
   return trust === 'always' || (trust === 'distinctive' && terms.distinctive) ? item.matchedOn : null;
