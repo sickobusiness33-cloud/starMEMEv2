@@ -1,0 +1,71 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "control-ia",
+  // Conserva las variables añadidas desde el panel de Cloudflare (p. ej. FIREBASE_SERVICE_ACCOUNT).
+  "keep_vars": true,
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // La web (public/) se sirve como estáticos; /api/* pasa por el Worker.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"],
+    // /upgrade y otras rutas de la app sirven index.html
+    "not_found_handling": "single-page-application"
+  },
+  // Modelos gratuitos de Cloudflare Workers AI (FREE_MODEL / FREE_MODEL_FALLBACK)
+  "ai": { "binding": "AI" },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "control-ia",
+      // Sustituye por el id que devuelve `npx wrangler d1 create control-ia`.
+      "database_id": "dd164cbc-e7a3-4055-afb2-c47964e54445",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Las tareas de IA se ejecutan en segundo plano con una cola.
+  "queues": {
+    "producers": [{ "binding": "RUNS", "queue": "control-ia-runs" }],
+    "consumers": [
+      {
+        "queue": "control-ia-runs",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 0,
+        "max_concurrency": 5
+      }
+    ]
+  },
+  // Autopilot 24/7: cada 5 minutos el cron revisa objetivos pendientes.
+  "triggers": { "crons": ["*/5 * * * *"] },
+  // Configuración pública. Los secretos van con `wrangler secret put` (ver README).
+  "vars": {
+    "ALLOW_SIGNUP": "true",
+    "ADMIN_EMAILS": "",
+    "COOKIE_SECURE": "true",
+    "SESSION_HOURS": "72",
+    "RUNS_PER_MINUTE": "10",
+    "SIGNUPS_PER_HOUR_PER_IP": "5",
+    "LOGIN_ATTEMPTS_PER_MINUTE": "5",
+    "PROVIDER_TIMEOUT_SECONDS": "300",
+    "PROVIDER_MAX_RETRIES": "2",
+    "MAX_FILE_BYTES": "262144",
+    "ENABLE_DEMO_PROVIDER": "true",
+    "OPENAI_BASE_URL": "https://api.openai.com/v1",
+    // --- AI Router ---
+    "FREE_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "FREE_MODEL_FALLBACK": "@cf/meta/llama-3.1-8b-instruct-fp8",
+    "IMAGE_MODEL": "@cf/black-forest-labs/flux-1-schnell",
+    "CLAUDE_MODEL": "claude-sonnet-5",
+    "CLAUDE_MODEL_ADVANCED": "claude-opus-5",
+    // --- Control IA Pro: precio único centralizado ---
+    "PRO_MONTHLY_PRICE": "20",
+    "PRO_CURRENCY": "EUR",
+    // none = pagos desactivados. stripe = requiere STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET y STRIPE_PRICE_ID
+    "PAYMENT_PROVIDER": "none",
+    "PUBLIC_URL": "https://control-ia.tureganovictor79.workers.dev"
+  },
+  "observability": { "enabled": true }
+}

@@ -1,3 +1,4 @@
 -r requirements.txt
+-r requirements-control.txt
 pytest>=8,<9
 ruff>=0.6,<1

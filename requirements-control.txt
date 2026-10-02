@@ -1,0 +1,7 @@
+# Dependencias de Control IA (python -m control_ia). El bot de Discord no las necesita.
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+httpx>=0.27,<1
+python-multipart>=0.0.9
+cryptography>=41
+anthropic>=1.8,<2
