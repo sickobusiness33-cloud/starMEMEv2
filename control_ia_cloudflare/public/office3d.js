@@ -1,10 +1,12 @@
-/* Oficina 3D de Kairo (Three.js).
+/* Oficina 3D de Kairo · parqué de Wall Street (Three.js).
  *
- * Cada robot del lienzo es un muñeco 3D con su mesa y su ordenador. Cuando le
- * toca trabajar (su proyecto está trabajando de verdad, o Kairo lo está usando
- * en una ejecución) se levanta, va al tablón a por la tarea y se pone a trabajar
- * en la mesa del proyecto. Si no, teclea en su mesa y de vez en cuando va a por
- * un café, agua o se sienta en el sofá.
+ * Una sola planta, todo a la vista:
+ *   - Al fondo, el videowall de KAIRO con KPIs reales y un teletipo que corre.
+ *   - Delante, las mesas de proyecto (hologramas) y Kairo Core.
+ *   - Primera fila: TU EQUIPO, cada robot con su puesto de trader de 3 pantallas.
+ *     La pantalla central muestra lo que el agente está haciendo DE VERDAD.
+ *   - Detrás, todo el catálogo en filas de trading desks.
+ * Toca un robot para ver su ficha; toca su ordenador para ver qué le pidieron y qué genera.
  */
 import * as THREE from "/vendor/three.min.js";
 
@@ -13,24 +15,33 @@ const TAU = Math.PI * 2;
 const SPEED = Math.min(40, Math.max(1, Number(new URLSearchParams(location.search).get("officeSpeed")) || 1));
 const rand = (a, b) => a + Math.random() * (b - a);
 const HEX = { azul: 0x5b8cf5, rosa: 0xf26b8a, morado: 0xa97cf2, verde: 0x58cc6c, turquesa: 0x22c1ad, naranja: 0xf6a33c, amarillo: 0xf7c12e };
+const hexCss = (c) => "#" + (HEX[c] || HEX.azul).toString(16).padStart(6, "0");
 const hashOf = (s) => [...String(s)].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 1000003, 7);
+const FONT = "Geist, Inter, system-ui, sans-serif";
+const MONO = "'Geist Mono', 'JetBrains Mono', ui-monospace, monospace";
 
-// ------------------------------------------------------------------ distribución
-const CORRIDOR_X = 2.6;
-const DESK_COLS = [-10.5, -7.3, -4.1, -0.9];
-const DESK_ROWS = [-2.2, 1.6, 5.4, 9.2];
-const STATIONS = [[7.6, -2.6], [11.6, -2.6], [7.6, 3], [11.6, 3], [7.6, 8.6], [11.6, 8.6]];
-const KAIRO_CORE = [10.4, -8.2];
-const BOARD = { spot: [3.4, -9.3], lane: [3.4, -7.4] };
+// ------------------------------------------------------------------ distribución (metros)
+const HALL = { x0: -42, x1: 42, z0: -34, z1: 34, h: 10 };
+const WALK_Z = -15.2;                         // pasillo transversal delante de tu equipo
+const TEAM_Z = -10.6;                         // asientos de tu equipo
+const TEAM_LANE_Z = -8.6;                     // pasillo detrás de tu equipo
+// Del centro hacia fuera, alternando lados: con pocos robots se quedan en el centro del parqué.
+const TEAM_X = Array.from({ length: 16 }, (_, i) => (i % 2 ? 1 : -1) * (2.2 + Math.floor(i / 2) * 2.45));
+const STATIONS = [[-30, -22.5], [-19, -22.5], [-8.5, -24.5], [8.5, -24.5], [19, -22.5], [30, -22.5]];
+const KAIRO_CORE = [0, -24.5];
+const BOARD = { spot: [-4.6, -16.6], lane: [-4.6, WALK_Z + 0.4] };
 const BREAKS = [
-  { id: "coffee", label: "☕ café", spot: [-11.2, -9.1], lane: [-11.2, -7.4], face: Math.PI, cup: 0x6b3d1f },
-  { id: "coffee", label: "☕ café", spot: [-10.2, -9.1], lane: [-10.2, -7.4], face: Math.PI, cup: 0x6b3d1f },
-  { id: "water", label: "💧 agua", spot: [-7.6, -9.2], lane: [-7.6, -7.4], face: Math.PI, cup: 0x9ad7ff },
-  { id: "sofa", label: "🛋 descanso", spot: [-3.8, -9.3], lane: [-3.8, -7.4], face: 0, sit: 0.42 },
-  { id: "sofa", label: "🛋 descanso", spot: [-2.6, -9.3], lane: [-2.6, -7.4], face: 0, sit: 0.42 },
+  { id: "coffee", label: "☕ café", spot: [-38.4, -12.6], lane: [-36.6, TEAM_LANE_Z], face: -Math.PI / 2, cup: 0x6b3d1f },
+  { id: "coffee", label: "☕ café", spot: [-38.4, -11.2], lane: [-36.6, TEAM_LANE_Z], face: -Math.PI / 2, cup: 0x6b3d1f },
+  { id: "water", label: "💧 agua", spot: [38.4, -12.4], lane: [36.6, TEAM_LANE_Z], face: Math.PI / 2, cup: 0x9ad7ff },
+  { id: "sofa", label: "🛋 descanso", spot: [38.5, -6.2], lane: [36.6, TEAM_LANE_Z], face: -Math.PI / 2, sit: 0.42 },
+  { id: "sofa", label: "🛋 descanso", spot: [38.5, -4.9], lane: [36.6, TEAM_LANE_Z], face: -Math.PI / 2, sit: 0.42 },
 ];
-const DOOR = [CORRIDOR_X, 12.4];
-
+const DOOR = [0, 33.2];
+// Filas del parqué (todo el catálogo)
+const ROW_Z0 = -3.2, ROW_DZ = 3.35, ROWS = 10, SEAT_DX = 2.3, SEATS_HALF = 15;
+const CROWD_CAP = ROWS * SEATS_HALF * 2;
+const HUDDLES = [[-26, 31.2], [-9, 31.2], [9, 31.2], [26, 31.2]];
 // ------------------------------------------------------------------ texturas
 function canvasTex(w, h, draw) {
   const c = document.createElement("canvas");
@@ -41,7 +52,7 @@ function canvasTex(w, h, draw) {
   t.anisotropy = 4;
   return t;
 }
-function textTex(lines, { w = 512, h = 256, bg = "rgba(0,0,0,0)", color = "#fff", font = "bold 64px Space Grotesk, Inter, sans-serif", sub = null, accent = null } = {}) {
+function textTex(lines, { w = 512, h = 256, bg = "rgba(0,0,0,0)", color = "#fff", font = `600 64px ${FONT}`, sub = null, accent = null } = {}) {
   return canvasTex(w, h, (g) => {
     g.fillStyle = bg; g.fillRect(0, 0, w, h);
     if (accent) { g.fillStyle = accent; g.fillRect(0, 0, w, 10); }
@@ -187,9 +198,164 @@ function kanbanScreen(accentCss) {
   return { tex, tick: () => { const k = cards[Math.floor(Math.random() * cards.length)]; k.col = (k.col + 1) % 3; draw(); } };
 }
 
-function office(scene, accent, accentCss, env) {
+// ------------------------------------------------------------------ pantallas del parqué
+/** Gráfico de velas que avanza (pantallas laterales: ambiente de trading). */
+function chartScreen(accentCss) {
+  const c = document.createElement("canvas"); c.width = 256; c.height = 160;
+  const g = c.getContext("2d");
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  let v = 80; const candles = Array.from({ length: 34 }, () => { const o = v; v = Math.max(20, Math.min(140, v + rand(-12, 12))); return [o, v, Math.max(o, v) + rand(0, 8), Math.min(o, v) - rand(0, 8)]; });
+  const draw = () => {
+    g.fillStyle = "#070b12"; g.fillRect(0, 0, 256, 160);
+    g.strokeStyle = "rgba(255,255,255,.06)"; g.lineWidth = 1;
+    for (let y = 20; y < 160; y += 28) { g.beginPath(); g.moveTo(0, y); g.lineTo(256, y); g.stroke(); }
+    candles.forEach(([o, cl, hi, lo], i) => {
+      const x = 6 + i * 7.3, up = cl >= o;
+      g.strokeStyle = g.fillStyle = up ? "#34d399" : "#f87171";
+      g.beginPath(); g.moveTo(x + 2.5, 160 - hi); g.lineTo(x + 2.5, 160 - lo); g.stroke();
+      g.fillRect(x, 160 - Math.max(o, cl), 5, Math.max(2, Math.abs(cl - o)));
+    });
+    g.fillStyle = accentCss; g.fillRect(0, 0, 256, 3);
+    tex.needsUpdate = true;
+  };
+  draw();
+  return { tex, tick: () => { candles.shift(); const o = candles[candles.length - 1][1]; const cl = Math.max(20, Math.min(140, o + rand(-12, 12))); candles.push([o, cl, Math.max(o, cl) + rand(0, 8), Math.min(o, cl) - rand(0, 8)]); draw(); } };
+}
+
+/** Pantalla central del puesto de un agente: lo que hace DE VERDAD (petición / salida / estado). */
+function agentScreen(agent, accentCss) {
+  const c = document.createElement("canvas"); c.width = 640; c.height = 400;
+  const g = c.getContext("2d");
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+  let data = null, blink = 0;
+  const wrap = (text, n) => String(text || "").replace(/\r/g, "").split("\n").flatMap((l) => (l.length ? l.match(new RegExp(`.{1,${n}}`, "g")) : [""]));
+  const draw = () => {
+    g.fillStyle = "#06090f"; g.fillRect(0, 0, 640, 400);
+    g.fillStyle = "#0e1420"; g.fillRect(0, 0, 640, 44);
+    g.fillStyle = hexCss(agent.color); g.beginPath(); g.arc(24, 22, 7, 0, TAU); g.fill();
+    g.font = `600 22px ${FONT}`; g.fillStyle = "#e5e7eb"; g.textBaseline = "middle"; g.fillText(agent.name.slice(0, 30), 42, 23);
+    const live = data?.live;
+    const pill = live ? "● EN VIVO" : data ? "✓ ÚLTIMO TRABAJO" : "EN ESPERA";
+    g.font = `700 15px ${MONO}`; const pw = g.measureText(pill).width + 20;
+    g.fillStyle = live ? "rgba(52,211,153,.18)" : "rgba(255,255,255,.08)"; g.fillRect(640 - pw - 14, 11, pw, 24);
+    g.fillStyle = live ? "#34d399" : "#9ca3af"; g.fillText(pill, 640 - pw - 4, 23);
+    g.textBaseline = "alphabetic";
+    if (!data) {
+      g.font = `500 20px ${FONT}`; g.fillStyle = "#6b7280"; g.fillText("Sin tareas todavía.", 24, 110);
+      g.font = `400 16px ${FONT}`; g.fillText("Cuando Kairo o un proyecto lo use, verás aquí", 24, 140); g.fillText("la petición y el resultado en tiempo real.", 24, 162);
+    } else {
+      g.font = `600 14px ${MONO}`; g.fillStyle = accentCss; g.fillText("› " + String(data.request || data.task || "").replace(/\s+/g, " ").slice(0, 64), 20, 72);
+      g.font = `400 15px ${MONO}`;
+      const lines = wrap(data.output || data.action || "…", 66);
+      const shown = lines.slice(-17);
+      let inCode = false;
+      shown.forEach((l, i) => {
+        if (/^```/.test(l)) inCode = !inCode;
+        g.fillStyle = /^```/.test(l) ? "#6b7280" : inCode ? "#7dd3fc" : /^#|^\*\*/.test(l) ? "#f9fafb" : "#cbd5e1";
+        g.fillText(l, 20, 100 + i * 17.5);
+      });
+      if (live && blink % 2 === 0) { g.fillStyle = accentCss; g.fillRect(20 + Math.min(600, g.measureText(shown[shown.length - 1] || "").width + 4), 86 + (shown.length - 1) * 17.5, 9, 16); }
+      if (live && data.progress) { g.fillStyle = "rgba(255,255,255,.08)"; g.fillRect(0, 394, 640, 6); g.fillStyle = accentCss; g.fillRect(0, 394, 6.4 * Math.min(100, data.progress), 6); }
+    }
+    tex.needsUpdate = true;
+  };
+  draw();
+  return { tex, set(d) { const k = JSON.stringify(d); if (k !== this.k) { this.k = k; data = d; draw(); } }, tick() { if (data?.live) { blink++; draw(); } } };
+}
+
+/** Skyline nocturno de Manhattan para las cristaleras. */
+function skylineTex() {
+  return canvasTex(2048, 512, (g, w, h) => {
+    const sky = g.createLinearGradient(0, 0, 0, h);
+    sky.addColorStop(0, "#050914"); sky.addColorStop(0.6, "#0d1a33"); sky.addColorStop(1, "#1d2b4a");
+    g.fillStyle = sky; g.fillRect(0, 0, w, h);
+    for (let layer = 0; layer < 3; layer++) {
+      let x = 0;
+      while (x < w) {
+        const bw = rand(40, 120) * (layer ? 1 : 0.8), bh = rand(120, 430) * (1 - layer * 0.18);
+        g.fillStyle = ["#0b1222", "#0e1730", "#121d38"][layer]; g.fillRect(x, h - bh, bw, bh);
+        if (Math.random() < 0.18) { g.beginPath(); g.moveTo(x + bw / 2, h - bh - rand(30, 90)); g.lineTo(x + bw * 0.3, h - bh); g.lineTo(x + bw * 0.7, h - bh); g.fill(); }
+        for (let wy = h - bh + 8; wy < h - 6; wy += 9) for (let wx = x + 5; wx < x + bw - 6; wx += 8) if (Math.random() < 0.32 - layer * 0.06) {
+          g.fillStyle = Math.random() < 0.85 ? `rgba(255,${200 + rand(0, 40) | 0},${120 + rand(0, 60) | 0},${0.5 + Math.random() * 0.4})` : "rgba(160,200,255,.7)";
+          g.fillRect(wx, wy, 3.5, 4);
+        }
+        x += bw + rand(2, 14);
+      }
+    }
+  });
+}
+
+/** Suelo: mármol oscuro pulido en damero suave. */
+function floorTex() {
+  const t = canvasTex(1024, 1024, (g, w, h) => {
+    for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) { g.fillStyle = (x + y) % 2 ? "#1b1e24" : "#22262d"; g.fillRect(x * 256, y * 256, 256, 256); }
+    for (let i = 0; i < 90; i++) {
+      g.strokeStyle = `rgba(255,255,255,${0.015 + Math.random() * 0.035})`; g.lineWidth = rand(0.5, 1.8);
+      g.beginPath(); let x = rand(0, w), y = rand(0, h); g.moveTo(x, y);
+      for (let k = 0; k < 6; k++) { x += rand(-90, 90); y += rand(-30, 110); g.lineTo(x, y); }
+      g.stroke();
+    }
+    g.strokeStyle = "rgba(201,164,92,.35)"; g.lineWidth = 2;
+    for (let i = 0; i <= 4; i++) { g.beginPath(); g.moveTo(i * 256, 0); g.lineTo(i * 256, h); g.stroke(); g.beginPath(); g.moveTo(0, i * 256); g.lineTo(w, i * 256); g.stroke(); }
+  });
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(10, 8);
+  return t;
+}
+
+/** Videowall principal: marca + KPIs reales. */
+function ledWall(accentCss) {
+  const c = document.createElement("canvas"); c.width = 2560; c.height = 400;
+  const g = c.getContext("2d");
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
+  let kpis = [];
+  const draw = () => {
+    const bg = g.createLinearGradient(0, 0, 0, 400); bg.addColorStop(0, "#04070d"); bg.addColorStop(1, "#0a1220");
+    g.fillStyle = bg; g.fillRect(0, 0, 2560, 400);
+    g.fillStyle = "rgba(255,255,255,.025)"; for (let x = 0; x < 2560; x += 4) g.fillRect(x, 0, 1, 400);
+    g.textBaseline = "middle";
+    g.font = `600 96px ${FONT}`; g.fillStyle = "#f8fafc"; g.fillText("KAIRO", 80, 150);
+    g.fillStyle = accentCss; g.fillText("INTELLIGENCE", 80 + g.measureText("KAIRO ").width, 150);
+    g.font = `500 32px ${MONO}`; g.fillStyle = "#94a3b8"; g.fillText("AGENT TRADING FLOOR · " + new Date().toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" }).toUpperCase(), 84, 260);
+    // KPIs en la mitad derecha (sin pisar el título)
+    const left = 1400, cw = Math.min(260, (2560 - left - 40) / Math.max(1, kpis.length));
+    kpis.forEach((k, i) => {
+      const x = left + i * cw;
+      g.fillStyle = "rgba(255,255,255,.05)"; g.fillRect(x, 80, cw - 18, 220);
+      g.font = `500 24px ${MONO}`; g.fillStyle = "#94a3b8"; g.fillText(k.label.toUpperCase(), x + 18, 124, cw - 36);
+      g.font = `600 ${String(k.value).length > 6 ? 58 : 80}px ${FONT}`; g.fillStyle = k.tone === "up" ? "#34d399" : k.tone === "live" ? accentCss : "#f8fafc"; g.fillText(String(k.value), x + 16, 215, cw - 30);
+    });
+    tex.needsUpdate = true;
+  };
+  draw();
+  return { tex, set(k) { const s = JSON.stringify(k); if (s !== this.s) { this.s = s; kpis = k.slice(0, 5); draw(); } } };
+}
+
+/** Teletipo (cinta que corre bajo el videowall). */
+function tickerTape(accentCss) {
+  const c = document.createElement("canvas"); c.width = 4096; c.height = 96;
+  const g = c.getContext("2d");
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  const draw = (items) => {
+    g.fillStyle = "#020408"; g.fillRect(0, 0, 4096, 96);
+    g.font = `600 44px ${MONO}`; g.textBaseline = "middle";
+    let x = 30; const list = items.length ? items : [{ text: "KAIRO INTELLIGENCE", tone: "live" }];
+    for (let rep = 0; x < 4096 && rep < 20; rep++) for (const it of list) {
+      g.fillStyle = it.tone === "up" ? "#34d399" : it.tone === "down" ? "#f87171" : it.tone === "live" ? accentCss : "#e5e7eb";
+      g.fillText(it.text, x, 50); x += g.measureText(it.text).width + 40;
+      g.fillStyle = "#334155"; g.fillText("•", x - 26, 50);
+      if (x > 4096) break;
+    }
+    tex.needsUpdate = true;
+  };
+  draw([]);
+  return { tex, set(items) { const s = JSON.stringify(items); if (s !== this.s) { this.s = s; draw(items); } } };
+}
+
+// ------------------------------------------------------------------ edificio
+function tradingFloor(scene, accent, accentCss, env) {
   const M = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: .5, metalness: .05, envMap: env, ...o });
-  const box = (w, h, d, mat, x, y, z, parent = scene, cast = true) => {
+  const box = (w, h, d, mat, x, y, z, parent = scene, cast = false) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     m.position.set(x, y, z); m.castShadow = cast; m.receiveShadow = true; parent.add(m); return m;
   };
@@ -197,356 +363,186 @@ function office(scene, accent, accentCss, env) {
     const m = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, seg), mat);
     m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; parent.add(m); return m;
   };
-  const gold = M(0xc9a45c, { metalness: 1, roughness: .28, envMapIntensity: 1.4 });
+  const gold = M(0xc9a45c, { metalness: 1, roughness: .28, envMapIntensity: 1.3 });
   const chrome = M(0xdfe5ec, { metalness: 1, roughness: .15 });
-  const black = M(0x14171c, { roughness: .35, metalness: .4 });
-  const white = M(0xf6f5f2, { roughness: .25 });
-  const wood = M(0x6b4a33, { roughness: .45 }); // nogal oscuro
-  const marble = new THREE.MeshStandardMaterial({ map: marbleTex(), roughness: .32, metalness: .08, envMap: env, envMapIntensity: .9 });
+  const black = M(0x111317, { roughness: .35, metalness: .4 });
+  const white = M(0xf3f2ee, { roughness: .3 });
+  const wood = M(0x4a3222, { roughness: .4 });
+  const marble = new THREE.MeshStandardMaterial({ map: marbleTex(), roughness: .3, metalness: .05, envMap: env });
   const cream = M(0xe9dfcf, { roughness: .9 });
-  const glass = new THREE.MeshStandardMaterial({ color: 0xa8c8e6, transparent: true, opacity: .16, roughness: .02, metalness: .9, envMap: env, envMapIntensity: 1.3, depthWrite: false });
   const leaf = M(0x2f6b3f, { roughness: .8 });
+  const { x0, x1, z0, z1, h } = HALL;
+  const W = x1 - x0, D = z1 - z0;
 
-  // Suelo de mármol pulido con borde dorado
-  const floor = new THREE.Mesh(new THREE.BoxGeometry(31, 0.35, 25), marble);
-  floor.position.set(0, -0.175, 0.5); floor.receiveShadow = true; scene.add(floor);
-  box(31.2, 0.08, 0.12, gold, 0, 0.02, 13.02, scene, false); box(0.12, 0.08, 25.2, gold, 15.52, 0.02, 0.5, scene, false);
-  const rug = (w, d, color, x, z) => { const r = new THREE.Mesh(new THREE.BoxGeometry(w, 0.02, d), M(color, { roughness: 1, envMap: null })); r.position.set(x, 0.012, z); r.receiveShadow = true; scene.add(r); };
-  rug(7, 3.6, 0x3a4150, -3.2, -9); rug(9, 14.5, 0x2c2f38, 9.6, 3.2); rug(3.6, 1.8, 0x1c1f26, CORRIDOR_X, 11.9);
+  // Suelo de mármol oscuro pulido + moqueta azul marino bajo los puestos
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(W, D), new THREE.MeshStandardMaterial({ map: floorTex(), roughness: .34, metalness: .1, envMap: env, envMapIntensity: .6 }));
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+  const carpet = M(0x141b2b, { roughness: 1, envMap: null });
+  box(44, 0.02, 4.4, carpet, 0, 0.01, TEAM_Z - 0.4);                                              // tu equipo
+  for (const s of [-1, 1]) box(SEATS_HALF * SEAT_DX + 1, 0.02, ROWS * ROW_DZ, carpet, s * (2.4 + (SEATS_HALF - 1) * SEAT_DX / 2), 0.01, ROW_Z0 + (ROWS - 1) * ROW_DZ / 2 - 0.2);
+  // Líneas doradas que marcan los pasillos
+  box(0.08, 0.025, D - 4, gold, -1.3, 0.015, 2); box(0.08, 0.025, D - 4, gold, 1.3, 0.015, 2);
+  box(W - 6, 0.025, 0.08, gold, 0, 0.015, WALK_Z - 1.4); box(W - 6, 0.025, 0.08, gold, 0, 0.015, WALK_Z + 1.4);
 
-  // Cristaleras de suelo a techo (fondo e izquierda) con perfilería negra
-  const H = 3.8;
-  box(31, H, 0.04, glass, 0, H / 2, -11.8, scene, false);
-  box(0.04, H, 25, glass, -15.4, H / 2, 0.5, scene, false);
-  for (let x = -15.4; x <= 15.5; x += 3.1) box(0.1, H, 0.12, black, x, H / 2, -11.8, scene, false);
-  for (let z = -11.8; z <= 13; z += 3.1) box(0.12, H, 0.1, black, -15.4, H / 2, z, scene, false);
-  box(31, 0.12, 0.16, black, 0, H, -11.8, scene, false); box(0.16, 0.12, 25, black, -15.4, H, 0.5, scene, false);
-  // Barandilla de cristal baja en los lados abiertos (para ver dentro)
-  box(31, 1.05, 0.04, glass, 0, 0.52, 13.05, scene, false); box(0.04, 1.05, 25, glass, 15.55, 0.52, 0.5, scene, false);
-  box(31, 0.06, 0.1, gold, 0, 1.06, 13.05, scene, false); box(0.1, 0.06, 25, gold, 15.55, 1.06, 0.5, scene, false);
+  // Paredes: piedra clara abajo, cristaleras con el skyline arriba, pilastras de mármol
+  const stone = M(0x2a2c31, { roughness: .7 });
+  const sky = new THREE.MeshBasicMaterial({ map: skylineTex(), toneMapped: false });
+  const wall = (len, x, z, ry) => {
+    const g = new THREE.Group(); g.position.set(x, 0, z); g.rotation.y = ry; scene.add(g);
+    box(len, 1.4, 0.3, stone, 0, 0.7, 0, g);
+    const win = new THREE.Mesh(new THREE.PlaneGeometry(len, h - 2.6), sky); win.position.set(0, 1.4 + (h - 2.6) / 2, -0.05); g.add(win);
+    for (let px = -len / 2; px <= len / 2 + 0.01; px += 4.2) box(0.6, h, 0.6, marble, px, h / 2, 0.1, g, false);
+    box(len, 0.3, 0.5, gold, 0, 1.45, 0.05, g); box(len, 1.2, 0.6, stone, 0, h - 0.6, 0.05, g);
+    return g;
+  };
+  wall(W, 0, z1, Math.PI);           // fondo (detrás de las filas)
+  wall(D, x0, 0, Math.PI / 2);       // izquierda
+  wall(D, x1, 0, -Math.PI / 2);      // derecha
+  // Pared frontal: el videowall
+  box(W, h, 0.4, stone, 0, h / 2, z0 - 0.2);
+  // Techo oscuro con tiras de luz
+  const ceil = new THREE.Group(); scene.add(ceil);
+  const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(W, D), M(0x0d0f13, { roughness: .9 })); ceiling.rotation.x = Math.PI / 2; ceiling.position.y = h; ceil.add(ceiling);
+  const strip = new THREE.MeshBasicMaterial({ color: 0xfff4e0 });
+  for (let z = z0 + 4; z < z1 - 2; z += 4.2) { const s = new THREE.Mesh(new THREE.BoxGeometry(W - 10, 0.06, 0.22), strip); s.position.set(0, h - 0.05, z); ceil.add(s); }
 
-  // Muro de mármol retroiluminado con el logo KAIRO
-  box(7, 3.2, 0.3, marble, -8.2, 1.6, -11.2, scene, true);
-  const sign = new THREE.Mesh(new THREE.PlaneGeometry(4.4, 0.95), new THREE.MeshBasicMaterial({ map: textTex("KAIRO", { w: 1024, h: 220, color: "#ffffff", font: "300 150px Space Grotesk, Inter, sans-serif" }), transparent: true, toneMapped: false }));
-  sign.position.set(-8.2, 2.3, -11.04); scene.add(sign);
-  const signGlow = new THREE.PointLight(accent, 8, 8); signGlow.position.set(-8.2, 2.2, -10.2); scene.add(signGlow);
-  box(6.6, 0.03, 0.03, M(0x000000, { emissive: accent, emissiveIntensity: 3 }), -8.2, 0.06, -11.04, scene, false);
-  // Reloj minimalista en el muro
-  const clock = new THREE.Group(); clock.position.set(-6.1, 1.25, -11.03); scene.add(clock);
-  const face = new THREE.Mesh(new THREE.CircleGeometry(0.34, 40), black); clock.add(face);
-  const hand = (len, w) => { const p = new THREE.Group(); const m = new THREE.Mesh(new THREE.BoxGeometry(w, len, 0.01), gold); m.position.y = len / 2; p.add(m); p.position.z = 0.01; clock.add(p); return p; };
-  const hH = hand(0.18, 0.035), hM = hand(0.28, 0.025);
+  // Videowall + teletipo
+  const led = ledWall(accentCss), tape = tickerTape(accentCss);
+  box(48.6, 8.4, 0.3, black, 0, 5.6, z0 + 0.25);
+  const ledMesh = new THREE.Mesh(new THREE.PlaneGeometry(48, 7.5), new THREE.MeshBasicMaterial({ map: led.tex, toneMapped: false }));
+  ledMesh.position.set(0, 5.85, z0 + 0.42); scene.add(ledMesh);
+  const tapeMesh = new THREE.Mesh(new THREE.PlaneGeometry(W - 1, 0.95), new THREE.MeshBasicMaterial({ map: tape.tex, toneMapped: false }));
+  tapeMesh.position.set(0, 1.25, z0 + 0.45); tape.tex.repeat.set(2, 1); scene.add(tapeMesh);
+  // Segundo teletipo en las paredes laterales (anillo de cotizaciones)
+  for (const s of [-1, 1]) { const m = new THREE.Mesh(new THREE.PlaneGeometry(D - 6, 0.7), new THREE.MeshBasicMaterial({ map: tape.tex, toneMapped: false })); m.position.set(s * (x1 - 0.45), h - 1.7, 0); m.rotation.y = -s * Math.PI / 2; scene.add(m); }
+  
 
-  // Barra de café de mármol con taburetes dorados, cafetera cromada y fuente de agua
-  box(4.6, 1.02, 0.85, black, -11.3, 0.51, -10.7);
-  box(4.8, 0.07, 0.95, marble, -11.3, 1.05, -10.7);
-  const machine = box(0.62, 0.62, 0.5, chrome, -11.2, 1.4, -10.85);
-  box(0.46, 0.2, 0.04, black, -11.2, 1.46, -10.59);
-  const ledDot = new THREE.Mesh(new THREE.SphereGeometry(0.03, 10, 8), new THREE.MeshStandardMaterial({ color: 0x22ff99, emissive: 0x22ff99, emissiveIntensity: 2 })); ledDot.position.set(-10.98, 1.62, -10.59); scene.add(ledDot);
-  box(0.62, 0.62, 0.5, chrome, -10.25, 1.4, -10.85);
-  for (let i = 0; i < 5; i++) cyl(0.055, 0.045, 0.1, white, -9.6 + i * 0.15, 1.13, -10.55);
-  for (const x of [-12.6, -11.6, -10.6]) { cyl(0.2, 0.2, 0.06, cream, x, 0.78, -9.8); cyl(0.025, 0.025, 0.75, gold, x, 0.38, -9.8); cyl(0.2, 0.22, 0.02, gold, x, 0.01, -9.8); }
-  const cooler = new THREE.Group(); cooler.position.set(-7.6, 0, -10.95); scene.add(cooler);
+  // Tablón de tareas (kanban) delante de Kairo Core
+  const kb = kanbanScreen(accentCss);
+  box(4.4, 2.4, 0.14, black, BOARD.spot[0], 1.9, BOARD.spot[1] - 1.25);
+  const kbScreen = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 2.1), new THREE.MeshBasicMaterial({ map: kb.tex, toneMapped: false }));
+  kbScreen.position.set(BOARD.spot[0], 1.9, BOARD.spot[1] - 1.17); scene.add(kbScreen);
+  box(0.14, 0.7, 0.14, black, BOARD.spot[0] - 1.6, 0.35, BOARD.spot[1] - 1.25); box(0.14, 0.7, 0.14, black, BOARD.spot[0] + 1.6, 0.35, BOARD.spot[1] - 1.25);
+
+  // Cartel colgante «TU EQUIPO»
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(4.6, 0.7), new THREE.MeshBasicMaterial({ map: textTex("TU EQUIPO", { w: 1024, h: 150, bg: "#0b0f17", color: "#ffffff", font: `600 92px ${FONT}`, accent: accentCss }), toneMapped: false, side: THREE.DoubleSide }));
+  sign.position.set(0, 5.8, TEAM_Z - 1.4); scene.add(sign);
+  for (const s of [-1, 1]) box(0.02, h - 6.2, 0.02, black, s * 2.1, 5.8 + (h - 6.2) / 2, TEAM_Z - 1.4);
+
+  // Barra de café (pared izquierda) y agua + lounge (pared derecha)
+  box(0.9, 1.05, 4.2, black, -40.6, 0.52, -11.9); box(1.0, 0.07, 4.4, marble, -40.6, 1.08, -11.9);
+  const machine = box(0.5, 0.62, 0.62, chrome, -40.8, 1.43, -12.6); box(0.5, 0.62, 0.62, chrome, -40.8, 1.43, -11.2);
+  const ledDot = new THREE.Mesh(new THREE.SphereGeometry(0.03, 10, 8), new THREE.MeshStandardMaterial({ color: 0x22ff99, emissive: 0x22ff99, emissiveIntensity: 2 })); ledDot.position.set(-40.5, 1.62, -12.3); scene.add(ledDot);
+  const cooler = new THREE.Group(); cooler.position.set(40.6, 0, -12.4); scene.add(cooler);
   box(0.5, 1.1, 0.45, white, 0, 0.55, 0, cooler);
   cyl(0.2, 0.2, 0.55, new THREE.MeshStandardMaterial({ color: 0x7cc6ff, transparent: true, opacity: .55, roughness: .02, envMap: env }), 0, 1.38, 0, cooler);
-  box(0.3, 0.05, 0.05, gold, 0, 0.82, 0.24, cooler);
-  // Lounge: sofá curvo crema, butacas y mesa dorada
-  const sofaG = new THREE.Group(); sofaG.position.set(-3.2, 0, -10.6); scene.add(sofaG);
-  box(3.8, 0.42, 1.05, cream, 0, 0.21, 0, sofaG); box(3.8, 0.55, 0.28, cream, 0, 0.62, -0.42, sofaG);
-  for (const s of [-1, 1]) { const arm = new THREE.Mesh(new THREE.CapsuleGeometry(0.16, 0.8, 6, 12), cream); arm.rotation.x = Math.PI / 2; arm.position.set(s * 1.95, 0.52, 0); arm.castShadow = true; sofaG.add(arm); }
-  cyl(0.65, 0.65, 0.05, marble, -3.2, 0.42, -8.7, scene, 40); cyl(0.05, 0.05, 0.4, gold, -3.2, 0.2, -8.7); cyl(0.4, 0.45, 0.02, gold, -3.2, 0.01, -8.7);
-  cyl(0.07, 0.06, 0.11, white, -3.4, 0.5, -8.6);
-  // Olivos en maceteros blancos
+  const sofa = new THREE.Group(); sofa.position.set(38.9, 0, -5.55); sofa.rotation.y = -Math.PI / 2; scene.add(sofa);
+  box(3, 0.42, 1, cream, 0, 0.21, 0, sofa); box(3, 0.55, 0.26, cream, 0, 0.62, -0.4, sofa);
+  // Olivos en macetero
   const tree = (x, z, s = 1) => {
     cyl(0.42 * s, 0.34 * s, 0.7 * s, white, x, 0.35 * s, z, scene, 28);
     cyl(0.05 * s, 0.07 * s, 1.1 * s, wood, x, 1.1 * s, z, scene, 8);
-    for (let i = 0; i < 4; i++) { const l = new THREE.Mesh(new THREE.IcosahedronGeometry(0.45 * s, 1), leaf); l.position.set(x + rand(-0.35, 0.35) * s, (1.7 + rand(0, 0.5)) * s, z + rand(-0.35, 0.35) * s); l.castShadow = true; scene.add(l); }
+    for (let i = 0; i < 4; i++) { const l = new THREE.Mesh(new THREE.IcosahedronGeometry(0.45 * s, 1), leaf); l.position.set(x + rand(-0.35, 0.35) * s, (1.7 + rand(0, 0.5)) * s, z + rand(-0.35, 0.35) * s); scene.add(l); }
   };
-  tree(-14.6, -10.9, 1.15); tree(-0.4, -11, .95); tree(14.6, -11, 1.2); tree(-14.6, 12.3, 1.1); tree(6, 12.3, .9); tree(14.6, 12.3, 1);
-  // Estantería de nogal con objetos
-  box(0.4, 2.4, 3.2, wood, -15, 1.2, 5.4);
-  for (let i = 0; i < 4; i++) { box(0.42, 0.04, 3.2, gold, -14.98, 0.5 + i * 0.55, 5.4, scene, false); for (let j = 0; j < 4; j++) if ((i + j) % 2) box(0.22, 0.3, 0.3, [white, black, gold][(i + j) % 3], -14.95, 0.68 + i * 0.55, 4.2 + j * 0.8); }
-  // Pantalla de tareas (kanban digital) exenta, junto al cristal
-  const kb = kanbanScreen(accentCss);
-  box(3.8, 2.05, 0.12, black, BOARD.spot[0], 1.75, -11.3);
-  const kbScreen = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 1.8), new THREE.MeshBasicMaterial({ map: kb.tex, toneMapped: false }));
-  kbScreen.position.set(BOARD.spot[0], 1.75, -11.23); scene.add(kbScreen);
-  box(0.12, 0.7, 0.12, black, BOARD.spot[0] - 1.2, 0.35, -11.3); box(0.12, 0.7, 0.12, black, BOARD.spot[0] + 1.2, 0.35, -11.3);
-  // Lámparas de pie tipo arco
-  for (const [x, z] of [[-13.9, 0.8], [14.6, 9.5]]) {
-    cyl(0.25, 0.28, 0.06, black, x, 0.03, z); cyl(0.02, 0.02, 2.3, gold, x, 1.15, z);
-    const shade = cyl(0.32, 0.18, 0.3, M(0xfff6e0, { emissive: 0xffdca0, emissiveIntensity: 1.2 }), x, 2.35, z); shade.castShadow = false;
-    const pl = new THREE.PointLight(0xffd6a0, 4, 6); pl.position.set(x, 2.2, z); scene.add(pl);
-  }
+  for (const [x, z] of [[-39.5, -31.5], [39.5, -31.5], [-39.5, -16.5], [39.5, -16.5], [-39.5, 31.5], [39.5, 31.5], [-13, -31.6], [13, -31.6]]) tree(x, z, 1.25);
+  // Mesas altas de reunión al fondo (los equipos se reúnen aquí)
+  for (const [x, z] of HUDDLES) { cyl(1.25, 1.25, 0.06, marble, x, 1.08, z, scene, 40); cyl(0.08, 0.3, 1.05, black, x, 0.53, z); }
+  // Puerta principal (fondo)
+  box(4, 3.4, 0.2, M(0x1a1d22, { metalness: .6, roughness: .3 }), DOOR[0], 1.7, z1 - 0.1);
+  box(4.4, 0.18, 0.3, gold, DOOR[0], 3.5, z1 - 0.15);
 
   let kbT = 0;
   return {
+    led, tape,
     tick(now, dt = 0.016) {
-      const d = new Date();
-      hM.rotation.z = -((d.getMinutes() + d.getSeconds() / 60) / 60) * TAU;
-      hH.rotation.z = -(((d.getHours() % 12) + d.getMinutes() / 60) / 12) * TAU;
+      tape.tex.offset.x = (tape.tex.offset.x + dt * 0.012) % 1;
       ledDot.material.emissiveIntensity = 1.2 + Math.sin(now * 3) * .8;
       kbT += dt; if (kbT > 2.2) { kbT = 0; kb.tick(); }
     },
-    machine, box, cyl, M, wood, white, black, glass, gold, marble, cream, chrome,
+    ceil, box, cyl, M, wood, white, black, gold, marble, cream, chrome, machine,
   };
 }
 
-/** Mesa moderna (blanca, patas negras) con monitor fino y silla ergonómica. */
-function makeDesk(scene, kit, x, z, screenMat, idleMat) {
-  const { box, cyl, white, black, gold } = kit;
+/** Puesto de trader de tu equipo: mesa de nogal, 3 pantallas (la central es la del agente) y silla. */
+function makeDesk(scene, kit, x, z, centerMat, sideTex) {
+  const { box, cyl, black, gold } = kit;
   const g = new THREE.Group(); g.position.set(x, 0, z); scene.add(g);
-  box(2.1, 0.05, 0.95, white, 0, 0.76, 0, g);
-  for (const s of [-1, 1]) { box(0.05, 0.74, 0.8, black, s * 0.98, 0.37, 0, g); box(0.05, 0.02, 0.8, gold, s * 0.98, 0.745, 0, g, false); }
-  box(0.08, 0.32, 0.08, black, 0, 0.94, -0.25, g);
-  const monitor = box(1.15, 0.64, 0.03, black, 0, 1.38, -0.28, g);
-  const screen = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.6), idleMat);
-  screen.position.set(0, 1.38, -0.262); g.add(screen);
-  box(0.62, 0.02, 0.2, kit.M(0xd1d5db), 0, 0.795, 0.12, g);
-  box(0.1, 0.02, 0.16, kit.M(0xd1d5db), 0.5, 0.795, 0.14, g);
-  const lamp = cyl(0.015, 0.015, 0.45, gold, -0.85, 1, -0.3, g, 8); lamp.castShadow = false;
-  box(0.3, 0.03, 0.06, kit.M(0xffffff, { emissive: 0xfff1d6, emissiveIntensity: 1.5 }), -0.72, 1.22, -0.25, g, false);
-  const chair = new THREE.Group(); chair.position.set(0, 0, 0.75); g.add(chair);
-  const seatMat = kit.M(0x1f2329, { roughness: .8 });
-  box(0.56, 0.08, 0.52, seatMat, 0, 0.47, 0, chair); box(0.56, 0.68, 0.06, seatMat, 0, 0.86, 0.28, chair);
-  cyl(0.025, 0.025, 0.42, kit.chrome, 0, 0.23, 0, chair, 8);
-  cyl(0.3, 0.3, 0.03, kit.chrome, 0, 0.03, 0, chair, 5);
-  return { g, screen, screenMat, idleMat, monitor, seat: [x, z + 0.75], lane: [x, z + 1.75], chair };
-}
-
-// ------------------------------------------------------------------ Nave industrial gigante
-// La oficina de tu equipo es una entreplanta acristalada; abajo, la nave con todos los agentes.
-const FLOOR_Y = -16;                       // suelo de la nave (la entreplanta está 16 m por encima)
-const HALL = { x0: -310, x1: 140, z0: -250, z1: 105, h: 48 };
-
-function hallBgTex() {
-  return canvasTex(64, 512, (g, w, h) => {
-    const gr = g.createLinearGradient(0, 0, 0, h);
-    gr.addColorStop(0, "#0b0e13"); gr.addColorStop(0.5, "#161b22"); gr.addColorStop(1, "#0d1015");
-    g.fillStyle = gr; g.fillRect(0, 0, w, h);
-  });
-}
-/** Entorno para reflejos: interior oscuro con franjas de lucernario. */
-function hallEnvTex() {
-  return canvasTex(256, 128, (g, w, h) => {
-    g.fillStyle = "#1a1f27"; g.fillRect(0, 0, w, h);
-    for (let i = 0; i < 12; i++) { g.fillStyle = "rgba(220,235,255,.85)"; g.fillRect(i * 22 + 4, 8, 10, 40); }
-    g.fillStyle = "#2a2f38"; g.fillRect(0, h * 0.6, w, h * 0.4);
-  });
-}
-function concreteTex() {
-  const t = canvasTex(512, 512, (g, w, h) => {
-    g.fillStyle = "#8b8f95"; g.fillRect(0, 0, w, h);
-    for (let i = 0; i < 2500; i++) { const c = 95 + Math.random() * 40; g.fillStyle = `rgba(${c},${c},${c + 4},.18)`; g.fillRect(Math.random() * w, Math.random() * h, 2 + Math.random() * 6, 2 + Math.random() * 6); }
-    g.strokeStyle = "rgba(30,32,36,.35)"; g.lineWidth = 2;
-    for (let i = 0; i <= 4; i++) { g.beginPath(); g.moveTo(i * 128, 0); g.lineTo(i * 128, h); g.stroke(); g.beginPath(); g.moveTo(0, i * 128); g.lineTo(w, i * 128); g.stroke(); }
-  });
-  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(70, 45); t.anisotropy = 8;
-  return t;
-}
-function corrugatedTex() {
-  const t = canvasTex(256, 64, (g, w, h) => {
-    for (let x = 0; x < w; x += 8) { const gr = g.createLinearGradient(x, 0, x + 8, 0); gr.addColorStop(0, "#39414b"); gr.addColorStop(.5, "#56606c"); gr.addColorStop(1, "#39414b"); g.fillStyle = gr; g.fillRect(x, 0, 8, h); }
-  });
-  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(90, 6);
-  return t;
-}
-function rackTex() {
-  const t = canvasTex(64, 256, (g, w, h) => {
-    g.fillStyle = "#0b0f14"; g.fillRect(0, 0, w, h);
-    for (let y = 4; y < h; y += 8) { g.fillStyle = "#1a212b"; g.fillRect(4, y, w - 8, 6); for (let k = 0; k < 4; k++) { g.fillStyle = ["#22ff9a", "#38d6ff", "#ffb020", "#22ff9a"][(y + k) % 4]; if (Math.random() < .55) g.fillRect(8 + k * 12, y + 2, 3, 2); } }
-  });
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  return t;
-}
-
-/** Estructura de la nave: suelo, muros de chapa, pilares, cerchas, lucernarios, lámparas, puente grúa, racks... */
-function industrialHall(scene, env, accentCss) {
-  const g = new THREE.Group(); scene.add(g);
-  const { x0, x1, z0, z1, h } = HALL;
-  const W = x1 - x0, D = z1 - z0, cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
-  const steel = new THREE.MeshStandardMaterial({ color: 0x2b3038, metalness: .8, roughness: .45, envMap: env });
-  const colMat = new THREE.MeshStandardMaterial({ color: 0x5b6572, metalness: .6, roughness: .5, envMap: env });
-  const yellow = new THREE.MeshStandardMaterial({ color: 0xf2b705, metalness: .5, roughness: .45, envMap: env });
-  const geoBox = new THREE.BoxGeometry(1, 1, 1);
-  const ceil = new THREE.Group(); g.add(ceil); // techo: se oculta al mirar desde arriba
-  const inst = (geo, mat, list, cast = false, parent = g) => {
-    const m = new THREE.InstancedMesh(geo, mat, list.length);
-    list.forEach(([x, y, z, sx, sy, sz, ry = 0], i) => m.setMatrixAt(i, new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, ry, 0)), new THREE.Vector3(sx, sy, sz))));
-    m.castShadow = cast; m.receiveShadow = true; parent.add(m); return m;
-  };
-  // Suelo de hormigón pulido con pasillos pintados
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(W, D), new THREE.MeshStandardMaterial({ map: concreteTex(), roughness: .55, metalness: .1, envMap: env, envMapIntensity: .5 }));
-  floor.rotation.x = -Math.PI / 2; floor.position.set(cx, FLOOR_Y, cz); floor.receiveShadow = true; g.add(floor);
-  const lineMat = new THREE.MeshBasicMaterial({ color: 0xf2c200 });
-  const lines = [];
-  for (const z of [-140, -96, -30, 26, 64]) lines.push([cx, FLOOR_Y + 0.03, z, W - 20, 0.02, 0.5]);
-  for (const x of [-160, -26, 30, 100]) lines.push([x, FLOOR_Y + 0.03, cz, 0.5, 0.02, D - 20]);
-  inst(geoBox, lineMat, lines);
-  // Muros de chapa con franja de ventanas altas
-  const wallMat = new THREE.MeshStandardMaterial({ map: corrugatedTex(), metalness: .6, roughness: .5, envMap: env });
-  const wallH = h;
-  const walls = [[cx, FLOOR_Y + wallH / 2, z0, W, wallH, 1], [cx, FLOOR_Y + wallH / 2, z1, W, wallH, 1], [x0, FLOOR_Y + wallH / 2, cz, 1, wallH, D], [x1, FLOOR_Y + wallH / 2, cz, 1, wallH, D]];
-  walls.forEach(([x, y, z, sx, sy, sz]) => { const m = new THREE.Mesh(geoBox, wallMat); m.position.set(x, y, z); m.scale.set(sx, sy, sz); m.receiveShadow = true; g.add(m); });
-  const winMat = new THREE.MeshBasicMaterial({ color: 0xbcd6f5 });
-  inst(geoBox, winMat, [[cx, FLOOR_Y + wallH - 7, z0 + 0.8, W - 10, 5, 0.2], [x0 + 0.8, FLOOR_Y + wallH - 7, cz, 0.2, 5, D - 10], [cx, FLOOR_Y + wallH - 7, z1 - 0.8, W - 10, 5, 0.2], [x1 - 0.8, FLOOR_Y + wallH - 7, cz, 0.2, 5, D - 10]]);
-  // Portones enrollables amarillos
-  const doors = [];
-  for (let x = x0 + 40; x < x1 - 30; x += 70) doors.push([x, FLOOR_Y + 9, z0 + 0.7, 22, 18, 0.4]);
-  inst(geoBox, new THREE.MeshStandardMaterial({ color: 0xd9a400, roughness: .6, metalness: .4 }), doors);
-  // Rótulo gigante en el muro del fondo
-  const sign = new THREE.Mesh(new THREE.PlaneGeometry(120, 16), new THREE.MeshBasicMaterial({ map: textTex("KAIRO INTELLIGENCE", { w: 2048, h: 272, color: "#ffffff", font: "700 200px Space Grotesk, Inter, sans-serif" }), transparent: true, toneMapped: false }));
-  sign.position.set(-95, FLOOR_Y + 36, z0 + 1.2); g.add(sign);
-  const bar = new THREE.Mesh(geoBox, new THREE.MeshBasicMaterial({ color: new THREE.Color(accentCss), toneMapped: false })); bar.scale.set(120, 0.6, 0.3); bar.position.set(-95, FLOOR_Y + 27, z0 + 1.2); g.add(bar);
-  // Pilares (H) y cerchas de cubierta
-  const cols = [], trusses = [], purlins = [];
-  for (let x = x0 + 30; x < x1; x += 60) for (let z = z0 + 30; z < z1; z += 60) {
-    if (x > -40 && x < 40 && z > -30 && z < 45) continue; // alrededor de la entreplanta, despejado
-    cols.push([x, FLOOR_Y + h / 2, z, 0.8, h, 0.8]);
+  const top = kit.M(0x3a281b, { roughness: .35 });
+  box(2.35, 0.06, 1.05, top, 0, 0.76, -0.85, g, true);
+  box(2.35, 0.72, 0.05, black, 0, 0.38, -1.33, g);
+  for (const s of [-1, 1]) box(0.05, 0.74, 0.95, black, s * 1.12, 0.37, -0.85, g);
+  box(2.35, 0.02, 0.04, gold, 0, 0.79, -0.33, g);
+  const screens = [];
+  for (const [dx, ry, w] of [[-0.78, 0.38, 0.62], [0, 0, 0.92], [0.78, -0.38, 0.62]]) {
+    const mon = new THREE.Group(); mon.position.set(dx, 1.3, -1.12 + Math.abs(dx) * 0.16); mon.rotation.y = ry; g.add(mon);
+    box(w + 0.05, w * 0.6 + 0.05, 0.03, black, 0, 0, -0.02, mon);
+    const scr = new THREE.Mesh(new THREE.PlaneGeometry(w, w * 0.6), dx === 0 ? centerMat : new THREE.MeshBasicMaterial({ map: sideTex, toneMapped: false }));
+    scr.position.z = 0.0; mon.add(scr); screens.push(scr);
   }
-  for (let x = x0 + 24; x < x1; x += 30) {
-    trusses.push([x, FLOOR_Y + h - 1, cz, 0.9, 1.4, D]);        // cordón inferior
-    trusses.push([x, FLOOR_Y + h + 3, cz, 0.7, 0.9, D]);        // cordón superior
-    for (let z = z0 + 6; z < z1; z += 8) trusses.push([x, FLOOR_Y + h + 1, z, 0.3, 4, 0.3]); // montantes
-  }
-  for (let z = z0 + 12; z < z1; z += 18) purlins.push([cx, FLOOR_Y + h + 3.6, z, W, 0.5, 0.5]);
-  inst(geoBox, colMat, cols); inst(geoBox, steel, trusses, false, ceil); inst(geoBox, steel, purlins, false, ceil);
-  // Cubierta con lucernarios
-  const roof = new THREE.Mesh(new THREE.PlaneGeometry(W, D), new THREE.MeshStandardMaterial({ color: 0x1a1d22, roughness: .9, side: THREE.DoubleSide }));
-  roof.rotation.x = Math.PI / 2; roof.position.set(cx, FLOOR_Y + h + 4.2, cz); ceil.add(roof);
-  const sky = [];
-  for (let x = x0 + 39; x < x1; x += 30) sky.push([x, FLOOR_Y + h + 4.0, cz, 9, 0.2, D - 30]);
-  inst(geoBox, new THREE.MeshBasicMaterial({ color: 0xdfeaff }), sky, false, ceil);
-  // Lámparas industriales colgantes (campanas con brillo)
-  const lampPos = [];
-  for (let x = x0 + 30; x < x1; x += 22) for (let z = z0 + 20; z < z1; z += 22) if (!(x > -24 && x < 24 && z > -20 && z < 22)) lampPos.push([x, FLOOR_Y + h - 6, z, 2.4, 1.4, 2.4]);
-  inst(new THREE.ConeGeometry(0.6, 1, 16, 1, true), new THREE.MeshStandardMaterial({ color: 0x20252c, metalness: .7, roughness: .4, side: THREE.DoubleSide }), lampPos, false, ceil);
-  inst(new THREE.CircleGeometry(0.55, 16).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xfff1d6, side: THREE.DoubleSide }), lampPos.map(([x, y, z]) => [x, y - 0.75, z, 2.4, 1, 2.4]), false, ceil);
-  const cable = lampPos.map(([x, y, z]) => [x, y + 3.2, z, 0.06, 5, 0.06]);
-  inst(geoBox, steel, cable, false, ceil);
-  // Luz de las lámparas: halos en el suelo (baratos) y unas pocas luces reales
-  const pool = new THREE.MeshBasicMaterial({ color: 0xffe2b0, transparent: true, opacity: .11, depthWrite: false });
-  inst(new THREE.CircleGeometry(1, 24).rotateX(-Math.PI / 2), pool, lampPos.map(([x, , z]) => [x, FLOOR_Y + 0.05, z, 9, 1, 9]));
-  // Racks de servidores con LEDs a lo largo del muro derecho y del fondo
-  const racks = [];
-  for (let z = z0 + 30; z < z1 - 20; z += 2.2) racks.push([x1 - 6, FLOOR_Y + 2.2, z, 1.6, 4.4, 1.9]);
-  for (let x = 30; x < x1 - 10; x += 2.2) racks.push([x, FLOOR_Y + 2.2, z0 + 8, 1.9, 4.4, 1.6]);
-  const rt = rackTex(); rt.repeat.set(1, 1);
-  inst(geoBox, new THREE.MeshStandardMaterial({ color: 0x0f141b, emissive: 0xffffff, emissiveMap: rt, emissiveIntensity: 1.1, map: rt, roughness: .4, metalness: .6 }), racks);
-  // Palés y cajas en la zona de carga (izquierda)
-  const crates = [];
-  for (let x = x0 + 12; x < x0 + 60; x += 3.2) for (let z = -40; z < 80; z += 3.2) if (Math.random() < .55) { const lv = 1 + Math.floor(Math.random() * 3); for (let k = 0; k < lv; k++) crates.push([x, FLOOR_Y + 0.6 + k * 1.2, z, 2.6, 1.1, 2.6, Math.random() * 0.1]); }
-  inst(geoBox, new THREE.MeshStandardMaterial({ color: 0x9c7a52, roughness: .9 }), crates);
-  // Puente grúa amarillo que recorre la nave
-  const crane = new THREE.Group(); ceil.add(crane);
-  const beam = new THREE.Mesh(geoBox, yellow); beam.scale.set(3, 2.4, D - 12); beam.position.set(0, FLOOR_Y + h - 4, cz); crane.add(beam);
-  const trolley = new THREE.Mesh(geoBox, yellow); trolley.scale.set(4, 2, 5); trolley.position.set(0, FLOOR_Y + h - 6, cz); crane.add(trolley);
-  const hook = new THREE.Mesh(geoBox, steel); hook.scale.set(0.3, 14, 0.3); hook.position.set(0, FLOOR_Y + h - 14, cz); crane.add(hook);
-  const railMat = steel;
-  for (const z of [z0 + 5, z1 - 5]) { const r = new THREE.Mesh(geoBox, railMat); r.scale.set(W, 1.2, 1.2); r.position.set(cx, FLOOR_Y + h - 3, z); ceil.add(r); }
-  // Vehículos autónomos (AGV) con luz que recorren los pasillos
-  const agvs = [];
-  const agvMat = new THREE.MeshStandardMaterial({ color: 0xe8ecf1, roughness: .4, metalness: .3 });
-  const agvLight = new THREE.MeshBasicMaterial({ color: new THREE.Color(accentCss) });
-  for (let i = 0; i < 7; i++) {
-    const a = new THREE.Group();
-    const body = new THREE.Mesh(geoBox, agvMat); body.scale.set(2.2, 0.7, 1.4); body.position.y = 0.45; a.add(body);
-    const box = new THREE.Mesh(geoBox, new THREE.MeshStandardMaterial({ color: 0xb08650 })); box.scale.set(1.4, 1, 1); box.position.y = 1.3; a.add(box);
-    const led = new THREE.Mesh(geoBox, agvLight); led.scale.set(2.25, 0.12, 1.45); led.position.y = 0.82; a.add(led);
-    a.position.set(rand(x0 + 30, x1 - 30), FLOOR_Y, [-140, -96, -30, 26, 64][i % 5]); a.userData = { v: (i % 2 ? 1 : -1) * rand(4, 7) };
-    g.add(a); agvs.push(a);
-  }
-  // Soportes de la entreplanta y escalera
-  const sup = [];
-  for (const x of [-15, -5, 5, 15]) for (const z of [-11.5, 0.5, 12.5]) sup.push([x, FLOOR_Y / 2 - 0.2, z, 0.8, -FLOOR_Y - 0.4, 0.8]);
-  inst(geoBox, steel, sup);
-  const under = new THREE.Mesh(geoBox, new THREE.MeshStandardMaterial({ color: 0x1b1f25, metalness: .6, roughness: .5 })); under.scale.set(31.4, 1.4, 25.4); under.position.set(0, -1.05, 0.5); g.add(under);
-  const edgeLed = new THREE.Mesh(geoBox, new THREE.MeshBasicMaterial({ color: new THREE.Color(accentCss), toneMapped: false })); edgeLed.scale.set(31.6, 0.12, 25.6); edgeLed.position.set(0, -1.8, 0.5); g.add(edgeLed);
-  const steps = [];
-  for (let i = 0; i < 32; i++) steps.push([-14 - i * 0.62 * 0 + 0, -0.5 - i * 0.5, 14 + i * 0.7, 3, 0.18, 0.75]);
-  inst(geoBox, steel, steps);
-
-  let craneX = 0, craneDir = 1;
-  return {
-    tick(now, dt, camY = 0) {
-      ceil.visible = camY < FLOOR_Y + h - 4;
-      craneX += craneDir * dt * 6; if (craneX > x1 - 30 || craneX < x0 + 30) craneDir *= -1;
-      crane.position.x = craneX;
-      trolley.position.z = cz + Math.sin(now * 0.05) * (D / 2 - 30); hook.position.z = trolley.position.z;
-      for (const a of agvs) { a.position.x += a.userData.v * dt; if (a.position.x > x1 - 25 || a.position.x < x0 + 25) { a.userData.v *= -1; } a.rotation.y = a.userData.v > 0 ? 0 : Math.PI; }
-      agvLight.color.setHSL(0.45, 1, 0.45 + Math.sin(now * 6) * 0.15);
-    },
-  };
+  box(0.06, 0.4, 0.06, black, 0, 0.96, -1.16, g);
+  box(0.6, 0.02, 0.2, kit.M(0x2a2e35), 0, 0.8, -0.55, g);
+  const chair = new THREE.Group(); chair.position.set(0, 0, 0); g.add(chair);
+  const leather = kit.M(0x111111, { roughness: .55 });
+  box(0.58, 0.08, 0.54, leather, 0, 0.47, 0, chair); box(0.58, 0.75, 0.07, leather, 0, 0.9, 0.29, chair);
+  cyl(0.025, 0.025, 0.42, kit.chrome, 0, 0.23, 0, chair, 8); cyl(0.3, 0.3, 0.03, kit.chrome, 0, 0.03, 0, chair, 5);
+  return { g, screen: screens[1], screens, seat: [x, z], lane: [x, TEAM_LANE_Z] };
 }
 
-// ------------------------------------------------------------------ multitud: todos los agentes en sus mesas
-// Instanciado: cada pieza del robot (torso, cabeza, visor, ojos, brazos, piernas) es un solo dibujo para los 271.
-// Tres zonas de mesas alrededor de la entreplanta y diez mesas conjuntas entre ellas.
-const CROWD_FIELDS = [
-  { x0: -150, z0: -128, group: 6, groups: 4, rows: 5 },
-  { x0: -150, z0: 34, group: 6, groups: 4, rows: 4 },
-  { x0: 44, z0: -128, group: 6, groups: 2, rows: 6 },
-];
-const CROWD_DX = 3.4, CROWD_AISLE = 10, CROWD_DZ = 6.4;
-const TEAM_TABLES = (() => {
-  const out = [];
-  for (let i = 0; i < 4; i++) for (let j = 0; j < 2; j++) out.push({ x: -130 + i * 30, z: -80 + j * 26, seats: 14 });
-  out.push({ x: 66, z: -70, seats: 14 }, { x: 66, z: -44, seats: 14 });
-  return out;
-})();
+/** Mesa de proyecto con pantalla holográfica. */
+function makeStation(scene, kit, x, z, project, live) {
+  const g = new THREE.Group(); g.position.set(x, 0, z); scene.add(g);
+  const color = HEX[project.color] || HEX.azul;
+  kit.cyl(1.25, 1.25, 0.07, kit.marble, 0, 1.05, 0, g, 48);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(1.25, 0.025, 8, 64), kit.gold); rim.rotation.x = Math.PI / 2; rim.position.y = 1.05; g.add(rim);
+  kit.cyl(0.1, 0.38, 1.03, kit.black, 0, 0.52, 0, g);
+  const holoMat = new THREE.MeshBasicMaterial({ map: textTex(project.name.length > 16 ? project.name.slice(0, 15) + "…" : project.name, { w: 640, h: 300, bg: "rgba(10,18,32,.86)", color: "#ffffff", font: `600 72px ${FONT}`, sub: project.sub || "proyecto", accent: "#" + color.toString(16).padStart(6, "0") }), transparent: true, opacity: .96, side: THREE.DoubleSide });
+  const holo = new THREE.Mesh(new THREE.PlaneGeometry(2.3, 1.08), holoMat);
+  holo.position.set(0, 2.35, 0); g.add(holo);
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.24, 1, 16, 1, true), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .35, side: THREE.DoubleSide }));
+  beam.position.y = 1.6; g.add(beam);
+  const ring = new THREE.Mesh(new THREE.RingGeometry(1.6, 1.78, 48), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: live ? .8 : .18, side: THREE.DoubleSide }));
+  ring.rotation.x = -Math.PI / 2; ring.position.y = 0.03; g.add(ring);
+  const light = new THREE.PointLight(color, live ? 6 : 0, 7); light.position.y = 2.2; g.add(light);
+  // Puestos de pie alrededor (por delante: mirando a la mesa)
+  const spots = Array.from({ length: 8 }, (_, i) => { const a = Math.PI / 2 + (i - 3.5) * 0.36; return [x + Math.cos(a) * 1.85, z + Math.sin(a) * 1.85]; });
+  g.traverse((o) => { if (o.isMesh) o.userData.stationId = project.id; });
+  return { g, holo, ring, light, spots, lane: [x, WALK_Z], color, live };
+}
 
+// ------------------------------------------------------------------ todo el catálogo en el parqué
 function crowdLayout(n) {
   const slots = [];
-  for (const f of CROWD_FIELDS) for (let r = 0; r < f.rows && slots.length < n; r++) {
-    for (let gi = 0; gi < f.groups && slots.length < n; gi++) for (let k = 0; k < f.group && slots.length < n; k++) {
-      const gx = f.x0 + gi * (f.group * CROWD_DX + CROWD_AISLE);
-      const x = gx + k * CROWD_DX, z = f.z0 + r * CROWD_DZ;
-      slots.push({ x, z, seat: [x, z + 0.75], lane: [x, z + 1.9], aisle: gx - CROWD_AISLE / 2 - CROWD_DX / 2 });
-    }
+  for (let r = 0; r < ROWS && slots.length < n; r++) for (let k = 0; k < SEATS_HALF && slots.length < n; k++) for (const s of [-1, 1]) {
+    if (slots.length >= n) break;
+    const x = s * (2.4 + k * SEAT_DX), z = ROW_Z0 + r * ROW_DZ;
+    slots.push({ x, z, seat: [x, z], lane: [x, z + 1.4] });
   }
-  // Si hubiera más agentes que puestos, filas extra al final.
-  for (let i = 0; slots.length < n; i++) { const x = -150 + (i % 36) * CROWD_DX, z = 70 + Math.floor(i / 36) * CROWD_DZ; slots.push({ x, z, seat: [x, z + 0.75], lane: [x, z + 1.9], aisle: -158 }); }
   return slots;
 }
 
-function makeCrowd(scene, agents, codeTex, accentCss) {
-  const N = agents.length;
+function makeCrowd(scene, agents, codeTex, chartTex, accentCss) {
+  const N = Math.min(agents.length, CROWD_CAP);
+  agents = agents.slice(0, N);
   const slots = crowdLayout(N);
   const geoBox = new THREE.BoxGeometry(1, 1, 1);
-  // Mesas con ordenador (instanciadas)
-  const deskParts = [
-    [geoBox, new THREE.MeshStandardMaterial({ color: 0xf2f2ef, roughness: .35 }), (s) => [s.x, FLOOR_Y + 0.76, s.z, 2.1, 0.05, 0.95]],
-    [geoBox, new THREE.MeshStandardMaterial({ color: 0x15181d, roughness: .4, metalness: .4 }), (s) => [s.x - 0.98, FLOOR_Y + 0.37, s.z, 0.05, 0.74, 0.8]],
-    [geoBox, new THREE.MeshStandardMaterial({ color: 0x15181d, roughness: .4, metalness: .4 }), (s) => [s.x + 0.98, FLOOR_Y + 0.37, s.z, 0.05, 0.74, 0.8]],
-    [geoBox, new THREE.MeshStandardMaterial({ color: 0x0c0e12, roughness: .3, metalness: .5 }), (s) => [s.x, FLOOR_Y + 1.36, s.z - 0.28, 1.1, 0.62, 0.04]],
-    [geoBox, new THREE.MeshBasicMaterial({ map: codeTex, toneMapped: false }), (s) => [s.x, FLOOR_Y + 1.36, s.z - 0.255, 1.02, 0.55, 0.01]],
-    [geoBox, new THREE.MeshStandardMaterial({ color: 0x1f2329, roughness: .8 }), (s) => [s.x, FLOOR_Y + 0.47, s.z + 0.75, 0.55, 0.08, 0.5]],
-    [geoBox, new THREE.MeshStandardMaterial({ color: 0x1f2329, roughness: .8 }), (s) => [s.x, FLOOR_Y + 0.85, s.z + 1.02, 0.55, 0.66, 0.06]],
-  ];
-  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), v = new THREE.Vector3(), sc = new THREE.Vector3();
-  for (const [geo, mat, f] of deskParts) {
-    const mesh = new THREE.InstancedMesh(geo, mat, N);
-    slots.forEach((s, i) => { const [x, y, z, sx, sy, sz] = f(s); mesh.setMatrixAt(i, m4.compose(v.set(x, y, z), q.identity(), sc.set(sx, sy, sz))); });
-    mesh.receiveShadow = true; scene.add(mesh);
-  }
-  // Mesas conjuntas (grandes, de 14 plazas) con pantalla central
-  const tableMat = new THREE.MeshStandardMaterial({ color: 0x2b2f36, roughness: .35, metalness: .5 });
-  const tableTop = new THREE.MeshStandardMaterial({ color: 0xf4f3ef, roughness: .3 });
-  const tables = TEAM_TABLES.map((t, ti) => {
-    const grp = new THREE.Group(); grp.position.set(t.x, FLOOR_Y, t.z); scene.add(grp);
-    const top = new THREE.Mesh(geoBox, tableTop); top.scale.set(16, 0.08, 3.2); top.position.y = 0.78; grp.add(top);
-    for (const sx of [-7, 0, 7]) { const leg = new THREE.Mesh(geoBox, tableMat); leg.scale.set(0.3, 0.74, 2.6); leg.position.set(sx, 0.37, 0); grp.add(leg); }
-    const scr = new THREE.Mesh(new THREE.PlaneGeometry(6, 2.2), new THREE.MeshBasicMaterial({ map: codeTex, toneMapped: false, side: THREE.DoubleSide }));
-    scr.position.set(0, 2.6, 0); grp.add(scr);
-    const glow = new THREE.Mesh(new THREE.RingGeometry(9, 9.6, 64).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: new THREE.Color(accentCss), transparent: true, opacity: 0, toneMapped: false }));
-    glow.scale.set(1, 1, 0.34); glow.position.y = 0.05; grp.add(glow);
-    const seats = [];
-    for (let k = 0; k < t.seats / 2; k++) for (const side of [-1, 1]) seats.push({ spot: [t.x - 6 + k * 2, t.z + side * 2.1], face: side > 0 ? Math.PI : 0 });
-    return { ...t, id: ti, grp, glow, seats, busy: 0, until: 0, members: [], real: false };
-  });
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), v = new THREE.Vector3(), sc = new THREE.Vector3(), E = new THREE.Euler();
+  const inst = (mat, f, count = N) => {
+    const mesh = new THREE.InstancedMesh(geoBox, mat, count);
+    slots.forEach((s, i) => { const [x, y, z, sx, sy, sz, ry = 0] = f(s); mesh.setMatrixAt(i, m4.compose(v.set(x, y, z), q.setFromEuler(E.set(0, ry, 0)), sc.set(sx, sy, sz))); });
+    mesh.receiveShadow = true; scene.add(mesh); return mesh;
+  };
+  // Trading desks: nogal oscuro, faldón negro, 2 pantallas por puesto (código + velas)
+  inst(new THREE.MeshStandardMaterial({ color: 0x3a281b, roughness: .35 }), (s) => [s.x, 0.76, s.z - 0.85, SEAT_DX - 0.05, 0.06, 1.0]);
+  inst(new THREE.MeshStandardMaterial({ color: 0x111317, roughness: .4, metalness: .4 }), (s) => [s.x, 0.38, s.z - 1.33, SEAT_DX - 0.05, 0.72, 0.05]);
+  const frame = new THREE.MeshStandardMaterial({ color: 0x0b0c0f, roughness: .3, metalness: .5 });
+  inst(frame, (s) => [s.x - 0.38, 1.28, s.z - 1.1, 0.74, 0.46, 0.03, 0.25]);
+  inst(frame, (s) => [s.x + 0.38, 1.28, s.z - 1.1, 0.74, 0.46, 0.03, -0.25]);
+  const scrA = inst(new THREE.MeshBasicMaterial({ map: codeTex, toneMapped: false }), (s) => [s.x - 0.38, 1.28, s.z - 1.08, 0.7, 0.42, 0.005, 0.25]);
+  const scrB = inst(new THREE.MeshBasicMaterial({ map: chartTex, toneMapped: false }), (s) => [s.x + 0.38, 1.28, s.z - 1.08, 0.7, 0.42, 0.005, -0.25]);
+  inst(new THREE.MeshStandardMaterial({ color: 0x111111, roughness: .6 }), (s) => [s.x, 0.85, s.z + 0.3, 0.55, 0.7, 0.07]); // respaldo silla
 
-  // Robots instanciados
-  const mk = (geo, mat) => { const m = new THREE.InstancedMesh(geo, mat, N); m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); m.castShadow = false; scene.add(m); return m; };
+  // Robots instanciados (ligeros)
+  const mk = (geo, mat) => { const m = new THREE.InstancedMesh(geo, mat, N); m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(m); return m; };
   const body = new THREE.MeshStandardMaterial({ roughness: .45, metalness: .15 });
   const parts = {
     torso: mk(new THREE.CapsuleGeometry(0.27, 0.36, 4, 10), body),
@@ -563,21 +559,29 @@ function makeCrowd(scene, agents, codeTex, accentCss) {
     parts.torso.setColorAt(i, col); parts.armL.setColorAt(i, col); parts.armR.setColorAt(i, col);
     parts.eyes.setColorAt(i, new THREE.Color(eyeCols[hashOf(a.id) % 5]));
     const s = slots[i];
-    return { i, agent: a, slot: s, pos: [...s.seat], face: Math.PI, rot: Math.PI, state: "sit", path: [], table: null, phase: rand(0, TAU), speed: rand(1.8, 2.3) };
+    return { i, agent: a, slot: s, pos: [...s.seat], face: Math.PI, rot: Math.PI, state: "sit", path: [], table: null, phase: rand(0, TAU), speed: rand(1.9, 2.4) };
   });
   for (const k of ["torso", "armL", "armR", "eyes"]) parts[k].instanceColor.needsUpdate = true;
 
-  const route = (b, to, lane) => {
+  // Reuniones al fondo (6-8 agentes) y, si Kairo usa a alguien de verdad, a Kairo Core.
+  const tables = HUDDLES.map(([x, z], ti) => ({
+    id: ti, x, z, real: false, members: [], busy: false, until: 0,
+    seats: Array.from({ length: 8 }, (_, k) => { const a = (k / 8) * TAU; return { spot: [x + Math.cos(a) * 1.75, z + Math.sin(a) * 1.75], face: Math.atan2(-Math.cos(a), -Math.sin(a)) }; }),
+    lane: [x, z - 2.4],
+  }));
+  const core = { id: "core", x: KAIRO_CORE[0], z: KAIRO_CORE[1], real: true, members: [], until: Infinity, lane: [KAIRO_CORE[0], WALK_Z],
+    seats: Array.from({ length: 12 }, (_, k) => { const a = Math.PI / 2 + (k - 5.5) * 0.26; const r = 2.9 + (k % 2) * 0.8; return { spot: [KAIRO_CORE[0] + Math.cos(a) * r, KAIRO_CORE[1] + Math.sin(a) * r], face: Math.atan2(-Math.cos(a), -Math.sin(a)) }; }) };
+  // Ruta: pasillo de su fila → pasillo central → destino
+  const route = (b, t, seat, home) => {
     const s = b.slot;
-    if (b.state === "sit") return [s.lane, [s.aisle, s.lane[1]], [s.aisle, lane[1]], lane, to];
-    return [lane, [s.aisle, lane[1]], [s.aisle, s.lane[1]], s.lane, to];
+    const go = [s.lane, [0, s.lane[1]], [0, t.lane[1]], t.lane, seat.spot];
+    return home ? [t.lane, [0, t.lane[1]], [0, s.lane[1]], s.lane, s.seat] : go;
   };
-  const tableLane = (t, seat) => [seat.spot[0], t.z + (seat.spot[1] > t.z ? 3.6 : -3.6)];
   const sendTo = (b, t) => {
     const seat = t.seats.find((x) => !x.b);
     if (!seat) return false;
     seat.b = b; b.table = t; b.seat = seat;
-    b.path = route(b, seat.spot, tableLane(t, seat)); b.state = "walk"; b.going = "table";
+    b.path = route(b, t, seat, false); b.state = "walk"; b.going = "table";
     t.members.push(b);
     return true;
   };
@@ -585,49 +589,43 @@ function makeCrowd(scene, agents, codeTex, accentCss) {
     const t = b.table;
     if (b.seat) b.seat.b = null;
     if (t) t.members = t.members.filter((x) => x !== b);
-    b.path = route({ ...b, state: "table" }, b.slot.seat, tableLane(t, b.seat));
+    b.path = [b.seat?.spot || b.pos, ...route(b, t, b.seat, true)];
     b.table = null; b.seat = null; b.state = "walk"; b.going = "desk";
   };
 
-  // Matrices de pose (reutilizadas: sin crear objetos en cada fotograma)
   const base = new THREE.Matrix4(), tmp = new THREE.Matrix4(), local = new THREE.Matrix4();
   const P = new THREE.Vector3(), Q = new THREE.Quaternion(), SC = new THREE.Vector3(), ONE = new THREE.Vector3(1, 1, 1), AX = new THREE.Vector3(1, 0, 0), AY = new THREE.Vector3(0, 1, 0);
   const put = (mesh, i, x, y, z, q, sx = 1, sy = 1, sz = 1) => { local.compose(P.set(x, y, z), q, sx === 1 && sy === 1 && sz === 1 ? ONE : SC.set(sx, sy, sz)); tmp.multiplyMatrices(base, local); mesh.setMatrixAt(i, tmp); };
   const QI = new THREE.Quaternion(), QY = new THREE.Quaternion();
   const limb = (mesh, i, px, py, ang, len) => { const L = len / 2 + 0.07; Q.setFromAxisAngle(AX, ang); put(mesh, i, px, py - L * Math.cos(ang), -L * Math.sin(ang), Q); };
-  let nextDispatch = 2, realIds = new Set();
+  let nextDispatch = 3, realIds = new Set();
 
   return {
     count: N,
+    ids: new Set(agents.map((a) => a.id)),
     idOf: (i) => agents[i]?.id,
     pick: [parts.torso, parts.head],
+    screens: [scrA, scrB],
     setReal(ids) { realIds = ids; },
-    tables,
+    tables: [...tables, core],
     tick(now, dt) {
-      // Equipos que se forman: 10-15 agentes cercanos van a una mesa conjunta libre.
       if (now > nextDispatch) {
-        nextDispatch = now + rand(6, 12);
+        nextDispatch = now + rand(7, 13);
         const free = tables.filter((t) => !t.members.length);
         if (free.length) {
           const t = free[Math.floor(Math.random() * free.length)];
-          const size = 10 + Math.floor(Math.random() * 6);
-          const idle = bots.filter((b) => b.state === "sit").sort((a, b) => Math.hypot(a.pos[0] - t.x, a.pos[1] - t.z) - Math.hypot(b.pos[0] - t.x, b.pos[1] - t.z)).slice(0, size * 2);
+          const size = 5 + Math.floor(Math.random() * 4);
+          const idle = bots.filter((b) => b.state === "sit" && !realIds.has(b.agent.id)).sort((a, b) => Math.hypot(a.pos[0] - t.x, a.pos[1] - t.z) - Math.hypot(b.pos[0] - t.x, b.pos[1] - t.z)).slice(0, size * 3);
           idle.sort(() => Math.random() - .5).slice(0, size).forEach((b) => sendTo(b, t));
-          t.until = Infinity; t.started = false; t.real = false;
+          t.until = Infinity; t.started = false;
         }
       }
-      // Agentes que Kairo está usando de verdad: van a la mesa más cercana libre y se marca LIVE.
-      for (const b of bots) if (realIds.has(b.agent.id) && b.state === "sit") {
-        const t = tables.find((x) => x.real && x.seats.some((s) => !s.b)) || tables.find((x) => !x.members.length);
-        if (t) { t.real = true; t.until = Infinity; sendTo(b, t); }
-      }
+      // Agentes que Kairo está usando de verdad: se levantan y van a Kairo Core.
+      for (const b of bots) if (realIds.has(b.agent.id) && b.state === "sit") sendTo(b, core);
+      for (const b of core.members) if (!realIds.has(b.agent.id) && b.state === "work") sendHome(b);
       for (const t of tables) {
-        if (t.real && !t.members.some((b) => realIds.has(b.agent.id))) { t.real = false; t.started = true; t.until = now + 4; }
-        // El tiempo de trabajo cuenta desde que el equipo se ha sentado.
-        if (!t.real && !t.started && t.members.length && t.members.every((b) => b.state === "work")) { t.started = true; t.until = now + rand(25, 45); }
-        if (now > t.until && t.members.length) [...t.members].forEach((b) => { if (b.state === "work" || b.state === "walk") sendHome(b); });
-        const on = t.members.some((b) => b.state === "work");
-        t.glow.material.opacity += ((on ? 0.8 + Math.sin(now * 4) * 0.15 : 0) - t.glow.material.opacity) * Math.min(1, dt * 3);
+        if (!t.started && t.members.length && t.members.every((b) => b.state === "work")) { t.started = true; t.until = now + rand(22, 40); }
+        if (now > t.until && t.members.length) [...t.members].forEach((b) => { if (b.state === "work") sendHome(b); });
       }
       for (const b of bots) {
         if (b.state === "walk") {
@@ -643,7 +641,7 @@ function makeCrowd(scene, agents, codeTex, accentCss) {
         const walking = b.state === "walk" && b.path.length;
         const sitting = b.state === "sit";
         const hy = sitting ? 0.18 : 0.62 + (walking ? Math.abs(Math.cos(t * 9)) * 0.05 : 0);
-        base.makeRotationY(b.rot).setPosition(b.pos[0], FLOOR_Y, b.pos[1]);
+        base.makeRotationY(b.rot).setPosition(b.pos[0], 0, b.pos[1]);
         const s = Math.sin(t * 9);
         const typing = sitting || b.state === "work";
         const aL = walking ? -s * 0.6 : typing ? -1.15 + Math.sin(t * 13) * 0.1 : 0;
@@ -665,39 +663,26 @@ function makeCrowd(scene, agents, codeTex, accentCss) {
   };
 }
 
-/** Mesa de proyecto con pantalla holográfica. */
-function makeStation(scene, kit, x, z, project, live) {
-  const g = new THREE.Group(); g.position.set(x, 0, z); scene.add(g);
-  const color = HEX[project.color] || HEX.azul;
-  kit.cyl(1.05, 1.05, 0.07, kit.marble, 0, 0.78, 0, g, 48);
-  const rim = new THREE.Mesh(new THREE.TorusGeometry(1.05, 0.025, 8, 64), kit.gold); rim.rotation.x = Math.PI / 2; rim.position.y = 0.78; g.add(rim);
-  kit.cyl(0.1, 0.34, 0.76, kit.black, 0, 0.38, 0, g);
-  const holoMat = new THREE.MeshBasicMaterial({ map: textTex(project.name.length > 16 ? project.name.slice(0, 15) + "…" : project.name, { w: 640, h: 300, bg: "rgba(10,18,32,.82)", color: "#ffffff", font: "700 74px Space Grotesk, Inter, sans-serif", sub: project.sub || "proyecto", accent: "#" + color.toString(16).padStart(6, "0") }), transparent: true, opacity: .95, side: THREE.DoubleSide });
-  const holo = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 0.9), holoMat);
-  holo.position.set(0, 1.85, 0); holo.rotation.y = Math.PI / 4; g.add(holo);
-  const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.2, 0.9, 16, 1, true), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .35, side: THREE.DoubleSide }));
-  beam.position.y = 1.28; g.add(beam);
-  const ring = new THREE.Mesh(new THREE.RingGeometry(1.35, 1.5, 48), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: live ? .8 : .18, side: THREE.DoubleSide }));
-  ring.rotation.x = -Math.PI / 2; ring.position.y = 0.03; g.add(ring);
-  const light = new THREE.PointLight(color, live ? 5 : 0, 5); light.position.y = 1.8; g.add(light);
-  const spots = [0, 1, 2, 3].map((i) => { const a = Math.PI / 4 + Math.PI + (i - 1.5) * 0.75; return [x + Math.cos(a) * 1.55, z + Math.sin(a) * 1.55]; });
-  g.traverse((o) => { if (o.isMesh) o.userData.stationId = project.id; });
-  return { g, holo, ring, light, spots, lane: [x - 2.1, z], color, live };
-}
-
-// ------------------------------------------------------------------ rutas
+// ------------------------------------------------------------------ rutas de tu equipo
+/** Por el pasillo de origen → pasillo central (x=0) → pasillo de destino → destino. */
 function route(from, to) {
   const pts = [];
   const push = (p) => { const last = pts[pts.length - 1]; if (!last || Math.hypot(last[0] - p[0], last[1] - p[1]) > 0.05) pts.push(p); };
-  if (from.lane) push(from.lane);
-  const za = (from.lane || from.spot)[1], zb = (to.lane || to.spot)[1];
-  push([CORRIDOR_X, za]); push([CORRIDOR_X, zb]);
-  if (to.lane) push(to.lane);
+  const a = from.lane || from.spot, b = to.lane || to.spot;
+  push(a);
+  if (Math.abs(a[1] - b[1]) > 0.3) {
+    // Cambiar de pasillo: por el central, o por el lateral si ambos extremos están en un lado
+    const side = Math.sign(a[0]) === Math.sign(b[0]) && Math.abs(a[0]) > 30 && Math.abs(b[0]) > 30 ? Math.sign(a[0]) * 36.6 : 0;
+    push([side, a[1]]); push([side, b[1]]);
+  }
+  push(b);
   push(to.spot);
   return pts;
 }
 
 // ------------------------------------------------------------------ montaje
+export const CAPACITY = CROWD_CAP;
+
 export function mountOffice(container, api) {
   const css = getComputedStyle(document.documentElement);
   const accentCss = css.getPropertyValue("--th-primary").trim() || "#34f5a4";
@@ -710,25 +695,28 @@ export function mountOffice(container, api) {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.1;
+  renderer.toneMappingExposure = 1.05;
   container.append(renderer.domElement);
   const overlay = document.createElement("div");
   overlay.className = "of-overlay";
   container.append(overlay);
 
   const scene = new THREE.Scene();
-  // Cielo de atardecer en Dubái + reflejos (entorno generado a partir del propio cielo)
-  scene.background = hallBgTex();
-  scene.fog = new THREE.FogExp2(0x1b2129, 0.0027);
+  scene.background = new THREE.Color(0x07090d);
+  scene.fog = new THREE.Fog(0x07090d, 70, 150);
+  // Reflejos: entorno cálido de interior (para el mármol y el oro)
   const pmrem = new THREE.PMREMGenerator(renderer);
   const envScene = new THREE.Scene();
-  envScene.add(new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), new THREE.MeshBasicMaterial({ map: hallEnvTex(), side: THREE.BackSide })));
+  envScene.add(new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), new THREE.MeshBasicMaterial({ side: THREE.BackSide, map: canvasTex(256, 256, (g, w, h) => {
+    const gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, "#fff3dc"); gr.addColorStop(0.45, "#3a4253"); gr.addColorStop(1, "#0b0d12"); g.fillStyle = gr; g.fillRect(0, 0, w, h);
+  }) })));
   const env = pmrem.fromScene(envScene, 0.04).texture;
   pmrem.dispose();
 
-  const cam = new THREE.PerspectiveCamera(42, 1, 0.5, 9000);
-  const view = { target: new THREE.Vector3(0, 5, 0.5), zoom: 1, angle: Math.PI / 4, pitch: 0.34 };
-  const dist = () => 50 / view.zoom;
+  const cam = new THREE.PerspectiveCamera(40, 1, 0.5, 400);
+  const HOME = { x: 0, y: 0, z: -14, angle: Math.PI / 2 - 0.28, pitch: 0.48, zoom: 1.45 };
+  const view = { target: new THREE.Vector3(HOME.x, HOME.y, HOME.z), zoom: HOME.zoom, angle: HOME.angle, pitch: HOME.pitch };
+  const dist = () => 52 / view.zoom;
   const placeCam = () => {
     const w = container.clientWidth || 800, h = container.clientHeight || 600;
     const d = dist();
@@ -737,27 +725,29 @@ export function mountOffice(container, api) {
     cam.lookAt(view.target);
     cam.updateProjectionMatrix();
     renderer.setSize(w, h, false);
+    // Desde fuera (por encima del techo) se quita el techo para ver dentro.
+    kit.ceil.visible = cam.position.y < HALL.h - 0.3 && Math.abs(cam.position.x) < HALL.x1 && Math.abs(cam.position.z) < HALL.z1;
   };
 
-  scene.add(new THREE.HemisphereLight(0xeef3ff, 0x3a3e46, 1.6));
-  const sun = new THREE.DirectionalLight(0xfff3e2, 1.9); // luz cenital de los lucernarios
-  sun.position.set(-18, 40, -12); sun.castShadow = true;
+  scene.add(new THREE.HemisphereLight(0xfff4e6, 0x20242c, 1.25));
+  const sun = new THREE.DirectionalLight(0xfff1dc, 1.6);
+  sun.position.set(-14, 34, -4); sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
-  Object.assign(sun.shadow.camera, { left: -24, right: 24, top: 24, bottom: -24, near: 1, far: 90 });
-  sun.shadow.bias = -0.0004; sun.shadow.radius = 4;
+  Object.assign(sun.shadow.camera, { left: -42, right: 42, top: 22, bottom: -34, near: 1, far: 90 });
+  sun.target.position.set(0, 0, -14); scene.add(sun.target);
+  sun.shadow.bias = -0.0004; sun.shadow.radius = 3;
   scene.add(sun);
-  const fill = new THREE.DirectionalLight(0x9fb8ff, 0.7); fill.position.set(20, 18, 16); scene.add(fill);
+  const fill = new THREE.DirectionalLight(0x9fb8ff, 0.5); fill.position.set(20, 18, 26); scene.add(fill);
 
-  const kit = office(scene, accent, accentCss, env);
-  const city = industrialHall(scene, env, accentCss);
+  const kit = tradingFloor(scene, accent, accentCss, env);
   let crowd = null;
   const code = codeScreen(accentCss);
-  const busyScreen = new THREE.MeshBasicMaterial({ map: code.tex });
-  const idleScreen = new THREE.MeshBasicMaterial({ map: textTex("K", { w: 256, h: 160, bg: "#0e1726", color: accentCss, font: "700 90px Space Grotesk, Inter, sans-serif" }) });
+  const chart = chartScreen(accentCss);
 
-  const desks = new Map();     // agentId → desk
-  const bots = new Map();      // agentId → actor
-  const stations = new Map();  // projectId|"kairo" → station
+  const desks = new Map();     // agentId → desk (tu equipo)
+  const screens = new Map();   // agentId → pantalla real
+  const bots = new Map();      // agentId → robot detallado
+  const stations = new Map();  // projectId|"kairo" → mesa
   const clickables = [];
   const tags = new Map();
 
@@ -770,67 +760,67 @@ export function mountOffice(container, api) {
   const place = (el, x, y, z) => {
     v3.set(x, y, z).project(cam);
     const w = container.clientWidth, h = container.clientHeight;
+    const off = v3.z > 1 || v3.x < -1.2 || v3.x > 1.2 || v3.y < -1.2 || v3.y > 1.2;
+    el.style.visibility = off ? "hidden" : "";
     el.style.transform = `translate(-50%, -100%) translate(${((v3.x + 1) / 2) * w}px, ${((1 - v3.y) / 2) * h}px)`;
   };
 
-  // ---------------------------------------------------------- construir la oficina
+  // ---------------------------------------------------------- construir
   function build(state) {
-    // Mesas de proyecto (máx. 6) + núcleo de Kairo
-    for (const [id, st] of stations) { scene.remove(st.g); }
+    for (const st of stations.values()) scene.remove(st.g);
     stations.clear();
     state.projects.slice(0, STATIONS.length).forEach((p, i) => stations.set(p.id, makeStation(scene, kit, STATIONS[i][0], STATIONS[i][1], p, p.live)));
     stations.set("kairo", makeStation(scene, kit, KAIRO_CORE[0], KAIRO_CORE[1], { id: "kairo", name: "Kairo Core", color: "morado", sub: "orquestador" }, false));
     for (const [id, st] of stations) st.g.userData.key = id;
-    // Mesas y robots
     const wanted = new Set(state.agents.map((a) => a.id));
     for (const [id, d] of desks) if (!wanted.has(id)) { scene.remove(d.g); desks.delete(id); }
     for (const [id, b] of bots) if (!wanted.has(id) && !b.visitor) { scene.remove(b.g); bots.delete(id); tags.get("b" + id)?.remove(); tags.delete("b" + id); }
-    state.agents.slice(0, DESK_COLS.length * DESK_ROWS.length).forEach((a, i) => {
-      const x = DESK_COLS[i % DESK_COLS.length], z = DESK_ROWS[Math.floor(i / DESK_COLS.length)];
+    state.agents.slice(0, TEAM_X.length).forEach((a, i) => {
+      const x = TEAM_X[i], z = TEAM_Z;
       let d = desks.get(a.id);
-      if (!d || d.g.position.x !== x || d.g.position.z !== z) {
+      if (!d || d.g.position.x !== x) {
         if (d) scene.remove(d.g);
-        d = makeDesk(scene, kit, x, z, busyScreen, idleScreen);
+        if (!screens.has(a.id)) screens.set(a.id, agentScreen(a, accentCss));
+        d = makeDesk(scene, kit, x, z, new THREE.MeshBasicMaterial({ map: screens.get(a.id).tex, toneMapped: false }), chart.tex);
+        d.screens.forEach((s) => { s.userData.screenOf = a.id; });
         desks.set(a.id, d);
       }
       let b = bots.get(a.id);
       if (!b) {
         const g = makeBot(a);
         scene.add(g);
-        b = { id: a.id, agent: a, g, p: g.userData.parts, pos: [d.seat[0], d.seat[1]], lane: d.lane, face: Math.PI, state: "sit", path: [], speed: rand(1.7, 2.1), nextBreak: performance.now() / 1000 + rand(8, 40), phase: rand(0, TAU), work: null };
+        b = { id: a.id, agent: a, g, p: g.userData.parts, pos: [d.seat[0], d.seat[1]], lane: d.lane, face: Math.PI, state: "sit", path: [], speed: rand(1.9, 2.3), nextBreak: performance.now() / 1000 + rand(30, 150), phase: rand(0, TAU), work: null };
         g.position.set(d.seat[0], 0, d.seat[1]);
         bots.set(a.id, b);
       }
       b.visitor = false; b.agent = a; b.desk = d;
     });
     clickables.length = 0;
-    scene.traverse((o) => { if (o.isMesh && (o.userData.botId || o.userData.stationId)) clickables.push(o); });
+    scene.traverse((o) => { if (o.isMesh && (o.userData.botId || o.userData.stationId || o.userData.screenOf)) clickables.push(o); });
   }
 
-  // ---------------------------------------------------------- comportamiento
+  // ---------------------------------------------------------- comportamiento de tu equipo
   const goTo = (b, target, then) => {
     b.path = route({ spot: b.pos, lane: b.lane }, target);
     b.lane = target.lane; b.state = "walk"; b.then = then;
     b.p.cup.visible = false;
   };
-  const deskTarget = (b) => (b.desk ? { spot: b.desk.seat, lane: b.desk.lane } : { spot: DOOR, lane: DOOR });
+  const deskTarget = (b) => (b.desk ? { spot: b.desk.seat, lane: b.desk.lane } : { spot: DOOR, lane: [0, 30] });
   const stationSpot = (b, key) => {
     const st = stations.get(key) || stations.get("kairo");
     if (!stations.has(key)) b.work = "kairo";
     const users = [...bots.values()].filter((x) => x.work === key && x !== b);
-    const spot = st.spots[users.length % st.spots.length];
-    return { spot, lane: st.lane, st };
+    return { spot: st.spots[users.length % st.spots.length], lane: st.lane, st };
   };
   const breakBusy = new Set();
 
   function think(b, now) {
     if (b.state === "walk") return;
-    const want = b.wantWork; // id de proyecto, "kairo" o null
+    const want = b.wantWork;
     if (want != null && b.work !== want && b.state !== "pickup") {
-      // ¡A trabajar! Se levanta, va al tablón a por la tarea y luego a la mesa del proyecto.
       if (b.breakSpot) { breakBusy.delete(b.breakSpot); b.breakSpot = null; }
       b.work = want;
-      b.label = "📋 cogiendo tarea";
+      b.label = "📋 coge la tarea";
       goTo(b, BOARD, () => {
         b.state = "pickup"; b.until = now + 1.6; b.face = Math.PI;
         b.onDone = () => {
@@ -844,26 +834,25 @@ export function mountOffice(container, api) {
     }
     if (want == null && b.work != null) {
       b.work = null;
-      if (b.visitor) { b.label = "👋 hasta luego"; goTo(b, { spot: DOOR, lane: [CORRIDOR_X, 10.6] }, () => { b.gone = true; }); return; }
-      b.label = "↩ vuelve a su mesa";
+      if (b.visitor) { b.label = "👋 hasta luego"; goTo(b, { spot: DOOR, lane: [0, 30] }, () => { b.gone = true; }); return; }
+      b.label = "↩ a su puesto";
       goTo(b, deskTarget(b), () => { b.state = "sit"; b.face = Math.PI; b.label = null; });
       return;
     }
     if (b.state === "pickup" && now > b.until) { b.state = "idle"; b.onDone?.(); return; }
     if (b.state === "break" && now > b.until) {
-      breakBusy.delete(b.breakSpot); b.breakSpot = null; b.p.cup.visible = false;
-      b.label = null;
+      breakBusy.delete(b.breakSpot); b.breakSpot = null; b.p.cup.visible = false; b.label = null;
       goTo(b, deskTarget(b), () => { b.state = "sit"; b.face = Math.PI; });
-      b.nextBreak = now + rand(35, 90);
+      b.nextBreak = now + rand(45, 110);
       return;
     }
-    if (b.state === "sit" && !b.visitor && now > b.nextBreak && !reduce) {
+    if (b.state === "sit" && !b.visitor && now > b.nextBreak && !reduce && !b.live) {
       const free = BREAKS.filter((x) => !breakBusy.has(x));
-      if (!free.length) { b.nextBreak = now + rand(10, 20); return; }
+      // Como mucho 2 de descanso a la vez: el parqué nunca se queda vacío.
+      if (!free.length || breakBusy.size >= 2) { b.nextBreak = now + rand(15, 40); return; }
       const spot = free[Math.floor(Math.random() * free.length)];
-      breakBusy.add(spot); b.breakSpot = spot;
-      b.label = spot.label;
-      goTo(b, spot, () => { b.state = "break"; b.until = now + rand(6, 11); b.face = spot.face; if (spot.cup) { b.p.cup.visible = true; b.p.cup.material.color.setHex(0xffffff); } });
+      breakBusy.add(spot); b.breakSpot = spot; b.label = spot.label;
+      goTo(b, spot, () => { b.state = "break"; b.until = now + rand(6, 11); b.face = spot.face; if (spot.cup) b.p.cup.visible = true; });
     }
   }
 
@@ -873,35 +862,32 @@ export function mountOffice(container, api) {
     if (b.state === "walk" && b.path.length) {
       const [tx, tz] = b.path[0];
       const dx = tx - b.pos[0], dz = tz - b.pos[1];
-      const dist = Math.hypot(dx, dz);
-      const step = b.speed * dt;
-      if (dist <= step) { b.pos = [tx, tz]; b.path.shift(); if (!b.path.length) { b.state = "idle"; const f = b.then; b.then = null; f?.(); } }
-      else { b.pos = [b.pos[0] + (dx / dist) * step, b.pos[1] + (dz / dist) * step]; b.face = Math.atan2(dx, dz); moving = true; }
+      const d = Math.hypot(dx, dz), step = b.speed * dt;
+      if (d <= step) { b.pos = [tx, tz]; b.path.shift(); if (!b.path.length) { b.state = "idle"; const f = b.then; b.then = null; f?.(); } }
+      else { b.pos = [b.pos[0] + (dx / d) * step, b.pos[1] + (dz / d) * step]; b.face = Math.atan2(dx, dz); moving = true; }
     }
-    // Giro suave
     let da = b.face - b.g.rotation.y; da = Math.atan2(Math.sin(da), Math.cos(da));
     b.g.rotation.y += da * Math.min(1, dt * 10);
     b.g.position.set(b.pos[0], 0, b.pos[1]);
-    const t = now * 1 + b.phase;
+    const t = now + b.phase;
     const sitting = b.state === "sit" || (b.state === "break" && b.breakSpot?.sit);
     const lerp = (o, k, v) => { o.rotation[k] += (v - o.rotation[k]) * Math.min(1, dt * 12); };
     if (moving) {
       const s = Math.sin(t * 9);
       lerp(legL, "x", s * 0.7); lerp(legR, "x", -s * 0.7); lerp(armL, "x", -s * 0.6); lerp(armR, "x", b.p.card.visible ? -1.1 : s * 0.6);
-      hips.position.y = 0.62 + Math.abs(Math.cos(t * 9)) * 0.05;
-      head.rotation.y = 0;
+      hips.position.y = 0.62 + Math.abs(Math.cos(t * 9)) * 0.05; head.rotation.y = 0;
     } else if (sitting) {
-      hips.position.y += (0.18 + (b.breakSpot?.sit ? -0.02 : 0) - hips.position.y) * Math.min(1, dt * 8);
+      hips.position.y += (0.18 - hips.position.y) * Math.min(1, dt * 8);
       lerp(legL, "x", -1.45); lerp(legR, "x", -1.45);
       const typing = b.state === "sit";
-      lerp(armL, "x", typing ? -1.15 + Math.sin(t * 14) * 0.08 : -0.2); lerp(armR, "x", typing ? -1.15 + Math.cos(t * 13) * 0.08 : -0.2);
+      const fast = b.live ? 1.6 : 1;   // si su tarea es real, teclea más rápido
+      lerp(armL, "x", typing ? -1.15 + Math.sin(t * 14 * fast) * 0.08 : -0.2); lerp(armR, "x", typing ? -1.15 + Math.cos(t * 13 * fast) * 0.08 : -0.2);
       head.rotation.x = typing ? 0.12 + Math.sin(t * 0.7) * 0.05 : -0.05;
       head.rotation.y = typing ? Math.sin(t * 0.4) * 0.15 : Math.sin(t * 0.5) * 0.4;
     } else {
       hips.position.y += (0.62 - hips.position.y) * Math.min(1, dt * 8);
       lerp(legL, "x", 0); lerp(legR, "x", 0);
       if (b.state === "work") {
-        // Trabajando en la mesa del proyecto: teclea en el holograma y gesticula.
         lerp(armL, "x", -1.25 + Math.sin(t * 12) * 0.12); lerp(armR, "x", -1.25 + Math.cos(t * 11) * 0.12);
         head.rotation.x = -0.15 + Math.sin(t * 2) * 0.04; head.rotation.y = Math.sin(t * 0.8) * 0.2;
         hips.position.y = 0.62 + Math.sin(t * 5) * 0.012;
@@ -913,116 +899,135 @@ export function mountOffice(container, api) {
         head.rotation.x = cup.visible ? -sip * 0.3 : 0; head.rotation.y = Math.sin(t * 0.6) * 0.5;
       } else { lerp(armL, "x", 0); lerp(armR, "x", 0); head.rotation.y = Math.sin(t * 0.5) * 0.3; }
     }
-    // Aro y ojos según estado
-    const active = b.work != null;
+    const active = b.work != null || b.live;
     ring.material.opacity += ((active ? 0.85 : 0) - ring.material.opacity) * Math.min(1, dt * 5);
     ring.scale.setScalar(1 + (active ? Math.sin(now * 5) * 0.06 : 0));
     eyes.emissiveIntensity = active ? 2.2 + Math.sin(now * 8) * 0.6 : 1.4;
-    // Pantalla de su mesa: código si está sentado trabajando
-    if (b.desk) b.desk.screen.material = b.state === "sit" ? busyScreen : idleScreen;
   }
 
-  // ---------------------------------------------------------- partículas de vapor del café
-  const steam = [];
-  const steamMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: .5 });
-  for (let i = 0; i < 10; i++) { const s = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), steamMat.clone()); s.userData.t = Math.random(); scene.add(s); steam.push(s); }
-
-  // ---------------------------------------------------------- interacción: pan, zoom, clic
+  // ---------------------------------------------------------- interacción: arrastrar, zoom, tocar
   const pointers = new Map();
-  let drag = null, pinch = null;
+  let drag = null, pinch = null, hoverKey = null;
   const el = renderer.domElement;
   el.style.touchAction = "none";
+  const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+  const pickAt = (e) => {
+    const r = el.getBoundingClientRect();
+    ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    ray.setFromCamera(ndc, cam);
+    const hit = ray.intersectObjects(crowd ? [...clickables, ...crowd.pick, ...crowd.screens] : clickables, false)[0];
+    if (!hit) return null;
+    if (crowd?.screens.includes(hit.object) && hit.instanceId != null) return { kind: "computer", id: crowd.idOf(hit.instanceId) };
+    if (crowd?.pick.includes(hit.object) && hit.instanceId != null) return { kind: "bot", id: crowd.idOf(hit.instanceId) };
+    if (hit.object.userData.screenOf) return { kind: "computer", id: hit.object.userData.screenOf };
+    if (hit.object.userData.botId) return { kind: "bot", id: hit.object.userData.botId };
+    if (hit.object.userData.stationId != null && hit.object.userData.stationId !== "kairo") return { kind: "station", id: hit.object.userData.stationId };
+    return null;
+  };
   el.addEventListener("pointerdown", (e) => {
     el.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, [e.clientX, e.clientY]);
-    if (pointers.size === 1) drag = { x: e.clientX, y: e.clientY, moved: false, t: view.target.clone() };
+    if (pointers.size === 1) drag = { x: e.clientX, y: e.clientY, moved: false, t: view.target.clone(), a: view.angle, p: view.pitch, rotate: e.button === 2 || e.shiftKey };
     if (pointers.size === 2) { const [a, b] = [...pointers.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), z: view.zoom }; drag = null; }
   });
+  el.addEventListener("contextmenu", (e) => e.preventDefault());
   el.addEventListener("pointermove", (e) => {
-    if (!pointers.has(e.pointerId)) return;
+    if (!pointers.has(e.pointerId)) {
+      // Cursor de mano sobre lo que se puede tocar (solo ratón)
+      if (e.pointerType === "mouse") { const h = pickAt(e); const k = h ? h.kind : null; if (k !== hoverKey) { hoverKey = k; el.style.cursor = k ? "pointer" : "grab"; } }
+      return;
+    }
     pointers.set(e.pointerId, [e.clientX, e.clientY]);
     if (pinch && pointers.size === 2) {
       const [a, b] = [...pointers.values()];
-      view.zoom = Math.min(3.2, Math.max(0.16, pinch.z * Math.hypot(a[0] - b[0], a[1] - b[1]) / pinch.d)); placeCam(); return;
+      view.zoom = Math.min(4, Math.max(0.35, pinch.z * Math.hypot(a[0] - b[0], a[1] - b[1]) / pinch.d)); placeCam(); return;
     }
     if (!drag) return;
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     if (Math.hypot(dx, dy) > 5) drag.moved = true;
     if (!drag.moved) return;
+    if (drag.rotate) { view.angle = drag.a + dx * 0.006; view.pitch = Math.min(1.35, Math.max(0.18, drag.p + dy * 0.004)); placeCam(); return; }
     const k = (2 * dist() * Math.tan((cam.fov * Math.PI) / 360)) / container.clientHeight;
     const right = new THREE.Vector3(-Math.sin(view.angle), 0, Math.cos(view.angle));
     const fwd = new THREE.Vector3(-Math.cos(view.angle), 0, -Math.sin(view.angle));
-    view.target.copy(drag.t).addScaledVector(right, -dx * k).addScaledVector(fwd, dy * k * 1.8);
-    view.target.x = Math.max(-18, Math.min(18, view.target.x)); view.target.z = Math.max(-15, Math.min(16, view.target.z));
+    view.target.copy(drag.t).addScaledVector(right, -dx * k).addScaledVector(fwd, dy * k * 1.6);
+    view.target.x = Math.max(-38, Math.min(38, view.target.x)); view.target.z = Math.max(-30, Math.min(30, view.target.z));
     placeCam();
   });
-  const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
   el.addEventListener("pointerup", (e) => {
     pointers.delete(e.pointerId);
     if (pointers.size < 2) pinch = null;
     if (drag && !drag.moved) {
-      const r = el.getBoundingClientRect();
-      ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
-      ray.setFromCamera(ndc, cam);
-      const hit = ray.intersectObjects(crowd ? [...clickables, ...crowd.pick] : clickables, false)[0];
-      if (hit && crowd?.pick.includes(hit.object) && hit.instanceId != null) api.onBot(crowd.idOf(hit.instanceId), e);
-      else if (hit?.object.userData.botId) api.onBot(hit.object.userData.botId, e);
-      else if (hit?.object.userData.stationId != null && hit.object.userData.stationId !== "kairo") api.onStation(hit.object.userData.stationId, e);
+      const h = pickAt(e);
+      if (h?.kind === "computer") api.onComputer?.(h.id, e);
+      else if (h?.kind === "bot") api.onBot(h.id, e);
+      else if (h?.kind === "station") api.onStation(h.id, e);
       else api.onEmpty?.();
     }
     drag = null;
   });
-  el.addEventListener("wheel", (e) => { e.preventDefault(); view.zoom = Math.min(3.2, Math.max(0.16, view.zoom * (e.deltaY < 0 ? 1.1 : 0.9))); placeCam(); }, { passive: false });
+  el.addEventListener("wheel", (e) => { e.preventDefault(); view.zoom = Math.min(4, Math.max(0.35, view.zoom * (e.deltaY < 0 ? 1.1 : 0.9))); placeCam(); }, { passive: false });
   const ro = new ResizeObserver(() => placeCam());
   ro.observe(container);
 
+  // Vuelo suave de cámara (para «ir a» un agente)
+  let fly = null;
+  const flyTo = (x, z, zoom = 2.4) => { const side = container.clientWidth > 760 ? 2.2 : 0; fly = { from: view.target.clone(), z0: view.zoom, p0: view.pitch, a0: view.angle, to: new THREE.Vector3(x + side, 0.9, z), z1: zoom, t: 0 }; };
+
   // ---------------------------------------------------------- bucle
-  let alive = true, last = performance.now(), codeT = 0;
+  let alive = true, last = performance.now(), codeT = 0, chartT = 0, blinkT = 0;
   const loop = (ms) => {
     if (!alive) return;
     if (!container.isConnected) { destroy(); return; }
     const now = (ms / 1000) * SPEED, dt = Math.min(0.05, (ms - last) / 1000) * SPEED; last = ms;
-    kit.tick(now, dt); city.tick(now, dt, cam.position.y); crowd?.tick(now, dt);
-    codeT += dt; if (codeT > 0.18) { codeT = 0; code.tick(); }
+    if (fly) {
+      fly.t = Math.min(1, fly.t + dt / 0.9);
+      const k = 1 - Math.pow(1 - fly.t, 3);
+      view.target.lerpVectors(fly.from, fly.to, k); view.zoom = fly.z0 + (fly.z1 - fly.z0) * k; view.pitch = fly.p0 + (0.42 - fly.p0) * k; view.angle = fly.a0 + (Math.PI / 2 - 0.18 - fly.a0) * k; placeCam();
+      if (fly.t >= 1) fly = null;
+    }
+    kit.tick(now, dt); crowd?.tick(now, dt);
+    codeT += dt; if (codeT > 0.2) { codeT = 0; code.tick(); }
+    chartT += dt; if (chartT > 1.4) { chartT = 0; chart.tick(); }
+    blinkT += dt; if (blinkT > 0.55) { blinkT = 0; for (const s of screens.values()) s.tick(); }
     for (const b of bots.values()) { think(b, now); animate(b, dt, now); }
     for (const [id, b] of bots) if (b.gone) { scene.remove(b.g); bots.delete(id); tags.get("b" + id)?.remove(); tags.delete("b" + id); }
     for (const st of stations.values()) {
-      st.holo.position.y = 1.85 + Math.sin(now * 1.5 + st.g.position.x) * 0.05;
+      st.holo.position.y = 2.35 + Math.sin(now * 1.5 + st.g.position.x) * 0.05;
+      st.holo.lookAt(cam.position.x, st.holo.getWorldPosition(v3).y, cam.position.z);
       const busy = [...bots.values()].some((b) => b.work === st.g.userData.key && b.state === "work");
       st.ring.material.opacity += (((st.live || busy) ? 0.75 + Math.sin(now * 4) * 0.2 : 0.16) - st.ring.material.opacity) * Math.min(1, dt * 4);
-      st.light.intensity += (((st.live || busy) ? 5 : 0) - st.light.intensity) * Math.min(1, dt * 3);
+      st.light.intensity += (((st.live || busy) ? 6 : 0) - st.light.intensity) * Math.min(1, dt * 3);
     }
-    const coffeeOn = [...breakBusy].some((x) => x.id === "coffee");
-    steam.forEach((s, i) => {
-      s.userData.t += dt * 0.4; if (s.userData.t > 1) s.userData.t = 0;
-      const k = s.userData.t;
-      s.position.set(-11.2 + Math.sin(k * 6 + i) * 0.08, 1.85 + k * 0.8, -10.75);
-      s.material.opacity = coffeeOn ? (1 - k) * 0.5 : 0; s.scale.setScalar(0.6 + k);
-    });
     // Etiquetas
     for (const b of bots.values()) {
       const tag = tagFor("b" + b.id, "of-tag");
-      const status = b.label || (b.state === "sit" ? "⌨️" : "");
-      const html = `<b style="--c:${"#" + (HEX[b.agent.color] || HEX.azul).toString(16).padStart(6, "0")}">${b.agent.name}</b>${status ? `<span>${status}</span>` : ""}`;
-      if (tag.dataset.h !== html) { tag.innerHTML = ""; const n = document.createElement("b"); n.textContent = b.agent.name; n.style.setProperty("--c", "#" + (HEX[b.agent.color] || HEX.azul).toString(16).padStart(6, "0")); tag.append(n); if (status) { const s = document.createElement("span"); s.textContent = status; tag.append(s); } tag.dataset.h = html; }
-      tag.classList.toggle("active", b.work != null);
-      place(tag, b.pos[0], b.state === "sit" ? 1.9 : 2.45, b.pos[1]);
+      const status = b.label || (b.live ? "● en vivo" : "");
+      const key = b.agent.name + "|" + status;
+      if (tag.dataset.h !== key) {
+        tag.replaceChildren();
+        const n = document.createElement("b"); n.textContent = b.agent.name; n.style.setProperty("--c", hexCss(b.agent.color)); tag.append(n);
+        if (status) { const s = document.createElement("span"); s.textContent = status; tag.append(s); }
+        tag.dataset.h = key;
+      }
+      tag.classList.toggle("active", b.work != null || !!b.live);
+      place(tag, b.pos[0], b.state === "sit" ? 1.95 : 2.5, b.pos[1]);
     }
     for (const [id, st] of stations) {
       const tag = tagFor("s" + id, "of-station");
-      const n = [...bots.values()].filter((b) => b.work === id && b.state === "work").length;
-      const txt = `${st.live || n ? "● LIVE · " : ""}${n ? `${n} trabajando` : ""}`;
+      const n = [...bots.values()].filter((b) => b.work === id && b.state === "work").length + (id === "kairo" && crowd ? crowd.tables.find((t) => t.id === "core").members.filter((b) => b.state === "work").length : 0);
+      const txt = `${st.live || n ? "● LIVE" : ""}${n ? ` · ${n} trabajando` : ""}`;
       if (tag.textContent !== txt) tag.textContent = txt;
       tag.hidden = !txt;
-      place(tag, st.g.position.x, 2.75, st.g.position.z);
+      place(tag, st.g.position.x, 3.3, st.g.position.z);
     }
-    if (crowd) for (const t of crowd.tables) {
+    if (crowd) for (const t of crowd.tables) if (t.id !== "core") {
       const tag = tagFor("t" + t.id, "of-station team");
       const n = t.members.filter((b) => b.state === "work").length;
-      const txt = n ? `${t.real ? "● LIVE · Kairo · " : "⚡ Equipo · "}${n} agentes` : "";
+      const txt = n ? `Reunión · ${n} agentes` : "";
       if (tag.textContent !== txt) tag.textContent = txt;
       tag.hidden = !txt;
-      if (txt) place(tag, t.x, FLOOR_Y + 4.2, t.z);
+      if (txt) place(tag, t.x, 3.2, t.z);
     }
     renderer.render(scene, cam);
     requestAnimationFrame(loop);
@@ -1037,22 +1042,41 @@ export function mountOffice(container, api) {
   // ---------------------------------------------------------- API pública
   return {
     build,
-    /** Estado vivo: qué quiere hacer cada robot ahora mismo. */
+    capacity: CROWD_CAP,
+    /** Estado vivo: qué quiere hacer cada robot de tu equipo y qué agentes usa Kairo ahora. */
     setWork(map, visitors = []) {
       for (const b of bots.values()) b.wantWork = map.get(b.id) ?? null;
-      // Agentes que Kairo usa y no están en la entreplanta: en la nave se levantan y van a una mesa conjunta (LIVE).
-      crowd?.setReal(new Set(visitors.map((v) => v.agent.id)));
+      crowd?.setReal(new Set(visitors.filter((v) => crowd.ids.has(v.agent.id)).map((v) => v.agent.id)));
+      // Los que no están en el parqué entran por la puerta como visitantes.
+      for (const v of visitors) if (!crowd?.ids.has(v.agent.id) && !bots.has(v.agent.id)) {
+        const g = makeBot(v.agent); scene.add(g);
+        const b = { id: v.agent.id, agent: v.agent, g, p: g.userData.parts, pos: [...DOOR], lane: [0, 30], face: Math.PI, state: "idle", path: [], speed: 2.1, nextBreak: Infinity, phase: rand(0, TAU), work: null, visitor: true };
+        bots.set(v.agent.id, b); scene.traverse((o) => { if (o.isMesh && o.userData.botId === v.agent.id) clickables.push(o); });
+      }
+      const visiting = new Map(visitors.map((v) => [v.agent.id, v.work]));
+      for (const b of bots.values()) if (b.visitor) b.wantWork = visiting.get(b.id) ?? null;
     },
-    /** Todos los agentes del registro, cada uno en su mesa de la nave. */
+    /** Lo que muestra la pantalla central de cada puesto (datos reales del servidor). */
+    setScreens(map) {
+      for (const [id, s] of screens) { const d = map.get(id) || null; s.set(d); const b = bots.get(id); if (b) b.live = !!d?.live; }
+    },
+    /** KPIs del videowall y cinta del teletipo. */
+    setBoard({ kpis = [], ticker = [] }) { kit.led.set(kpis); kit.tape.set(ticker); },
     setCrowd(agents) {
       if (crowd || !agents.length) return;
-      crowd = makeCrowd(scene, agents, code.tex, accentCss);
+      crowd = makeCrowd(scene, agents, code.tex, chart.tex, accentCss);
     },
     setLive(ids) { for (const [id, st] of stations) st.live = ids.has(id); },
-    zoom(k) { view.zoom = Math.min(3.2, Math.max(0.16, view.zoom * k)); placeCam(); },
+    /** Lleva la cámara hasta un agente (tu equipo o el parqué). */
+    focus(id) {
+      const b = bots.get(id);
+      if (b) return flyTo(b.pos[0], b.pos[1] - 1.1, 4.4);
+      if (crowd) { const i = [...crowd.ids].indexOf(id); if (i >= 0) { const s = crowdLayout(i + 1)[i]; flyTo(s.x, s.z - 1.1, 4.4); } }
+    },
+    zoom(k) { view.zoom = Math.min(4, Math.max(0.35, view.zoom * k)); placeCam(); },
     rotate() { view.angle += Math.PI / 2; placeCam(); },
-    reset() { view.target.set(0, 5, 0.5); view.zoom = container.clientWidth < 700 ? 0.75 : 1; view.angle = Math.PI / 4; placeCam(); },
+    reset() { fly = null; view.target.set(HOME.x, HOME.y, HOME.z); view.zoom = container.clientWidth < 700 ? 0.8 : HOME.zoom; view.angle = HOME.angle; view.pitch = HOME.pitch; placeCam(); },
     destroy,
-    start() { placeCam(); if (container.clientWidth < 700) { view.zoom = 0.75; placeCam(); } requestAnimationFrame(loop); },
+    start() { placeCam(); if (container.clientWidth < 700) { view.zoom = 0.8; placeCam(); } el.style.cursor = "grab"; requestAnimationFrame(loop); },
   };
 }

@@ -318,3 +318,20 @@ def test_cupo_gratuito_agotado_da_mensaje_claro(api):
     assert api.get("/api/ai/status").json()["free"]["quota_ok"] is False
     time.sleep(3.5)  # en mock el bloqueo dura 3 s
     assert api.get("/api/ai/status").json()["free"]["quota_ok"] is True
+
+
+def test_actividad_de_agentes_solo_del_usuario(api):
+    t = new_chat(api)
+    run = ask(api, t["id"], "Escribe una función que sume dos números")
+    wait_run(api, run["id"])
+    agents = {a["agent_id"] for a in api.get(f"/api/chat/runs/{run['id']}").json().get("agents", [])}
+    assert agents, "la ejecución debería tener agentes"
+    ids = ",".join(sorted(agents))
+    data = api.get(f"/api/chat/agents-activity?ids={ids}").json()["agents"]
+    one = next(iter(data.values()))[0]
+    assert one["request"] and "sume dos números" in one["request"] and one["status"]
+    # Otro usuario no ve nada de lo de este
+    other = register()
+    assert other.get(f"/api/chat/agents-activity?ids={ids}").json()["agents"] == {}
+    # ids no válidos se ignoran
+    assert api.get("/api/chat/agents-activity?ids=../../x").json()["agents"] == {}

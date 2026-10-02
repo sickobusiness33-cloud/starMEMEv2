@@ -95,3 +95,12 @@ Los nombres de los agentes de `src/agents/catalog/directory.ts` proceden de la l
 solo se usan los títulos genéricos de los agentes (p. ej. «Meal Planner») y su sector.
 Descripciones, instrucciones y etapas son plantillas propias de Control IA
 (`src/agents/catalog/_directory.ts`, `scripts/import_agent_directory.py`).
+
+## emilkowalski/skill (MIT © 2026 Emil Kowalski)
+
+La capa de pulido de `public/os.css` aplica los principios de diseño de su skill
+«emil-design-eng» (https://github.com/emilkowalski/skill): curvas de animación
+(`--ease-out: cubic-bezier(0.23, 1, 0.32, 1)`, `--ease-in-out`, `--ease-drawer`),
+duraciones < 300 ms, `scale(0.97)` al pulsar, entradas sin `scale(0)`, hover con
+movimiento solo con ratón, `prefers-reduced-motion` y cifras tabulares.
+Tipografía: Geist / Geist Mono (SIL Open Font License, servidas por Google Fonts).

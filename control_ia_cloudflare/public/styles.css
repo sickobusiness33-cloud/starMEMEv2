@@ -624,7 +624,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--k
 label { letter-spacing: .06em; }
 .pill { border-radius: 999px; padding: 1px 9px; font-size: 10.5px; letter-spacing: .02em; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.chip-btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 5px 12px; font-size: 12.5px; font-weight: 500; cursor: pointer; transition: all .15s; }
+.chip-btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 5px 12px; font-size: 12.5px; font-weight: 500; cursor: pointer; transition: border-color .15s ease, background-color .15s ease, color .15s ease, transform .16s var(--ease-out); }
 .chip-btn b { font-size: 11px; color: var(--k-accent); }
 .chip-btn:hover { border-color: #cfd2d8; }
 .chip-btn[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
@@ -743,7 +743,7 @@ main > * { animation: viewIn .35s var(--ease) both; }
 .kx-shimmer { background: linear-gradient(90deg, var(--muted) 0%, var(--ink) 40%, var(--muted) 80%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 2s linear infinite; }
 @keyframes shimmer { to { background-position: -200% 0; } }
 .kx-working-agents { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-.kx-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px 3px 4px; font-size: 12px; background: var(--card); transition: all .3s; animation: msgIn .3s var(--ease) both; }
+.kx-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px 3px 4px; font-size: 12px; background: var(--card); transition: border-color .2s ease, background-color .2s ease, color .2s ease, box-shadow .2s ease; animation: msgIn .3s var(--ease) both; }
 .kx-chip.s-busy { border-color: color-mix(in srgb, var(--k-accent) 45%, transparent); box-shadow: 0 0 0 3px rgba(61, 124, 255, .08); }
 .kx-chip.s-done { color: var(--muted); }
 .kx-chip.s-error { color: var(--err); }
@@ -763,7 +763,7 @@ main > * { animation: viewIn .35s var(--ease) both; }
 .att-chip { border: 1px solid var(--line); border-radius: 999px; box-shadow: none; }
 .kx-empty { text-align: center; margin: auto; display: grid; justify-items: center; gap: 12px; max-width: 520px; color: var(--muted); }
 .kx-suggest { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
-.kx-sug { border: 1px solid var(--line); background: var(--card); border-radius: 12px; padding: 9px 13px; font-size: 13px; cursor: pointer; text-align: left; transition: all .15s; color: var(--ink); }
+.kx-sug { border: 1px solid var(--line); background: var(--card); border-radius: 12px; padding: 9px 13px; font-size: 13px; cursor: pointer; text-align: left; transition: border-color .15s ease, background-color .15s ease, color .15s ease, transform .16s var(--ease-out); color: var(--ink); }
 .kx-sug:hover { border-color: color-mix(in srgb, var(--k-accent) 40%, var(--line)); box-shadow: 0 4px 14px rgba(61, 124, 255, .1); transform: translateY(-1px); }
 .kx-welcome { margin: auto; max-width: 720px; width: 100%; padding: 40px 20px; display: grid; justify-items: center; gap: 14px; text-align: center; }
 .kx-hero-logo { color: var(--ink); filter: drop-shadow(0 12px 28px rgba(61, 124, 255, .25)); animation: float 4s ease-in-out infinite; }

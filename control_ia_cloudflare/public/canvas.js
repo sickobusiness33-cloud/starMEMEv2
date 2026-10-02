@@ -1,4 +1,4 @@
-/* Lienzo → Oficina 3D de robots.
+/* Lienzo → Oficina 3D de robots · parqué de Wall Street.
  *
  * - Cada robot del equipo tiene su mesa con ordenador; cada proyecto, su mesa con holograma.
  * - Los robots se conectan con proyectos (toca un robot → marca sus proyectos).
@@ -45,8 +45,8 @@ async function viewCanvas(main) {
   const count = h("span", { class: "of-count" });
   const demoBtn = h("button", { class: "btn small", type: "button", "aria-pressed": "false", title: "Ver cómo trabajan sin lanzar una tarea real" }, icon("play", 14), "Modo demo");
   const toolbar = h("div", { class: "of-toolbar" },
-    h("div", { class: "grow" }, h("div", { class: "eyebrow" }, "Agentes · oficina 3D"), h("h1", {}, "Oficina de robots"),
-      h("p", { class: "small muted" }, "Toca un robot para conectarlo a tus proyectos. Cuando un proyecto trabaja, sus robots se levantan, cogen la tarea del tablón y se ponen a ello.")),
+    h("div", { class: "grow" }, h("div", { class: "eyebrow" }, "Agentes · parqué de Wall Street"), h("h1", {}, "Oficina de robots"),
+      h("p", { class: "small muted" }, "Tu parqué de agentes. Toca un robot para ver su ficha o su ordenador para ver qué le han pedido y qué está generando, en directo.")),
     count,
     h("div", { class: "row of-actions" },
       h("button", { class: "btn small", type: "button", onclick: () => pickDialog("a") }, icon("plus", 14), "Robot"),
@@ -58,8 +58,13 @@ async function viewCanvas(main) {
     h("button", { type: "button", "aria-label": "Girar la vista", onclick: () => off?.rotate() }, icon("refresh", 15)),
     h("button", { type: "button", "aria-label": "Centrar", onclick: () => off?.reset() }, icon("grid", 15)));
   const legend = h("div", { class: "of-legend" },
-    h("span", {}, "⌨️ en su mesa"), h("span", {}, "📋 coge tarea"), h("span", {}, "⚡ trabajando"), h("span", {}, "☕💧 descanso"));
-  main.replaceChildren(h("div", { class: "of" }, toolbar, h("div", { class: "of-wrap" }, stage, camBar, legend, panel)));
+    h("span", {}, "Toca un robot · su ficha"), h("span", {}, "Toca su ordenador · qué hace"), h("span", {}, "Arrastra · moverte"), h("span", { class: "of-legend-desk" }, "Mayús + arrastrar · girar"));
+  // Buscador: encuentra cualquier agente y vuela hasta su puesto
+  const find = h("input", { type: "search", class: "of-find", placeholder: "Buscar agente…", "aria-label": "Buscar agente en la oficina", autocomplete: "off" });
+  const findList = h("div", { class: "of-find-list", hidden: true });
+  const findBox = h("div", { class: "of-find-box" }, find, findList);
+  const computer = h("section", { class: "of-pc", hidden: true, role: "dialog", "aria-label": "Ordenador del agente" });
+  main.replaceChildren(h("div", { class: "of" }, toolbar, h("div", { class: "of-wrap" }, stage, findBox, camBar, legend, panel, computer)));
 
   let off = null;
   try {
@@ -67,6 +72,7 @@ async function viewCanvas(main) {
     off = mod.mountOffice(stage, {
       projectName: (id) => projects.get(id)?.name || "proyecto",
       onBot: (id) => showBot(id),
+      onComputer: (id) => showComputer(id),
       onStation: (id) => showProject(id),
       onEmpty: () => { panel.hidden = true; },
     });
@@ -86,9 +92,11 @@ async function viewCanvas(main) {
       projects: officeProjects().map((p) => ({ id: p.id, name: p.name, color: p.color, live: p.live > 0, sub: `${(p.runs || 0) + (p.kairo_runs || 0)} tareas` })),
     });
     const teamIds = new Set(team().map((a) => a.id));
-    off.setCrowd(reg.agents.filter((a) => !teamIds.has(a.id)).slice(0, 280)); // la nave tiene 288 puestos; el resto entra como visitante al trabajar
-    count.textContent = `${team().length} en tu equipo · ${Math.min(280, reg.agents.length)} en la nave · ${reg.agents.length} agentes en total · ${st.links.length} conexiones`;
+    const floorAgents = reg.agents.filter((a) => !teamIds.has(a.id)).slice(0, off.capacity); // el resto entra por la puerta cuando trabaja
+    off.setCrowd(floorAgents);
+    count.textContent = `${team().length} en tu equipo · ${floorAgents.length} en el parqué · ${reg.agents.length} agentes`;
     applyWork();
+    refreshScreens();
   };
 
   // Qué hace cada robot ahora mismo (datos reales + modo demo).
@@ -115,6 +123,41 @@ async function viewCanvas(main) {
     off.setWork(map, visitors);
   };
 
+  // Videowall y teletipo con datos reales del panel.
+  const applyBoard = () => {
+    const working = new Set((dash.working_agents || []).map((w) => w.agent_id)).size;
+    const live = dash.projects.filter((p) => p.live > 0);
+    const t = dash.totals || {};
+    off.setBoard({
+      kpis: [
+        { label: "Agentes", value: reg.agents.length.toLocaleString("es-ES") },
+        { label: "Trabajando", value: working, tone: working ? "live" : null },
+        { label: "Proyectos live", value: live.length, tone: live.length ? "up" : null },
+        { label: "Tareas", value: (t.runs || 0).toLocaleString("es-ES") },
+        { label: "Tokens hoy", value: Number(t.tokens_today || 0).toLocaleString("es-ES") },
+      ],
+      ticker: [
+        ...live.map((p) => ({ text: `${p.name.toUpperCase()} ● LIVE`, tone: "live" })),
+        ...(dash.working_agents || []).slice(0, 10).map((w) => ({ text: `${(agents.get(w.agent_id)?.name || w.agent_id).toUpperCase()} ▲ TRABAJANDO`, tone: "up" })),
+        ...dash.projects.slice(0, 12).map((p) => ({ text: `${p.name.toUpperCase()} ${(p.runs || 0) + (p.kairo_runs || 0)} TAREAS`, tone: p.failed ? "down" : null })),
+        { text: `KAIRO · ${reg.agents.length} AGENTES`, tone: "live" },
+        { text: `HECHAS ${(t.completed || 0).toLocaleString("es-ES")} ▲`, tone: "up" },
+        ...(t.failed ? [{ text: `FALLIDAS ${t.failed} ▼`, tone: "down" }] : []),
+      ],
+    });
+  };
+  // Pantalla central de cada puesto de tu equipo: lo último que ha hecho cada agente (real).
+  let screenBusy = false;
+  async function refreshScreens() {
+    const ids = team().map((a) => a.id);
+    if (!ids.length || screenBusy) return;
+    screenBusy = true;
+    try {
+      const r = await api("GET", `/api/chat/agents-activity?ids=${encodeURIComponent(ids.join(","))}`);
+      off.setScreens(new Map(Object.entries(r.agents).map(([id, list]) => [id, list[0]])));
+    } catch { /* la oficina sigue funcionando sin pantallas */ } finally { screenBusy = false; }
+  }
+
   demoBtn.addEventListener("click", () => {
     demo = !demo;
     demoBtn.setAttribute("aria-pressed", String(demo));
@@ -127,6 +170,7 @@ async function viewCanvas(main) {
   function showBot(id) {
     const a = agents.get(id);
     if (!a) return;
+    closeComputer();
     const onTeam = team().some((x) => x.id === id);
     const linked = new Set(st.links.filter((l) => l.a === id).map((l) => l.p));
     panel.hidden = false;
@@ -135,6 +179,9 @@ async function viewCanvas(main) {
         h("div", { class: "grow" }, h("b", {}, a.name), h("small", {}, `${a.category_label}${a.locked ? " · PRO" : ""}${onTeam ? "" : " · visitante"}`)),
         h("button", { class: "btn small ghost icon-only", type: "button", "aria-label": "Cerrar", onclick: () => { panel.hidden = true; } }, icon("close", 16))),
       h("p", { class: "small muted" }, a.description),
+      h("div", { class: "row", style: "gap:8px" },
+        h("button", { class: "btn small primary", type: "button", onclick: () => showComputer(id) }, icon("cpu", 14), "Ver su ordenador"),
+        h("button", { class: "btn small", type: "button", onclick: () => off.focus(id) }, "Ir a su puesto")),
       onTeam ? h("div", { class: "stack", style: "gap:6px" }, h("label", {}, "Trabaja en"),
         ...[...projects.values()].map((p) => {
           const cb = h("input", { type: "checkbox", checked: linked.has(p.id) ? true : null });
@@ -171,6 +218,71 @@ async function viewCanvas(main) {
       } }, "Quitar mesa de la oficina"));
   }
 
+  // --- ordenador del agente: qué le pidieron, qué genera y su historial (datos reales)
+  let pcTimer = null, pcId = null;
+  async function showComputer(id) {
+    const a = agents.get(id);
+    if (!a) return;
+    pcId = id; panel.hidden = true;
+    clearInterval(pcTimer);
+    computer.hidden = false;
+    let tab = "out", items = [], sel = 0;
+    const body = h("div", { class: "of-pc-body" });
+    const tabs = h("div", { class: "of-pc-tabs", role: "tablist" });
+    const status = h("span", { class: "of-pc-status" });
+    computer.replaceChildren(
+      h("header", { class: "of-pc-h" },
+        h("span", { class: "of-pc-dots", "aria-hidden": "true" }, h("i"), h("i"), h("i")),
+        h("span", { class: "of-pc-title" }, agentRobot(a, "idle", 22), h("b", {}, a.name), h("small", {}, a.category_label)),
+        status,
+        h("button", { class: "of-pc-x", type: "button", "aria-label": "Cerrar", onclick: closeComputer }, icon("close", 15))),
+      tabs, body);
+    const render = () => {
+      const cur = items[sel];
+      status.className = "of-pc-status" + (cur?.live ? " live" : "");
+      status.textContent = cur ? (cur.live ? `● ${cur.action || cur.status}` : cur.status === "COMPLETED" || cur.status === "completed" ? "✓ terminado" : cur.status) : "en espera";
+      tabs.replaceChildren(...[["out", "Salida"], ["req", "Petición"], ["log", `Historial · ${items.length}`]].map(([k, l]) =>
+        h("button", { type: "button", role: "tab", "aria-selected": String(tab === k), class: tab === k ? "on" : "", onclick: () => { tab = k; render(); } }, l)));
+      if (!cur) { body.replaceChildren(h("div", { class: "of-pc-empty" }, h("b", {}, "Sin trabajo todavía"), h("p", {}, `Cuando Kairo, un proyecto o el Agent Hub usen a ${a.name}, aquí verás la petición y lo que genera, en directo.`), h("a", { class: "btn small primary", href: "#/chat" }, "Pedirle algo en Kairo"))); return; }
+      if (tab === "req") body.replaceChildren(h("div", { class: "of-pc-meta" }, `${cur.source === "hub" ? "Agent Hub" : "Kairo"} · ${fmtDate(cur.at)}`), h("pre", { class: "of-pc-pre" }, cur.request || cur.task || "—"), cur.task && cur.request ? h("div", { class: "of-pc-meta" }, "Su parte del plan") : null, cur.task && cur.request ? h("pre", { class: "of-pc-pre" }, cur.task) : null);
+      else if (tab === "log") body.replaceChildren(h("ol", { class: "of-pc-log" }, items.map((x, i) => h("li", {}, h("button", { type: "button", class: i === sel ? "on" : "", onclick: () => { sel = i; tab = "out"; render(); } },
+        h("span", { class: "of-pc-dot" + (x.live ? " live" : x.status === "ERROR" || x.status === "failed" ? " err" : "") }), h("span", { class: "grow" }, trunc(x.request || x.task || "—", 80)), h("small", {}, fmtTime(x.at)))))));
+      else {
+        const pre = h("div", { class: "of-pc-code" });
+        // Bloques de código resaltados, el resto como texto
+        String(cur.output || (cur.live ? "" : cur.error || "—")).split(/(```[\s\S]*?(?:```|$))/).forEach((chunk) => {
+          if (chunk.startsWith("```")) { const m = chunk.match(/^```(\w*)\n?([\s\S]*?)(?:```)?$/); pre.append(h("pre", { class: "of-pc-pre code" }, m?.[1] ? h("span", { class: "of-pc-lang" }, m[1]) : null, m ? m[2] : chunk)); }
+          else if (chunk.trim()) pre.append(h("p", { class: "of-pc-text" }, chunk.trim()));
+        });
+        if (cur.live) pre.append(h("span", { class: "of-pc-caret", "aria-hidden": "true" }));
+        body.replaceChildren(h("div", { class: "of-pc-meta" }, [cur.model, cur.execution_ms ? `${(cur.execution_ms / 1000).toFixed(1)} s` : null, cur.live && cur.progress ? `${cur.progress}%` : null].filter(Boolean).join(" · ") || " "), pre);
+        if (cur.live) body.scrollTop = body.scrollHeight;
+      }
+    };
+    const load = async () => {
+      if (pcId !== id || computer.hidden) return;
+      try { const r = await api("GET", `/api/chat/agents-activity?ids=${encodeURIComponent(id)}&limit=10`); items = r.agents[id] || []; } catch { items = items || []; }
+      if (sel >= items.length) sel = 0;
+      render();
+    };
+    render(); await load();
+    pcTimer = setInterval(() => { if (!stage.isConnected) return clearInterval(pcTimer); if (items[sel]?.live || items.some((x) => x.live)) load(); }, 2000);
+    off.focus(id);
+  }
+  function closeComputer() { computer.hidden = true; pcId = null; clearInterval(pcTimer); }
+  document.addEventListener("keydown", function esc(e) { if (!stage.isConnected) return document.removeEventListener("keydown", esc); if (e.key === "Escape") { closeComputer(); panel.hidden = true; } });
+
+  const renderFind = () => {
+    const q = find.value.trim().toLowerCase();
+    if (!q) { findList.hidden = true; return; }
+    const hits = reg.agents.filter((a) => a.name.toLowerCase().includes(q) || (a.category_label || "").toLowerCase().includes(q)).slice(0, 8);
+    findList.hidden = false;
+    findList.replaceChildren(...(hits.length ? hits.map((a) => h("button", { type: "button", onclick: () => { find.value = ""; findList.hidden = true; off.focus(a.id); showBot(a.id); } },
+      agentRobot(a, "idle", 24), h("span", { class: "grow" }, h("b", {}, a.name), h("small", {}, a.category_label)))) : [h("p", { class: "small muted" }, "Ningún agente con ese nombre.")]));
+  };
+  find.addEventListener("input", renderFind);
+  find.addEventListener("keydown", (e) => { if (e.key === "Enter") findList.querySelector("button")?.click(); if (e.key === "Escape") { find.value = ""; renderFind(); } });
+
   async function workWith(p, bots) {
     const ids = bots.filter((a) => !a.locked).map((a) => a.id).slice(0, reg.max_agents_per_message);
     if (bots.length > ids.length) toast(`Tu plan permite ${reg.max_agents_per_message} agentes por mensaje: se usan los primeros.`);
@@ -199,6 +311,7 @@ async function viewCanvas(main) {
   }
 
   rebuild();
+  applyBoard();
   off.start();
   // Estado vivo cada 4 s: proyectos trabajando y agentes en uso por Kairo.
   every(4000, async () => {
@@ -207,6 +320,7 @@ async function viewCanvas(main) {
     const before = [...projects.values()].map((p) => `${p.id}:${p.live}`).join();
     projects = new Map(dash.projects.map((p) => [p.id, p]));
     if (before !== dash.projects.map((p) => `${p.id}:${p.live}`).join()) rebuild();
-    else applyWork();
+    else { applyWork(); refreshScreens(); }
+    applyBoard();
   });
 }

@@ -116,6 +116,33 @@ chatRoutes.get("/agents", async (c) => {
   });
 });
 
+/** Lo que hace cada agente de verdad (pantalla de su ordenador en la oficina): petición, salida y estado.
+ *  ?ids=a,b,c → lo último de cada uno · ?ids=a&limit=10 → historial de uno. Solo datos del usuario. */
+const AGENT_LIVE = new Set(["QUEUED", "ANALYZING", "THINKING", "SEARCHING", "PROCESSING", "GENERATING", "EXECUTING", "pending", "running"]);
+chatRoutes.get("/agents-activity", async (c) => {
+  const uid = c.get("user").id;
+  const ids = String(c.req.query("ids") || "").split(",").map((x) => x.trim()).filter((x) => /^[a-z0-9-]{1,80}$/.test(x)).slice(0, 40);
+  if (!ids.length) return c.json({ agents: {} });
+  const limit = ids.length === 1 ? Math.max(1, Math.min(20, Number(c.req.query("limit") || 8))) : 1;
+  const ph = ids.map(() => "?").join(",");
+  const since = new Date(Date.now() - 30 * 86400_000).toISOString();
+  const chat = await all<any>(c.env.DB,
+    `SELECT a.agent_id, a.status, a.action, a.progress, a.task, substr(a.result, 1, 6000) AS output, a.provider, a.model, a.started_at, a.finished_at, a.execution_ms,
+       r.id AS run_id, r.thread_id, substr(m.content, 1, 2000) AS request, COALESCE(a.started_at, r.created_at) AS at
+     FROM chat_run_agents a JOIN chat_runs r ON r.id = a.run_id LEFT JOIN chat_messages m ON m.id = r.message_id
+     WHERE r.user_id = ? AND a.agent_id IN (${ph}) AND r.created_at >= ? ORDER BY a.id DESC LIMIT ?`, uid, ...ids, since, limit * ids.length * 3);
+  const hub = await all<any>(c.env.DB,
+    `SELECT agent_id, status, stage AS action, substr(input, 1, 2000) AS request, substr(output, 1, 6000) AS output, output_kind, error, started_at, finished_at, created_at AS at, id AS hub_run_id
+     FROM agent_runs WHERE user_id = ? AND agent_id IN (${ph}) AND created_at >= ? ORDER BY id DESC LIMIT ?`, uid, ...ids, since, limit * ids.length * 3);
+  const out: Record<string, any[]> = {};
+  for (const r of [...chat.map((x) => ({ ...x, source: "kairo" })), ...hub.map((x) => ({ ...x, source: "hub", output: x.output_kind === "image" ? "[imagen generada]" : x.output }))]
+    .sort((a, b) => String(b.at).localeCompare(String(a.at)))) {
+    const list = (out[r.agent_id] ||= []);
+    if (list.length < limit) list.push({ ...r, live: AGENT_LIVE.has(r.status) });
+  }
+  return c.json({ agents: out });
+});
+
 chatRoutes.get("/threads", async (c) => {
   const pid = Number(c.req.query("project_id") || 0);
   // Historial de chat separado de los datos del proyecto: la lista global no mezcla los chats de proyectos.

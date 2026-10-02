@@ -858,3 +858,112 @@ main.sec-lienzo { padding: 0; }
 .mc-pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 50vh; overflow: auto; font-family: var(--mono); font-size: .78rem; background: var(--soft); padding: 10px; border-radius: var(--radius); }
 .mc-row { cursor: pointer; }
 .mc h4 { margin: 8px 0 4px; font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+
+/* ================================================================ Capa de pulido · principios de diseño de Emil Kowalski
+ * (github.com/emilkowalski/skill, MIT). Mismo layout; cambia cómo se siente:
+ *  - curvas propias fuertes (ease-out para entrar, ease-in-out para mover), nada de ease-in;
+ *  - animaciones de UI < 300 ms, solo transform/opacity; nada aparece desde scale(0);
+ *  - todo lo pulsable responde al presionar (scale .97);
+ *  - hover con movimiento solo en dispositivos con ratón; reduced-motion = más suave, no cero;
+ *  - tipografía: Geist, tracking negativo en titulares, cifras tabulares en números. */
+:root {
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease: var(--ease-out);
+  --sans: "Geist", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --display: "Geist", var(--sans);
+  --mono: "Geist Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility; }
+h1 { letter-spacing: -0.03em; }
+h2, h3 { letter-spacing: -0.015em; }
+.num, .stats, .mc-kpi b, .of-count, .pill, .kx-state, td.num, [data-num] { font-variant-numeric: tabular-nums; }
+/* Pulsar: respuesta inmediata */
+.btn, .chip-btn, .kx-chip, .kx-sug, .of-cam button, .of-mini, .cv-pick-item, .nav a, .side-nav a, button.of-pc-x, .of-pc-tabs button, .of-find-list button {
+  transition-property: transform, background-color, border-color, color, box-shadow, opacity;
+  transition-duration: 160ms; transition-timing-function: var(--ease-out);
+}
+.btn:active, .chip-btn:active, .kx-chip:active, .kx-sug:active, .of-cam button:active, .of-mini:active, .cv-pick-item:active, .of-pc-tabs button:active, .of-find-list button:active { transform: scale(0.97); }
+/* Entradas: desde casi su tamaño, nunca desde la nada */
+@keyframes dlgIn { from { opacity: 0; transform: scale(0.96); } }
+@keyframes viewIn { from { opacity: 0; transform: translateY(6px); } }
+main > * { animation-duration: 240ms; animation-timing-function: var(--ease-out); }
+.dialog, .toast, .of-panel { animation-duration: 200ms; animation-timing-function: var(--ease-out); }
+.toast { animation-name: toastIn; }
+@keyframes toastIn { from { opacity: 0; transform: translateY(12px) scale(0.98); } }
+/* Movimiento al pasar el ratón solo con ratón (en táctil el hover se queda pegado) */
+@media not ((hover: hover) and (pointer: fine)) {
+  .map .node:hover, .card:hover { transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  main > *, .dialog, .toast, .of-panel, .of-pc { animation: fadeOnly 150ms ease both !important; }
+  .btn:active, .chip-btn:active { transform: none; }
+}
+@keyframes fadeOnly { from { opacity: 0; } }
+
+/* ================================================================ Oficina · parqué Wall Street */
+.of-find-box { position: absolute; left: 14px; top: 14px; z-index: 5; width: min(300px, calc(100% - 90px)); }
+.of-find { width: 100%; height: 38px; padding: 0 12px 0 34px; border-radius: 12px; border: 1px solid var(--th-border); color: var(--th-text);
+  background: color-mix(in srgb, var(--th-card) 88%, transparent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%2394a3b8' stroke-width='2' viewBox='0 0 24 24'%3E%3Cpath d='M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4'/%3E%3C/svg%3E") no-repeat 11px center;
+  backdrop-filter: blur(8px); font: 500 13.5px var(--sans); transition: border-color 160ms ease, box-shadow 160ms ease; }
+.of-find:focus { outline: none; border-color: var(--th-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--th-primary) 22%, transparent); }
+.of-find-list { margin-top: 6px; display: flex; flex-direction: column; gap: 2px; padding: 6px; border-radius: 14px; border: 1px solid var(--th-border);
+  background: color-mix(in srgb, var(--th-card) 96%, transparent); backdrop-filter: blur(10px); box-shadow: 0 18px 40px rgba(0, 0, 0, .35);
+  transform-origin: top left; animation: dlgIn 160ms var(--ease-out); }
+.of-find-list button { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border: 0; border-radius: 10px; background: transparent; color: var(--th-text); text-align: left; cursor: pointer; }
+.of-find-list button:hover, .of-find-list button:focus-visible { background: color-mix(in srgb, var(--th-primary) 12%, transparent); outline: none; }
+.of-find-list b { display: block; font-size: 13px; font-weight: 600; }
+.of-find-list small { color: var(--th-muted); font-size: 11.5px; }
+.of-legend span { font-family: var(--sans); }
+
+/* Ordenador del agente: ventana tipo terminal */
+.of-pc { position: absolute; right: 64px; top: 14px; bottom: 14px; width: min(560px, calc(100% - 90px)); z-index: 6; display: flex; flex-direction: column;
+  border-radius: 16px; overflow: hidden; border: 1px solid rgba(255, 255, 255, .1); background: #0a0d13; color: #d6dde8;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, .55), 0 0 0 1px rgba(0, 0, 0, .4); transform-origin: right center; animation: pcIn 220ms var(--ease-out); }
+@keyframes pcIn { from { opacity: 0; transform: translateX(16px) scale(0.98); } }
+.of-pc-h { display: flex; align-items: center; gap: 12px; padding: 10px 12px; background: #121722; border-bottom: 1px solid rgba(255, 255, 255, .06); }
+.of-pc-dots { display: flex; gap: 6px; }
+.of-pc-dots i { width: 11px; height: 11px; border-radius: 50%; background: #3a4150; }
+.of-pc-dots i:nth-child(1) { background: #ff5f57; } .of-pc-dots i:nth-child(2) { background: #febc2e; } .of-pc-dots i:nth-child(3) { background: #28c840; }
+.of-pc-title { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.of-pc-title b { font: 600 14px var(--sans); color: #f3f5f9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.of-pc-title small { font: 500 11.5px var(--mono); color: #7b8597; white-space: nowrap; }
+.of-pc-status { font: 600 11px var(--mono); padding: 3px 9px; border-radius: 999px; background: rgba(255, 255, 255, .06); color: #9aa4b5; white-space: nowrap; letter-spacing: .02em; }
+.of-pc-status.live { background: rgba(52, 211, 153, .14); color: #34d399; }
+.of-pc-x { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; border: 0; background: transparent; color: #9aa4b5; cursor: pointer; }
+.of-pc-x:hover { background: rgba(255, 255, 255, .07); color: #fff; }
+.of-pc-tabs { display: flex; gap: 2px; padding: 6px 10px 0; background: #0e121a; border-bottom: 1px solid rgba(255, 255, 255, .06); }
+.of-pc-tabs button { padding: 8px 12px; border: 0; border-radius: 8px 8px 0 0; background: transparent; color: #7b8597; font: 500 12.5px var(--sans); cursor: pointer; }
+.of-pc-tabs button.on { background: #0a0d13; color: #f3f5f9; box-shadow: inset 0 2px 0 var(--th-primary); }
+.of-pc-body { flex: 1; overflow: auto; padding: 14px 16px 20px; overscroll-behavior: contain; }
+.of-pc-meta { font: 500 11px var(--mono); color: #6b7587; margin: 0 0 8px; letter-spacing: .02em; }
+.of-pc-pre { margin: 0 0 12px; padding: 12px 14px; border-radius: 10px; background: #0f141d; border: 1px solid rgba(255, 255, 255, .05); white-space: pre-wrap; overflow-wrap: anywhere;
+  font: 400 12.5px/1.6 var(--mono); color: #cfd8e6; position: relative; }
+.of-pc-pre.code { color: #a5d8ff; background: #070a10; }
+.of-pc-lang { position: absolute; top: 6px; right: 10px; font-size: 10.5px; color: #5f6b7e; text-transform: uppercase; letter-spacing: .08em; }
+.of-pc-text { margin: 0 0 12px; font: 400 13.5px/1.65 var(--sans); color: #d6dde8; white-space: pre-wrap; }
+.of-pc-caret { display: inline-block; width: 8px; height: 15px; background: var(--th-primary); vertical-align: -2px; animation: caret 1s steps(1) infinite; }
+@keyframes caret { 50% { opacity: 0; } }
+.of-pc-empty { display: grid; justify-items: start; gap: 8px; padding: 28px 6px; }
+.of-pc-empty b { font: 600 15px var(--sans); color: #f3f5f9; }
+.of-pc-empty p { margin: 0 0 6px; color: #8b95a7; font-size: 13px; max-width: 42ch; }
+.of-pc-log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.of-pc-log button { width: 100%; display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 0; border-radius: 9px; background: transparent; color: #cfd8e6; text-align: left; cursor: pointer; font: 400 13px var(--sans); }
+.of-pc-log button:hover, .of-pc-log button.on { background: rgba(255, 255, 255, .05); }
+.of-pc-log small { font: 500 11px var(--mono); color: #6b7587; font-variant-numeric: tabular-nums; }
+.of-pc-dot { width: 7px; height: 7px; border-radius: 50%; background: #4b5563; flex: none; }
+.of-pc-dot.live { background: #34d399; box-shadow: 0 0 0 3px rgba(52, 211, 153, .2); }
+.of-pc-dot.err { background: #f87171; }
+@media (max-width: 760px) {
+  .of-pc { left: 8px; right: 8px; top: auto; bottom: 8px; width: auto; height: 72%; transform-origin: bottom center; }
+  @keyframes pcIn { from { opacity: 0; transform: translateY(24px); } }
+  .of-find-box { width: calc(100% - 70px); }
+}
+@media (prefers-reduced-motion: reduce) { .of-pc-caret { animation: none; } }
+.of-legend .of-legend-desk { } @media (pointer: coarse) { .of-legend .of-legend-desk { display: none; } }
+@media (max-width: 760px) {
+  .of-toolbar > .grow { flex-basis: 100%; }
+  .of-toolbar .eyebrow { white-space: nowrap; }
+  .of-count { font-size: 10.5px; }
+}
