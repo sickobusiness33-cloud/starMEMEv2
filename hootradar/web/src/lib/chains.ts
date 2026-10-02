@@ -30,7 +30,7 @@ const EXPLORER: Record<string, string> = {
 
 export function fallbackMeta(id: ChainId): ChainMeta {
   const k = KNOWN[id];
-  return k ? { id, ...k } : { id, name: id, short: id.slice(0, 4).toUpperCase(), color: '#66717b' };
+  return k ? { id, ...k } : { id, name: id, short: id.slice(0, 4).toUpperCase(), color: 'var(--text-3)' };
 }
 
 export function metaFrom(info: ChainInfo): ChainMeta {

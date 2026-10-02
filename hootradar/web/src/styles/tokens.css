@@ -13,7 +13,10 @@
   /* text */
   --text: #e8ecef;
   --text-2: #a1abb4;
-  --text-3: #66717b;
+  /* #7a858f, not the brief's #66717b: that failed WCAG AA (3.5–4.1:1) on every surface at the
+     9.5–12.5px sizes it is used for. This one is 4.66:1 on --bg-3 up to 5.39:1 on --bg, and stays
+     clearly below --text-2 (8.1:1), so the three-step hierarchy holds. */
+  --text-3: #7a858f;
 
   /* signal colors — each has exactly one job */
   --green: #3dff8f; /* live, BREAKING, positive, primary action */
@@ -25,6 +28,35 @@
   --red-dim: rgb(255 90 106 / 0.12);
   --amber: #ffc04d; /* degraded chain status only */
   --amber-dim: rgb(255 192 77 / 0.12);
+
+  /* derived tints — always mixed from the tokens above, so changing a token carries through */
+  --green-hover: #6bffaa; /* primary button hover */
+  --on-cyan: #001218; /* text on a cyan fill (skip link) */
+  --green-line: color-mix(in srgb, var(--green) 45%, transparent);
+  --green-line-soft: color-mix(in srgb, var(--green) 32%, transparent);
+  --green-bar: color-mix(in srgb, var(--green) 70%, transparent);
+  --green-glow: color-mix(in srgb, var(--green) 60%, transparent);
+  --green-glow-soft: color-mix(in srgb, var(--green) 20%, transparent);
+  --cyan-line: color-mix(in srgb, var(--cyan) 45%, transparent);
+  --cyan-line-strong: color-mix(in srgb, var(--cyan) 60%, transparent);
+  --cyan-underline: color-mix(in srgb, var(--cyan) 35%, transparent);
+  --cyan-selection: color-mix(in srgb, var(--cyan) 28%, transparent);
+  --red-line: color-mix(in srgb, var(--red) 45%, transparent);
+  --red-line-soft: color-mix(in srgb, var(--red) 30%, transparent);
+  --red-bar: color-mix(in srgb, var(--red) 70%, transparent);
+  --amber-line: color-mix(in srgb, var(--amber) 35%, transparent);
+
+  /* translucent surfaces */
+  --bar-glass: color-mix(in srgb, var(--bg-1) 94%, transparent); /* phone bottom tab bar */
+  --banner-bg: color-mix(in srgb, var(--bg-2) 97%, transparent); /* connection banner */
+  --grid-line: rgb(255 255 255 / 0.022); /* the page grid, the one allowed decoration */
+  --hover-veil: rgb(255 255 255 / 0.012); /* card hover wash */
+  --well: rgb(0 0 0 / 0.18); /* recessed strip (provider status) */
+
+  /* elevation */
+  --shadow-pill: 0 10px 28px rgb(0 0 0 / 0.55);
+  --shadow-banner: 0 12px 28px rgb(0 0 0 / 0.45);
+  --shadow-toast: 0 14px 36px rgb(0 0 0 / 0.55);
 
   /* motion (from the animate skill — do not invent curves) */
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);

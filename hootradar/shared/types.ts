@@ -63,6 +63,20 @@ export interface TokenSnapshot {
   name: string;
   pairAddress: string | null; // most liquid pool we know of
   dex: string | null;
+  /**
+   * Creation time (ms) of the pool named in `pairAddress`, the pool every per-window
+   * figure (txns, volume, price change, liquidity) was measured on. It can be much
+   * younger than the token (a launchpad coin that just graduated). Optional: absent
+   * on snapshots stored before it existed; null when the provider did not report it.
+   */
+  pairCreatedAt?: number | null;
+  /** provider whose figure `liquidityUsd` is ("geckoterminal" | "dexscreener"); null/absent when unknown */
+  liquiditySource?: string | null;
+  /**
+   * true when the provider's reported liquidity was replaced by the pool's quote-backed
+   * value (fake-priced or single-sided pool). Growth is never measured across such a switch.
+   */
+  liquidityAdjusted?: boolean;
   ts: number; // when this snapshot was observed
   priceUsd: number | null;
   marketCapUsd: number | null;
@@ -153,6 +167,12 @@ export interface Detection {
   signals: AnomalySignal[];
   /** reasons the token was disqualified (too little liquidity, honeypot, ...) */
   rejected: string[];
+  /**
+   * Reasons the severity was capped below what the score alone would give
+   * (e.g. BREAKING held at ALERT: thin market, concentrated holders, mint authority).
+   * Absent or empty when nothing was capped.
+   */
+  caps?: string[];
 }
 
 export interface DetectionEvent {
@@ -348,6 +368,11 @@ export interface IntelItem {
   provider: string; // which integration found it: "gdelt" | "hn" | "biz" | "claude-web" | "dexscreener" | ...
   publishedAt: number | null;
   freshness: Freshness; // LIVE <= 60 min, RECENT <= 24 h, OLD > 24 h
+  /**
+   * 'day' when the source only gave a calendar date (publishedAt is then that day's
+   * 00:00 UTC): such an item is never LIVE. Absent = an exact timestamp.
+   */
+  publishedPrecision?: 'exact' | 'day';
   snippet: string | null;
   matchedOn: 'symbol' | 'name' | 'contract' | 'project';
 }
@@ -383,6 +408,15 @@ export interface RadarBrief {
   model: string | null;
 }
 
+/** What one intel provider returned for a Radar search (ok=false: it failed or was not run, see `error`). */
+export interface IntelProviderStatus {
+  provider: string; // "gdelt" | "hn" | "biz" | "official" | "claude-web"
+  ok: boolean;
+  /** relevant items kept from this provider (0 when it failed) */
+  count: number;
+  error: string | null;
+}
+
 export interface UnavailableField {
   field: string; // e.g. "smartMoney"
   reason: string; // e.g. "Requires a labelled-wallet data provider (not configured)"
@@ -404,6 +438,8 @@ export interface RadarReport {
   detection: Detection | null;
   quant: QuantResult | null;
   intel: IntelItem[];
+  /** per-provider outcome of the web stage, in provider order; [] until the stage ran */
+  providers?: IntelProviderStatus[];
   brief: RadarBrief | null;
   unavailable: UnavailableField[];
 }

@@ -92,7 +92,7 @@
 
 .engine[data-state='degraded'] {
   --engine-c: var(--amber);
-  border-color: rgb(255 192 77 / 0.35);
+  border-color: var(--amber-line);
 }
 
 .engine[data-state='offline'] {
@@ -467,11 +467,11 @@
 }
 
 .chain-chip[data-status='degraded'] {
-  border-color: rgb(255 192 77 / 0.3);
+  border-color: var(--amber-line);
 }
 
 .chain-chip[data-status='down'] {
-  border-color: rgb(255 90 106 / 0.3);
+  border-color: var(--red-line-soft);
 }
 
 .chain-chip__since {
@@ -498,7 +498,7 @@
     padding: 0 env(safe-area-inset-right, 0px) var(--safe-bottom) env(safe-area-inset-left, 0px);
     border-top: 1px solid var(--line);
     border-bottom: 0;
-    background: rgb(10 12 14 / 0.94);
+    background: var(--bar-glass);
     -webkit-backdrop-filter: blur(14px) saturate(140%);
     backdrop-filter: blur(14px) saturate(140%);
   }
@@ -547,8 +547,8 @@
   right: 0;
   z-index: 1;
   border-bottom: 1px solid var(--line-2);
-  background: rgb(14 17 20 / 0.97);
-  box-shadow: 0 12px 28px rgb(0 0 0 / 0.45);
+  background: var(--banner-bg);
+  box-shadow: var(--shadow-banner);
   transition:
     opacity var(--dur-ui) var(--ease-out),
     transform var(--dur-ui) var(--ease-out),
@@ -631,17 +631,17 @@
   border-radius: var(--radius);
   background: var(--bg-2);
   box-shadow:
-    0 1px 0 rgb(255 255 255 / 0.03) inset,
-    0 14px 36px rgb(0 0 0 / 0.55);
+    0 1px 0 var(--grid-line) inset,
+    var(--shadow-toast);
   font-size: 13px;
   color: var(--text);
 }
 
 .toast--breaking {
-  border-color: rgb(61 255 143 / 0.32);
+  border-color: var(--green-line-soft);
   box-shadow:
     inset 2px 0 0 var(--green),
-    0 14px 36px rgb(0 0 0 / 0.55);
+    var(--shadow-toast);
 }
 
 .toast__row {

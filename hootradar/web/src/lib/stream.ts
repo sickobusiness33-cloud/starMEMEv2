@@ -32,6 +32,8 @@ let lastEventAt = 0;
 let started = false;
 let retryTimer: Timer | null = null;
 let restTimer: Timer | null = null;
+/** one REST snapshot at a time: a manual retry must not start a second, parallel retry chain */
+let restInFlight = false;
 let watchdog: ReturnType<typeof setInterval> | null = null;
 
 const store = () => useStore.getState();
@@ -54,7 +56,7 @@ export function stopStream(): void {
   window.removeEventListener('offline', onOffline);
   document.removeEventListener('visibilitychange', onVisibility);
   if (watchdog) clearInterval(watchdog);
-  if (restTimer) clearTimeout(restTimer);
+  clearRestTimer();
   clearRetry();
   closeSource();
 }
@@ -64,6 +66,11 @@ export function reconnectNow(): void {
   attempt = 0;
   connect();
   if (!store().hydrated) void restSnapshot();
+}
+
+function clearRestTimer(): void {
+  if (restTimer) clearTimeout(restTimer);
+  restTimer = null;
 }
 
 function connect(): void {
@@ -106,8 +113,7 @@ function dispatch(event: StreamEvent): void {
   switch (event.type) {
     case 'hello':
       attempt = 0;
-      if (restTimer) clearTimeout(restTimer);
-      restTimer = null;
+      clearRestTimer();
       s.hello(event);
       s.setLoadError(null);
       s.setConn('open');
@@ -171,16 +177,22 @@ function onVisibility(): void {
 }
 
 async function restSnapshot(): Promise<void> {
-  restTimer = null;
-  if (store().hydrated) return;
+  // A pending scheduled retry is superseded by this attempt (manual "Retry now" included):
+  // clear it rather than orphan it, so there is only ever one retry chain.
+  clearRestTimer();
+  if (store().hydrated || restInFlight) return;
+  restInFlight = true;
   try {
     const [stats, feed, det] = await Promise.all([api.stats(), api.feed({ limit: 40 }), api.detections(60)]);
     if (!store().hydrated) store().hello({ stats, articles: feed.articles, events: det.events });
     store().setLoadError(null);
   } catch (e) {
-    if (store().hydrated) return;
+    if (store().hydrated || !started) return;
     store().setLoadError(errorMessage(e));
-    restTimer = setTimeout(restSnapshot, REST_RETRY_MS);
+    clearRestTimer();
+    restTimer = setTimeout(() => void restSnapshot(), REST_RETRY_MS);
+  } finally {
+    restInFlight = false;
   }
 }
 

@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fetchJson, fetchText, HttpError, parseRetryAfter, registerLimiter, resetHttpState } from '../src/net/http.js';
+import {
+  fetchJson,
+  fetchText,
+  HttpError,
+  laneLimiter,
+  limiterQueueLength,
+  parseRetryAfter,
+  registerLimiter,
+  RequestCancelledError,
+  RequestQueueError,
+  resetHttpState,
+} from '../src/net/http.js';
 
 type FetchArgs = [string, RequestInit | undefined];
 
@@ -146,7 +157,7 @@ describe('TTL cache', () => {
 });
 
 describe('rate limiters', () => {
-  it('queues FIFO, never drops, and keeps any 60 s window within perMinute', async () => {
+  it('queues FIFO and keeps any 60 s window within perMinute', async () => {
     registerLimiter('test-bucket', { perMinute: 20 });
     const startedAt: number[] = [];
     const order: number[] = [];
@@ -157,7 +168,9 @@ describe('rate limiters', () => {
     });
     const t0 = Date.now();
     const all = Promise.all(
-      Array.from({ length: 25 }, (_, i) => fetchJson(`https://example.test/x?i=${i}`, { limiter: 'test-bucket' })),
+      Array.from({ length: 25 }, (_, i) =>
+        fetchJson(`https://example.test/x?i=${i}`, { limiter: 'test-bucket', maxQueueMs: 180_000 }),
+      ),
     );
     await vi.advanceTimersByTimeAsync(0);
     expect(startedAt.length).toBe(2); // burst = 10% of the budget
@@ -301,8 +314,158 @@ describe('rate limiters', () => {
 
   it('pre-registers the documented provider limiters', async () => {
     stubFetch(async () => jsonResponse({}));
-    for (const key of ['geckoterminal', 'dexscreener', 'dexscreener-meta', 'pumpfun', 'gdelt', 'hn', 'biz']) {
+    const keys = ['geckoterminal', 'geckoterminal-radar', 'dexscreener', 'dexscreener-radar', 'dexscreener-meta', 'pumpfun', 'gdelt', 'hn', 'biz'];
+    for (const key of keys) {
       await expect(fetchJson(`https://example.test/${key}`, { limiter: key })).resolves.toEqual({});
     }
+  });
+});
+
+describe('queue deadlines and cancellation', () => {
+  it('bounds the time spent waiting for a limiter slot (the request timeout alone did not)', async () => {
+    // live regression: a request with timeoutMs=500 on a 1/min limiter was still pending after 3 s
+    registerLimiter('test-slow', { perMinute: 1 });
+    const fetchMock = stubFetch(async () => jsonResponse({}));
+    await expect(fetchJson('https://example.test/a', { limiter: 'test-slow' })).resolves.toEqual({});
+    const queued = fetchJson('https://example.test/b', { limiter: 'test-slow', timeoutMs: 500, maxQueueMs: 1_000, retries: 0 }).catch(
+      (e: unknown) => e,
+    );
+    await vi.advanceTimersByTimeAsync(1_001);
+    const err = await queued;
+    expect(err).toBeInstanceOf(RequestQueueError);
+    expect((err as RequestQueueError).message).toBe('example.test request queue wait timed out');
+    expect(fetchMock).toHaveBeenCalledTimes(1); // the provider was never asked
+    expect(limiterQueueLength('test-slow')).toBe(0);
+  });
+
+  it('applies a default queue deadline', async () => {
+    registerLimiter('test-default-wait', { perMinute: 1 });
+    stubFetch(async () => jsonResponse({}));
+    await fetchJson('https://example.test/a', { limiter: 'test-default-wait' });
+    const queued = fetchJson('https://example.test/b', { limiter: 'test-default-wait', retries: 0 }).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(60_001);
+    expect(await queued).toBeInstanceOf(RequestQueueError);
+  });
+
+  it('an aborted caller leaves the queue at once and never costs a provider call', async () => {
+    registerLimiter('test-abort', { perMinute: 1 });
+    const calls: string[] = [];
+    stubFetch(async (url) => {
+      calls.push(new URL(url).pathname);
+      return jsonResponse({});
+    });
+    await fetchJson('https://example.test/first', { limiter: 'test-abort' });
+    const controller = new AbortController();
+    const abandoned = fetchJson('https://example.test/abandoned', { limiter: 'test-abort', signal: controller.signal }).catch(
+      (e: unknown) => e,
+    );
+    const next = fetchJson('https://example.test/next', { limiter: 'test-abort', maxQueueMs: 120_000 });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(limiterQueueLength('test-abort')).toBe(2);
+    controller.abort();
+    expect(await abandoned).toBeInstanceOf(RequestCancelledError);
+    expect(limiterQueueLength('test-abort')).toBe(1);
+    await vi.advanceTimersByTimeAsync(70_000);
+    await expect(next).resolves.toEqual({});
+    expect(calls).toEqual(['/first', '/next']);
+  });
+
+  it('aborts a request in flight and does not retry it', async () => {
+    const fetchMock = stubFetch(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    );
+    const controller = new AbortController();
+    const p = fetchJson('https://example.test/slow', { signal: controller.signal, timeoutMs: 60_000 }).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(100);
+    controller.abort();
+    expect(await p).toBeInstanceOf(RequestCancelledError);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses at once when the queue is full', async () => {
+    registerLimiter('test-full', { perMinute: 1, maxQueue: 1 });
+    const fetchMock = stubFetch(async () => jsonResponse({}));
+    await fetchJson('https://example.test/a', { limiter: 'test-full' });
+    const waiting = fetchJson('https://example.test/b', { limiter: 'test-full', maxQueueMs: 120_000 });
+    const err = await fetchJson('https://example.test/c', { limiter: 'test-full' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RequestQueueError);
+    expect((err as RequestQueueError).reason).toBe('full');
+    await vi.advanceTimersByTimeAsync(70_000);
+    await expect(waiting).resolves.toEqual({});
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a shared cached request survives one of its callers giving up', async () => {
+    let resolveFetch: (r: Response) => void = () => {};
+    const fetchMock = stubFetch(() => new Promise<Response>((r) => (resolveFetch = r)));
+    const controller = new AbortController();
+    const quitter = fetchJson('https://example.test/shared', { cacheTtlMs: 10_000, signal: controller.signal }).catch(
+      (e: unknown) => e,
+    );
+    const stayer = fetchJson('https://example.test/shared', { cacheTtlMs: 10_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+    expect(await quitter).toBeInstanceOf(RequestCancelledError);
+    resolveFetch(jsonResponse({ v: 1 }));
+    await expect(stayer).resolves.toEqual({ v: 1 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels a shared request once every caller gave up', async () => {
+    let aborted = false;
+    stubFetch(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            aborted = true;
+            reject(new Error('aborted'));
+          });
+        }),
+    );
+    const a = new AbortController();
+    const b = new AbortController();
+    const pa = fetchJson('https://example.test/s2', { cacheTtlMs: 10_000, signal: a.signal }).catch((e: unknown) => e);
+    const pb = fetchJson('https://example.test/s2', { cacheTtlMs: 10_000, signal: b.signal }).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(0);
+    a.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(aborted).toBe(false);
+    b.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(aborted).toBe(true);
+    expect(await pa).toBeInstanceOf(RequestCancelledError);
+    expect(await pb).toBeInstanceOf(RequestCancelledError);
+  });
+
+  it('remembers a 404 when asked to', async () => {
+    const fetchMock = stubFetch(async () => jsonResponse({}, 404));
+    for (let i = 0; i < 3; i++) {
+      const err = await fetchJson('https://example.test/unknown-token', { notFoundTtlMs: 60_000 }).catch((e: unknown) => e);
+      expect((err as HttpError).status).toBe(404);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(61_000);
+    await fetchJson('https://example.test/unknown-token', { notFoundTtlMs: 60_000 }).catch(() => null);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a 429 on the Radar lane pauses the scanner lane of the same provider too', async () => {
+    const calls: string[] = [];
+    stubFetch(async (url) => {
+      calls.push(new URL(url).pathname);
+      return calls.length === 1 ? jsonResponse({}, 429) : jsonResponse({});
+    });
+    expect(laneLimiter('geckoterminal', 'radar')).toBe('geckoterminal-radar');
+    expect(laneLimiter('geckoterminal', undefined)).toBe('geckoterminal');
+    await fetchJson('https://example.test/radar', { limiter: 'geckoterminal-radar', retries: 0 }).catch(() => null);
+    const scan = fetchJson('https://example.test/scan', { limiter: 'geckoterminal' });
+    await vi.advanceTimersByTimeAsync(19_000);
+    expect(calls).toEqual(['/radar']);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(scan).resolves.toEqual({});
   });
 });

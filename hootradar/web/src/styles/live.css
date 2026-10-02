@@ -107,7 +107,7 @@
   padding: 0 12px 0 10px;
   border-radius: 999px;
   background: var(--green);
-  box-shadow: 0 10px 28px rgb(0 0 0 / 0.55);
+  box-shadow: var(--shadow-pill);
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 700;
@@ -229,8 +229,8 @@
   border-radius: inherit;
   pointer-events: none;
   box-shadow:
-    inset 0 0 0 1px rgb(61 255 143 / 0.6),
-    inset 0 0 28px rgb(61 255 143 / 0.2);
+    inset 0 0 0 1px var(--green-glow),
+    inset 0 0 28px var(--green-glow-soft);
   opacity: 0;
   animation: card-glow 1.2s var(--ease-out);
 }
@@ -354,13 +354,13 @@
   height: 2px;
   border-radius: 1px;
   overflow: hidden;
-  background: rgb(255 90 106 / 0.7);
+  background: var(--red-bar);
 }
 
 .bsbar__buy {
   position: absolute;
   inset: 0;
-  background: rgb(61 255 143 / 0.7);
+  background: var(--green-bar);
   transform-origin: left center;
 }
 
@@ -460,7 +460,7 @@
     border-color: var(--line-2);
   }
   .card__toggle:hover {
-    background: rgb(255 255 255 / 0.012);
+    background: var(--hover-veil);
   }
 }
 

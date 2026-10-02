@@ -14,7 +14,7 @@
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #001218;
+  color: var(--on-cyan);
   transform: translateY(calc(-100% - 16px));
 }
 
@@ -60,7 +60,7 @@
 }
 
 .rsearch__field:focus-within {
-  border-color: rgb(47 224 255 / 0.6);
+  border-color: var(--cyan-line-strong);
 }
 
 .rsearch__icon {
@@ -486,7 +486,7 @@
 
 .inv__warn {
   padding: 10px 12px;
-  border: 1px solid rgb(255 192 77 / 0.3);
+  border: 1px solid var(--amber-line);
   border-radius: var(--radius-sm);
   background: var(--amber-dim);
   font-size: 13px;
@@ -1224,7 +1224,7 @@
   gap: 6px 12px;
   padding: 10px 14px;
   border-top: 1px solid var(--line);
-  background: rgb(0 0 0 / 0.18);
+  background: var(--well);
   border-radius: 0 0 var(--radius) var(--radius);
 }
 
@@ -1762,7 +1762,7 @@ a.ref:active {
     color: var(--text);
   }
   a.ref:hover {
-    border-color: rgb(47 224 255 / 0.5);
+    border-color: var(--cyan-line-strong);
   }
   .leader:hover {
     background: var(--bg-3);

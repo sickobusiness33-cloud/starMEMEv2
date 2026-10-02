@@ -115,7 +115,7 @@ button,
 }
 
 ::selection {
-  background: rgb(47 224 255 / 0.28);
+  background: var(--cyan-selection);
   color: var(--text);
 }
 
@@ -137,8 +137,8 @@ button,
   z-index: -1;
   pointer-events: none;
   background-image:
-    linear-gradient(to right, rgb(255 255 255 / 0.022) 1px, transparent 1px),
-    linear-gradient(to bottom, rgb(255 255 255 / 0.022) 1px, transparent 1px);
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
   background-size: 32px 32px;
   background-position: -1px -1px;
   mask-image: linear-gradient(to bottom, #000 0%, rgb(0 0 0 / 0.35) 85%);
@@ -251,7 +251,7 @@ button,
 }
 
 .tag--alert {
-  border-color: rgb(47 224 255 / 0.55);
+  border-color: var(--cyan-line-strong);
   color: var(--cyan);
 }
 
@@ -260,7 +260,7 @@ button,
 }
 
 .tag--ai {
-  border-color: rgb(47 224 255 / 0.4);
+  border-color: var(--cyan-line);
   background: var(--cyan-dim);
   color: var(--cyan);
 }
@@ -270,19 +270,19 @@ button,
 }
 
 .tag--risk {
-  border-color: rgb(255 90 106 / 0.45);
+  border-color: var(--red-line);
   background: var(--red-dim);
   color: var(--red);
 }
 
 .tag--live {
-  border-color: rgb(61 255 143 / 0.45);
+  border-color: var(--green-line);
   background: var(--green-dim);
   color: var(--green);
 }
 
 .tag--recent {
-  border-color: rgb(47 224 255 / 0.45);
+  border-color: var(--cyan-line);
   color: var(--cyan);
 }
 
@@ -363,7 +363,7 @@ button,
 }
 
 .btn[data-done] {
-  border-color: rgb(61 255 143 / 0.5);
+  border-color: var(--green-line);
   color: var(--green);
 }
 
@@ -374,7 +374,7 @@ button,
   }
   .btn--primary:hover:not(:disabled) {
     border-color: var(--green);
-    background: #6bffaa;
+    background: var(--green-hover);
     color: var(--on-green);
   }
   .btn--ghost:hover:not(:disabled) {
@@ -387,7 +387,7 @@ button,
 .link {
   color: var(--cyan);
   text-decoration: underline;
-  text-decoration-color: rgb(47 224 255 / 0.35);
+  text-decoration-color: var(--cyan-underline);
   text-underline-offset: 3px;
   transition: text-decoration-color var(--dur-hover) ease;
 }
