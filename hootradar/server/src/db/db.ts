@@ -13,7 +13,12 @@ import type {
 } from '../../../shared/types.js';
 
 const HOUR_MS = 3_600_000;
-const SNAPSHOT_RETENTION_MS = 48 * HOUR_MS;
+/**
+ * Snapshots feed history-based metrics (90 min look-back); nothing reads further
+ * back than 2 h. Six hours keeps a margin while bounding the table: the scanner
+ * stores ~35K observations an hour across four chains.
+ */
+const SNAPSHOT_RETENTION_MS = 6 * HOUR_MS;
 const TOKEN_RETENTION_MS = 48 * HOUR_MS;
 const RADAR_RETENTION_MS = 7 * 24 * HOUR_MS;
 /**
@@ -35,6 +40,12 @@ export interface DbCounts {
   articles: number;
   distributed: number;
   perChainTokens: Record<string, number>;
+}
+
+/** Market minimums that make a tracked token "active" (refreshed before inactive ones). */
+export interface TrackedPriority {
+  minLiquidityUsd: number;
+  minVolumeH1Usd: number;
 }
 
 export interface ArticleQuery {
@@ -201,16 +212,23 @@ export class Db {
     );
   }
 
-  /** The most recent snapshot of every token observed since `sinceTs`, newest first. */
-  latestSnapshots(sinceTs: number, limit?: number): TokenSnapshot[] {
+  /**
+   * The most recent observation of every token seen since `sinceTs`, newest first.
+   * With `active`, only tokens whose latest observation clears both market minimums.
+   * Reads the token rows (each holds its newest observation, coalesced or not)
+   * instead of ranking every snapshot of the window.
+   */
+  latestSnapshots(sinceTs: number, limit?: number, active?: TrackedPriority): TokenSnapshot[] {
     return this.all<TokenSnapshot>(
-      `SELECT json FROM (
-         SELECT json, ts, ROW_NUMBER() OVER (PARTITION BY key ORDER BY ts DESC, id DESC) AS rn
-         FROM snapshots WHERE ts >= ?
-       ) WHERE rn = 1
-       ORDER BY ts DESC
+      `SELECT json FROM tokens
+       WHERE last_seen >= ?
+         AND COALESCE(json_extract(json, '$.liquidityUsd'), 0) >= ?
+         AND COALESCE(json_extract(json, '$.volumeUsd.h1'), 0) >= ?
+       ORDER BY last_seen DESC
        LIMIT ?`,
       sinceTs,
+      active?.minLiquidityUsd ?? Number.NEGATIVE_INFINITY,
+      active?.minVolumeH1Usd ?? Number.NEGATIVE_INFINITY,
       limit ?? -1,
     );
   }
@@ -218,15 +236,29 @@ export class Db {
   /**
    * Addresses (original casing) of young tokens on a chain, most recently seen first.
    * Age uses the provider creation time, or our first sighting when it is unknown.
+   *
+   * With `active`, tokens whose latest observation clears both market minimums come
+   * first: launchpads mint hundreds of tokens an hour that never trade, and without
+   * this they would push tradeable tokens out of the refresh budget.
    */
-  trackedAddresses(chain: ChainId, maxAgeHours: number, limit: number, now: number = Date.now()): string[] {
+  trackedAddresses(
+    chain: ChainId,
+    maxAgeHours: number,
+    limit: number,
+    now: number = Date.now(),
+    active?: TrackedPriority,
+  ): string[] {
     const rows = this.rows(
       `SELECT address FROM tokens
        WHERE chain = ? AND COALESCE(created_at, first_seen) >= ?
-       ORDER BY last_seen DESC
+       ORDER BY (COALESCE(json_extract(json, '$.liquidityUsd'), 0) >= ?
+                 AND COALESCE(json_extract(json, '$.volumeUsd.h1'), 0) >= ?) DESC,
+                last_seen DESC
        LIMIT ?`,
       chain,
       now - maxAgeHours * HOUR_MS,
+      active?.minLiquidityUsd ?? 0,
+      active?.minVolumeH1Usd ?? 0,
       limit,
     );
     return rows.map((r) => String(r.address));
@@ -389,7 +421,7 @@ export class Db {
     };
   }
 
-  /** Drops snapshots and stale tokens older than 48 h and radar reports older than 7 days. */
+  /** Drops snapshots older than 6 h, stale tokens older than 48 h and radar reports older than 7 days. */
   prune(now: number): void {
     this.run('DELETE FROM snapshots WHERE ts < ?', now - SNAPSHOT_RETENTION_MS);
     this.run('DELETE FROM tokens WHERE last_seen < ?', now - TOKEN_RETENTION_MS);

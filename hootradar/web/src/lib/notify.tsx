@@ -2,6 +2,7 @@ import { toast } from 'sonner';
 import type { NewsArticle } from '@shared/types';
 import { getChainMeta } from './chains';
 import { navigate } from './hash-router';
+import { fmtTicker } from './format';
 import { useStore } from '../store';
 import { IconCheck, IconClose } from '../components/Icons';
 
@@ -21,7 +22,7 @@ function BreakingToast({ id, article }: { id: string | number; article: NewsArti
     <div className="toast toast--breaking" role="status">
       <div className="toast__row">
         <span className="tag tag--breaking">Breaking</span>
-        <span className="toast__ticker mono">${article.symbol}</span>
+        <span className="toast__ticker mono">{fmtTicker(article.symbol)}</span>
         <span className="toast__chain mono">
           <span className="dot" style={{ ['--dot' as string]: chain.color }} />
           {chain.short}

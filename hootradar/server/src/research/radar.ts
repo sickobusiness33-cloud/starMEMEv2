@@ -241,8 +241,16 @@ export class RadarService {
     if (inv.needsLookup) {
       try {
         const full = await adapter.lookup(snapshot.address);
-        if (full) snapshot = mergeSnapshots(snapshot, full);
-        else note = ' · full lookup found no pool, using search data';
+        // the lookup's pool is authoritative; search data must not leak another pool's windows into it
+        if (full) {
+          snapshot = mergeSnapshots(full, {
+            links: snapshot.links,
+            boosted: snapshot.boosted,
+            imageUrl: full.imageUrl ?? snapshot.imageUrl,
+          });
+        } else {
+          note = ' · full lookup found no pool, using search data';
+        }
       } catch (e) {
         note = ` · full lookup failed (${errMsg(e)}), using search data`;
       }
@@ -459,19 +467,54 @@ async function lookupAddress(adapters: ChainAdapter[], address: string): Promise
   return found.sort((a, b) => byLiquidity(a.snapshot, b.snapshot));
 }
 
-/** DexScreener search on supported chains: exact symbol/name matches first, then by liquidity. */
+/**
+ * DexScreener search on supported chains: exact symbol/name matches first, then
+ * by real trading activity, then by liquidity.
+ *
+ * - Symbols compare without a leading "$": some tokens put the cashtag in the
+ *   on-chain symbol itself (dogwifhat's symbol is "$WIF").
+ * - A ticker-like query is also searched as "$TICKER": DexScreener ranks text
+ *   matches, so "WIF" alone can fill all 30 results with other chains' tokens
+ *   and never reach the "$WIF" the reader means.
+ * - Reported liquidity is not trusted to rank: a scam pool quoting a worthless
+ *   token against 9 USDC can report $59M of "liquidity". Volume costs real money
+ *   to produce, so 24 h volume decides first.
+ */
 async function searchTokens(adapters: ChainAdapter[], query: string): Promise<Resolved[]> {
   const byDsChain = new Map(adapters.map((a) => [a.config.dexscreenerChainId, a] as const));
-  const wanted = query.toLowerCase();
-  const isExact = (s: TokenSnapshot) => s.symbol.toLowerCase() === wanted || s.name.toLowerCase() === wanted;
-  const found: Resolved[] = [];
-  for (const snap of await dsSearch(query)) {
-    const adapter = byDsChain.get(snap.chain);
-    if (adapter) found.push({ adapter, snapshot: { ...snap, chain: adapter.config.id } });
+  const bare = (text: string) => normalizeQuery(text).toLowerCase();
+  const wanted = bare(query);
+  const isExact = (s: TokenSnapshot) => bare(s.symbol) === wanted || bare(s.name) === wanted;
+
+  const queries = TICKER_QUERY.test(query) ? [query, `$${query}`] : [query];
+  const results = await Promise.allSettled(queries.map((q) => dsSearch(q)));
+  const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (failed.length === results.length) throw failed[0]?.reason;
+
+  const found = new Map<string, Resolved>();
+  for (const r of results) {
+    if (r.status !== 'fulfilled') continue;
+    for (const snap of r.value) {
+      const adapter = byDsChain.get(snap.chain);
+      if (!adapter) continue;
+      const key = `${adapter.config.id}:${adapter.normalizeAddress(snap.address)}`;
+      if (!found.has(key)) found.set(key, { adapter, snapshot: { ...snap, chain: adapter.config.id } });
+    }
   }
-  return found.sort(
-    (a, b) => Number(isExact(b.snapshot)) - Number(isExact(a.snapshot)) || byLiquidity(a.snapshot, b.snapshot),
+  return [...found.values()].sort(
+    (a, b) =>
+      Number(isExact(b.snapshot)) - Number(isExact(a.snapshot)) ||
+      activity(b.snapshot) - activity(a.snapshot) ||
+      byLiquidity(a.snapshot, b.snapshot),
   );
+}
+
+/** A plain ticker ("WIF", "pepe2"): letters and digits, no spaces. */
+const TICKER_QUERY = /^[A-Za-z0-9]{2,15}$/;
+
+/** USD volume over the longest window the provider reported; unknown counts as none. */
+function activity(s: TokenSnapshot): number {
+  return s.volumeUsd.h24 ?? s.volumeUsd.h6 ?? s.volumeUsd.h1 ?? 0;
 }
 
 function byLiquidity(a: TokenSnapshot, b: TokenSnapshot): number {
@@ -525,8 +568,10 @@ function tokenRef(s: TokenSnapshot): TokenRef {
   };
 }
 
+/** "$WIF" — a symbol that already carries its cashtag ("$WIF" on-chain) is not prefixed twice. */
 function label(s: TokenSnapshot): string {
-  return s.symbol ? `$${s.symbol}` : s.address;
+  const symbol = s.symbol.replace(/^\$+/, '');
+  return symbol ? `$${symbol}` : s.address;
 }
 
 function done(message: string | null): StageOutcome {

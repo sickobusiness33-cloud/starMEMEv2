@@ -8,8 +8,10 @@ import type {
   NewsArticle,
   PipelineTimings,
   Severity,
+  TimeWindow,
   TokenLink,
   TokenSnapshot,
+  TxCounts,
 } from '../../../shared/types.js';
 import { writeArticle } from '../ai/newswriter.js';
 import type { ChainAdapter, TokenEnrichment } from '../chains/types.js';
@@ -212,7 +214,9 @@ export class Pipeline {
     if (!adapter) return s;
     const key = tokenKey(s.chain, s.address);
     const cached = this.enrichCache.get(key);
-    if (cached && now - cached.at < ENRICH_TTL_MS) return cached.data ? applyEnrichment(s, cached.data) : s;
+    if (cached && now - cached.at < ENRICH_TTL_MS) {
+      return cached.data ? applyEnrichment(s, cached.data, (a) => adapter.normalizeAddress(a)) : s;
+    }
 
     let data: TokenEnrichment | null = null;
     try {
@@ -222,7 +226,7 @@ export class Pipeline {
     }
     this.cacheEnrichment(key, now, data);
     if (!data) return s;
-    const enriched = applyEnrichment(s, data);
+    const enriched = applyEnrichment(s, data, (a) => adapter.normalizeAddress(a));
     this.d.db.insertSnapshot(enriched);
     return enriched;
   }
@@ -353,16 +357,46 @@ export class Pipeline {
   }
 }
 
-/** Enrichment values are fresher than whatever the market snapshot carried. */
-function applyEnrichment(s: TokenSnapshot, e: TokenEnrichment): TokenSnapshot {
+/**
+ * Enrichment values are fresher than whatever the market snapshot carried. Wallet
+ * counts are added only when they describe the same pool as the snapshot.
+ */
+function applyEnrichment(s: TokenSnapshot, e: TokenEnrichment, normalize: (address: string) => string): TokenSnapshot {
+  const samePool =
+    e.wallets?.pairAddress != null && s.pairAddress != null && normalize(e.wallets.pairAddress) === normalize(s.pairAddress);
   return {
     ...s,
+    txns: samePool && e.wallets ? withWalletCounts(s.txns, e.wallets.txns) : s.txns,
     holders: e.holders ?? s.holders,
     top10HolderPct: e.top10HolderPct ?? s.top10HolderPct,
     security: e.security ?? s.security,
     imageUrl: s.imageUrl ?? e.imageUrl ?? null,
     links: mergeLinks(s.links, e.links ?? []),
+    createdAt: earliest(s.createdAt, e.poolCreatedAt ?? null),
   };
+}
+
+/** Earliest known time; a token is at least as old as any of its pools. */
+function earliest(a: number | null, b: number | null): number | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return Math.min(a, b);
+}
+
+/** Unique buyers/sellers from the enrichment; trade counts stay those of the market snapshot when it has them. */
+function withWalletCounts(market: TokenSnapshot['txns'], wallets: TokenSnapshot['txns']): TokenSnapshot['txns'] {
+  const out: TokenSnapshot['txns'] = { ...market };
+  for (const [w, counts] of Object.entries(wallets) as Array<[TimeWindow, TxCounts | undefined]>) {
+    if (!counts) continue;
+    const base = market[w];
+    out[w] = {
+      buys: base?.buys ?? counts.buys,
+      sells: base?.sells ?? counts.sells,
+      buyers: counts.buyers ?? base?.buyers ?? null,
+      sellers: counts.sellers ?? base?.sellers ?? null,
+    };
+  }
+  return out;
 }
 
 function mergeLinks(a: TokenLink[], b: TokenLink[]): TokenLink[] {

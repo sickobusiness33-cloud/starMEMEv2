@@ -174,7 +174,7 @@ function quantBullet(i: BriefInput): string | null {
 }
 
 function latestMentionBullet(i: BriefInput): string | null {
-  const latest = newestFirst(i.intel)[0];
+  const latest = newestFirst(coverageOf(i.intel))[0];
   if (!latest) return null;
   const minutes = latest.publishedAt != null ? (i.snapshot.ts - latest.publishedAt) / 60_000 : null;
   const age = isNum(minutes) && minutes >= 0 ? fmtAge(minutes, i.lang) : null;
@@ -189,7 +189,10 @@ interface BriefCopy {
   mention(title: string, source: string, age: string | null): string;
 }
 
-function marketParts(i: BriefInput, labels: { mc: string; fdv: string; liq: string; vol: string }): string[] {
+function marketParts(
+  i: BriefInput,
+  labels: { mc: string; fdv: string; liq: string; vol: string; volLaunch: string },
+): string[] {
   const s = i.snapshot;
   const val = isNum(s.marketCapUsd)
     ? labels.mc.replace('{}', fmtUsd(s.marketCapUsd))
@@ -197,14 +200,69 @@ function marketParts(i: BriefInput, labels: { mc: string; fdv: string; liq: stri
       ? labels.fdv.replace('{}', fmtUsd(s.fdvUsd))
       : null;
   const liq = isNum(s.liquidityUsd) ? labels.liq.replace('{}', fmtUsd(s.liquidityUsd)) : null;
-  const vol = isNum(s.volumeUsd.h1) ? labels.vol.replace('{}', fmtUsd(s.volumeUsd.h1)) : null;
+  // under an hour old the 1 h window is the token's whole life
+  const young = isNum(i.metrics.ageMinutes) && i.metrics.ageMinutes <= 60;
+  const vol = isNum(s.volumeUsd.h1) ? (young ? labels.volLaunch : labels.vol).replace('{}', fmtUsd(s.volumeUsd.h1)) : null;
   return [val, liq, vol].filter((x): x is string => x !== null);
 }
 
-function coverageParts(intel: IntelItem[], unknownLabel: string): string[] {
-  const counts = freshnessCounts(intel);
-  return FRESHNESS_ORDER.filter((f) => counts[f] > 0).map((f) => `${counts[f]} ${f === 'UNKNOWN' ? unknownLabel : f}`);
+/** Third-party coverage (news, forums, social), as opposed to the project's own channels. */
+function coverageOf(intel: IntelItem[]): IntelItem[] {
+  return intel.filter((x) => x.sourceType !== 'official');
 }
+
+function officialCount(intel: IntelItem[]): number {
+  return intel.length - coverageOf(intel).length;
+}
+
+/** "1 en la última hora, 2 sin fecha" — counts per freshness bucket, in the reader's language. */
+function coverageParts(intel: IntelItem[], labels: Record<Freshness, string>): string[] {
+  const counts = freshnessCounts(intel);
+  return FRESHNESS_ORDER.filter((f) => counts[f] > 0).map((f) => `${counts[f]} ${labels[f]}`);
+}
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+const GATE_REASONS_ES: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
+  [/^Liquidity unknown/, () => 'liquidez desconocida'],
+  [/^Liquidity \$([\d,]+) below \$([\d,]+)/, (m) => `liquidez de ${usdFrom(m[1])} por debajo del mínimo de ${usdFrom(m[2])}`],
+  [/^1h volume unknown/, () => 'volumen de 1 h desconocido'],
+  [/^1h volume \$([\d,]+) below \$([\d,]+)/, (m) => `volumen de 1 h de ${usdFrom(m[1])} por debajo del mínimo de ${usdFrom(m[2])}`],
+  [/^Flagged as honeypot/, () => 'marcado como honeypot'],
+  [/^Older than 7 days/, () => 'lanzado hace más de 7 días (el escáner vigila tokens jóvenes)'],
+];
+
+/** Why the scanner ignores the token, from `Detection.rejected` (fixed English formats from anomaly.ts). */
+function gateReasons(rejected: string[], lang: Lang): string | null {
+  if (!rejected.length) return null;
+  if (lang === 'en') return listJoin(rejected.map((r) => r.charAt(0).toLowerCase() + r.slice(1)), 'and');
+  const reasons = rejected.map((r) => {
+    for (const [re, text] of GATE_REASONS_ES) {
+      const m = r.match(re);
+      if (m) return text(m);
+    }
+    return null;
+  });
+  return reasons.every((r): r is string => r !== null) ? listJoin(reasons, 'y') : 'no supera nuestros filtros mínimos';
+}
+
+function usdFrom(raw: string | undefined): string {
+  const n = Number((raw ?? '').replace(/,/g, ''));
+  return Number.isFinite(n) ? fmtUsd(n) : `$${raw ?? ''}`;
+}
+
+const FRESHNESS_ES: Record<Freshness, string> = {
+  LIVE: 'de la última hora',
+  RECENT: 'de las últimas 24 h',
+  OLD: 'de hace más de 24 h',
+  UNKNOWN: 'sin fecha',
+};
+const FRESHNESS_EN: Record<Freshness, string> = {
+  LIVE: 'from the last hour',
+  RECENT: 'from the last 24 h',
+  OLD: 'older than 24 h',
+  UNKNOWN: 'undated',
+};
 
 const BRIEF_COPY: Record<Lang, BriefCopy> = {
   es: {
@@ -214,20 +272,31 @@ const BRIEF_COPY: Record<Lang, BriefCopy> = {
         fdv: 'una FDV de {}',
         liq: 'una liquidez de {}',
         vol: 'un volumen de 1 h de {}',
+        volLaunch: 'un volumen de {} desde su lanzamiento',
       });
       return parts.length
         ? `${sym} (${chain}) cotiza con ${listJoin(parts, 'y')}.`
         : `${sym} (${chain}) no tiene datos de mercado disponibles en este momento.`;
     },
     detection: (i, phrase) => {
-      const { severity, score } = i.detection;
+      const { severity, score, rejected } = i.detection;
+      const gated = gateReasons(rejected, 'es');
+      if (gated) return `Su puntuación de anomalía es de ${score}/100, pero queda fuera de nuestra vigilancia: ${gated}.`;
       if (!severity) return `Su puntuación de anomalía es de ${score}/100, por debajo de nuestros umbrales de alerta.`;
       return `Nuestro escáner lo clasifica como ${severity} (${score}/100)${phrase ? `, con ${phrase}` : ''}.`;
     },
-    coverage: (intel) =>
-      intel.length
-        ? `Hallamos ${intel.length} referencias públicas: ${listJoin(coverageParts(intel, 'sin fecha'), 'y')}.`
-        : 'No encontramos referencias públicas del token.',
+    coverage: (intel) => {
+      const coverage = coverageOf(intel);
+      const official = officialCount(intel);
+      const channels = official > 0 ? plural(official, 'canal oficial del proyecto', 'canales oficiales del proyecto') : null;
+      if (!coverage.length) {
+        return channels
+          ? `No encontramos menciones públicas del token; sí ${channels}.`
+          : 'No encontramos menciones públicas del token.';
+      }
+      const parts = listJoin(coverageParts(coverage, FRESHNESS_ES), 'y');
+      return `Hallamos ${plural(coverage.length, 'mención pública', 'menciones públicas')} (${parts})${channels ? ` y ${channels}` : ''}.`;
+    },
     quant: (name, score) => `Coincidencia cuant principal: ${name} (${score}), una medida de similitud, no una previsión.`,
     mention: (title, source, age) => `Mención más reciente: «${title}» (${source}${age ? `, ${age}` : ''}).`,
   },
@@ -238,20 +307,29 @@ const BRIEF_COPY: Record<Lang, BriefCopy> = {
         fdv: 'a {} FDV',
         liq: '{} of liquidity',
         vol: '{} of 1h volume',
+        volLaunch: '{} of volume since launch',
       });
       return parts.length
         ? `${sym} (${chain}) trades with ${listJoin(parts, 'and')}.`
         : `${sym} (${chain}) has no market data available right now.`;
     },
     detection: (i, phrase) => {
-      const { severity, score } = i.detection;
+      const { severity, score, rejected } = i.detection;
+      const gated = gateReasons(rejected, 'en');
+      if (gated) return `Its anomaly score is ${score}/100, but it is outside our watch: ${gated}.`;
       if (!severity) return `Its anomaly score is ${score}/100, below our alert thresholds.`;
       return `Our scanner rates it ${severity} (${score}/100)${phrase ? `, driven by ${phrase}` : ''}.`;
     },
-    coverage: (intel) =>
-      intel.length
-        ? `We found ${intel.length} public references: ${listJoin(coverageParts(intel, 'undated'), 'and')}.`
-        : 'We found no public references to the token.',
+    coverage: (intel) => {
+      const coverage = coverageOf(intel);
+      const official = officialCount(intel);
+      const channels = official > 0 ? plural(official, 'official project channel', 'official project channels') : null;
+      if (!coverage.length) {
+        return channels ? `We found no public mentions of the token, only ${channels}.` : 'We found no public mentions of the token.';
+      }
+      const parts = listJoin(coverageParts(coverage, FRESHNESS_EN), 'and');
+      return `We found ${plural(coverage.length, 'public mention', 'public mentions')} (${parts})${channels ? ` and ${channels}` : ''}.`;
+    },
     quant: (name, score) => `Top quant match: ${name} (${score}), a similarity measure, not a forecast.`,
     mention: (title, source, age) => `Latest mention: "${title}" (${source}${age ? `, ${age}` : ''}).`,
   },

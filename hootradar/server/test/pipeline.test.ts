@@ -57,14 +57,17 @@ const ENRICHMENT = parseGtTokenInfo(
 type WriterInput = Parameters<NonNullable<PipelineDeps['writer']>>[0];
 
 /**
- * Market snapshot shaped like a token in the middle of a pump (scores were
- * calibrated against the real deriveMetrics + detectAnomalies):
- *   watch()    → 49 WATCH
- *   alert()    → 66 ALERT
- *   breaking() → 72, or 80 BREAKING with ≥15 social mentions
+ * Market snapshot of a 3-hour-old token in the middle of a pump: volume and
+ * trades both run ~3x their 1 h average. Scores come from the real deriveMetrics +
+ * detectAnomalies, against the thresholds the harness pins (22 / 42 / 60):
+ *   nearWatch() → 16, or 26 WATCH with ≥15 social mentions
+ *   watch()     → 28 WATCH
+ *   alert()     → 51 ALERT
+ *   breaking()  → 58 ALERT, or 68 BREAKING with ≥15 social mentions
  */
 function pumping(o: { buyShare: number; buyersM5: number; priceH1: number }, over: Partial<TokenSnapshot> = {}): TokenSnapshot {
-  const buysM5 = Math.round(300 * o.buyShare);
+  const tradesM5 = 150;
+  const buysM5 = Math.round(tradesM5 * o.buyShare);
   return {
     chain: 'solana',
     address: ADDRESS,
@@ -77,10 +80,10 @@ function pumping(o: { buyShare: number; buyersM5: number; priceH1: number }, ove
     marketCapUsd: null,
     fdvUsd: 900_000,
     liquidityUsd: 80_000,
-    volumeUsd: { m5: 30_000, h1: 60_000, h24: 60_000 },
+    volumeUsd: { m5: 13_500, h1: 60_000, h24: 60_000 },
     priceChangePct: { m5: o.priceH1 / 3, h1: o.priceH1, h6: o.priceH1 * 1.3 },
     txns: {
-      m5: { buys: buysM5, sells: 300 - buysM5, buyers: o.buyersM5, sellers: 20 },
+      m5: { buys: buysM5, sells: tradesM5 - buysM5, buyers: o.buyersM5, sellers: 20 },
       h1: { buys: 400, sells: 200, buyers: 200, sellers: 80 },
     },
     holders: null,
@@ -142,7 +145,12 @@ function harness(o: HarnessOpts = {}) {
   bus.on('article', (a) => articles.push(a));
   bus.on('detection', (e) => detections.push(e));
 
-  const config: AppConfig = { ...loadConfig({ CHAINS: 'solana', NEWS_LANG: 'en' }), ...o.config };
+  // The fixture scores above were calibrated against these thresholds; pinning them keeps the
+  // pipeline's decision logic under test independent of later retuning of the shipped defaults.
+  const config: AppConfig = {
+    ...loadConfig({ CHAINS: 'solana', NEWS_LANG: 'en', THRESHOLD_WATCH: '22', THRESHOLD_ALERT: '42', THRESHOLD_BREAKING: '60' }),
+    ...o.config,
+  };
   let t = T0;
   const enrich = vi.fn(o.enrich ?? (async () => ENRICHMENT));
   const adapter: ChainAdapter = {
@@ -199,7 +207,7 @@ describe('below threshold', () => {
 
   it('asks for social mentions only when they could reach WATCH, and uses them', async () => {
     const quiet = harness({ mentions: async () => null });
-    await quiet.at(0, nearWatch()); // 42 on market data alone
+    await quiet.at(0, nearWatch()); // 16 on market data alone
     expect(quiet.mentions).toHaveBeenCalledTimes(1);
     expect(quiet.detections).toEqual([]);
 
@@ -225,8 +233,8 @@ describe('WATCH', () => {
     expect(h.detections).toHaveLength(1);
     const e = h.detections[0];
     expect(e).toMatchObject({ chain: 'solana', address: ADDRESS, symbol: 'OWL', severity: 'WATCH', articleId: null, ts: T0 });
-    expect(e?.score).toBeGreaterThanOrEqual(45);
-    expect(e?.score).toBeLessThan(62);
+    expect(e?.score).toBeGreaterThanOrEqual(22);
+    expect(e?.score).toBeLessThan(42);
     expect(h.db.recentDetections(10)).toEqual([e]);
     expect(h.enrich).not.toHaveBeenCalled();
     expect(h.writer).not.toHaveBeenCalled();
@@ -266,7 +274,7 @@ describe('ALERT → article', () => {
       name: 'Night Owl',
       imageUrl: 'https://ipfs.io/ipfs/owl.png',
       severity: 'ALERT',
-      score: 66,
+      score: 51,
       headline: 'OWL trading accelerates',
       engine: 'rules',
       model: null,
@@ -293,7 +301,7 @@ describe('ALERT → article', () => {
       liquidityUsd: 80_000,
       volumeUsd: 60_000,
       volumeWindow: 'h1',
-      txPerMin: 60,
+      txPerMin: 30,
       holders: ENRICHMENT.holders,
       holdersGrowthPct: null,
       priceChangeH1Pct: 60,
@@ -309,7 +317,7 @@ describe('ALERT → article', () => {
     expect(h.db.getArticle(a.id)).toEqual(a);
     expect(h.enqueue).toHaveBeenCalledWith(a);
     expect(h.detections).toHaveLength(1);
-    expect(h.detections[0]).toMatchObject({ severity: 'ALERT', score: 66, articleId: a.id });
+    expect(h.detections[0]).toMatchObject({ severity: 'ALERT', score: 51, articleId: a.id });
     expect(h.db.lastDetectionFor('solana', ADDRESS)?.articleId).toBe(a.id);
   });
 
@@ -319,6 +327,46 @@ describe('ALERT → article', () => {
     const history = h.db.history('solana', ADDRESS, 0);
     expect(history.map((s) => s.holders)).toEqual([null, ENRICHMENT.holders]);
     expect(history[1]?.security).toEqual(ENRICHMENT.security);
+  });
+
+  it('adds unique-wallet counts from enrichment only when they describe the same pool', async () => {
+    const wallets = (pairAddress: string) => ({
+      pairAddress,
+      txns: { m5: { buys: 1, sells: 1, buyers: 400, sellers: 30 }, h1: { buys: 2, sells: 2, buyers: 900, sellers: 200 } },
+    });
+    // an ALERT on market data alone (volume 6x its 1 h average); DexScreener reports no wallets
+    const story = alert({
+      volumeUsd: { m5: 30_000, h1: 60_000, h24: 60_000 },
+      txns: { m5: { buys: 100, sells: 50, buyers: null, sellers: null }, h1: { buys: 400, sells: 200, buyers: null, sellers: null } },
+    });
+
+    const same = harness({ enrich: async () => ({ ...ENRICHMENT, wallets: wallets(story.pairAddress!) }) });
+    await same.at(0, story);
+    const enriched = same.writer.mock.calls[0]?.[0];
+    expect(enriched?.snapshot.txns.m5).toEqual({ buys: 100, sells: 50, buyers: 400, sellers: 30 }); // trades stay DexScreener's
+    expect(enriched?.metrics.uniqueBuyersM5).toBe(400);
+    expect(enriched?.detection.signals.find((x) => x.code === 'buyer_surge')?.label).toBe('400 unique buyers in 5m');
+    expect(same.articles[0]?.severity).toBe('BREAKING');
+
+    const other = harness({ enrich: async () => ({ ...ENRICHMENT, wallets: wallets('AnotherPooL11111111111111111111111111111111') }) });
+    await other.at(0, story);
+    expect(other.writer.mock.calls[0]?.[0].snapshot.txns.m5?.buyers).toBeNull();
+    expect(other.articles[0]?.severity).toBe('ALERT');
+  });
+
+  it("never publishes a weeks-old token whose age only the enrichment's pool reveals", async () => {
+    // live regression: a 28-day-old Base token found through a dateless listing went out as BREAKING
+    const dateless = alert({ createdAt: null });
+    const old = harness({ enrich: async () => ({ ...ENRICHMENT, poolCreatedAt: T0 - 28 * 24 * HOUR }) });
+    await old.at(0, dateless);
+    expect(old.enrich).toHaveBeenCalled();
+    expect(old.articles).toHaveLength(0);
+
+    // a pool that is young keeps the story, now with a known age
+    const young = harness({ enrich: async () => ({ ...ENRICHMENT, poolCreatedAt: T0 - 2 * HOUR }) });
+    await young.at(0, dateless);
+    expect(young.articles).toHaveLength(1);
+    expect(young.articles[0]?.metrics.ageMinutes).toBeCloseTo(120, 0);
   });
 
   it('publishes without holder data when enrichment fails', async () => {
@@ -370,7 +418,7 @@ describe('cooldown and follow-ups', () => {
     expect(h.articles).toHaveLength(2);
     const followUp = h.articles[1] as NewsArticle;
     expect(followUp.severity).toBe('BREAKING');
-    expect(followUp.score).toBe(80);
+    expect(followUp.score).toBe(68);
     expect(followUp.updateOf).toBe(first.id);
     expect(h.writer.mock.calls[1]?.[0].previous?.id).toBe(first.id);
     expect(h.enrich).toHaveBeenCalledTimes(1); // second article reused the 3-minute enrichment cache
@@ -379,25 +427,25 @@ describe('cooldown and follow-ups', () => {
 
   it('allows a same-severity follow-up only when the score jumps by at least 15', async () => {
     // BREAKING out of reach so both articles stay ALERT
-    const thresholds = { WATCH: 45, ALERT: 62, BREAKING: 95 };
+    const thresholds = { WATCH: 22, ALERT: 42, BREAKING: 95 };
     const run = async (firstStory: TokenSnapshot) => {
       let mentions: number | null = null;
       const h = harness({ mentions: async () => mentions, config: { thresholds } });
       await h.at(0, firstStory);
       mentions = 15;
-      await h.at(5 * MIN, breaking()); // 80
+      await h.at(5 * MIN, breaking()); // 68
       return h.articles;
     };
 
-    const plus14 = await run(alert()); // 66 → 80
-    expect(plus14.map((a) => a.score)).toEqual([66]);
+    const plus13 = await run(pumping({ buyShare: 0.74, buyersM5: 100, priceH1: 60 })); // 55 → 68
+    expect(plus13.map((a) => a.score)).toEqual([55]);
 
-    const plus16 = await run(pumping({ buyShare: 0.5, buyersM5: 100, priceH1: 60 })); // 64 → 80
-    expect(plus16.map((a) => [a.severity, a.score])).toEqual([
-      ['ALERT', 64],
-      ['ALERT', 80],
+    const plus17 = await run(alert()); // 51 → 68
+    expect(plus17.map((a) => [a.severity, a.score])).toEqual([
+      ['ALERT', 51],
+      ['ALERT', 68],
     ]);
-    expect(plus16[1]?.updateOf).toBe(plus16[0]?.id);
+    expect(plus17[1]?.updateOf).toBe(plus17[0]?.id);
   });
 });
 
@@ -422,7 +470,7 @@ describe('safety rails', () => {
   it('with autopublish off stores detection events only', async () => {
     const h = harness({ config: { autopublish: false } });
     await h.at(0, watch());
-    await h.at(MIN, alert()); // +17 over the WATCH score → not deduped
+    await h.at(MIN, alert()); // +23 over the WATCH score → not deduped
     await h.at(2 * MIN, alert()); // same score within 10 min → deduped
 
     expect(h.articles).toEqual([]);

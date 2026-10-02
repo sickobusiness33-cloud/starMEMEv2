@@ -107,6 +107,8 @@ Fields:
 - outlook.neutral: one sentence, at most 300 characters: what a consolidation would look like.
 - outlook.risk: 1-2 sentences, at most 300 characters, always concrete. Name the specific risks present in the facts: thin liquidity, holder concentration, mint or freeze authority enabled, developer holdings, paid promotion, volume far above liquidity (possible wash trading), sell pressure, a very young token (rug risk). If none is flagged, describe the concrete risk of a liquidity pull (rug) or a sharp reversal after an activity spike.
 
+Young tokens: when facts.token.windowsCoverWholeLife is "yes" the token is under an hour old, so every 1h/6h/24h figure covers its whole life. Describe those figures as "since launch", never as an hourly rate or average.
+
 Follow-ups: when facts.previousArticle is present, this item updates it. Say what changed (escalation, new figures) without repeating the earlier item.
 
 Style reference in Spanish. It only shows tone and structure; N and $X are placeholders, never figures to reuse:
@@ -236,6 +238,9 @@ export function tokenFacts(i: CopyInput): Record<string, unknown> {
   const { snapshot: s, metrics: m, detection: d, quant: q, lang } = i;
   const f = factFormatters(lang);
   const fdvOnly = !isNum(s.marketCapUsd) && isNum(s.fdvUsd);
+  // under an hour old the 1 h window is the token's whole life, so 5m-vs-1h ratios compare with its launch average
+  const sinceLaunch = isNum(m.ageMinutes) && m.ageMinutes <= 60;
+  const vs = sinceLaunch ? 'VsAverageSinceLaunch' : 'Vs1hAverage';
   return prune({
     token: {
       symbol: displaySymbol(s),
@@ -243,6 +248,7 @@ export function tokenFacts(i: CopyInput): Record<string, unknown> {
       chain: chainName(s.chain),
       dex: s.dex ?? undefined,
       launched: f.age(m.ageMinutes),
+      windowsCoverWholeLife: sinceLaunch ? 'yes' : undefined,
       paidPromotion: s.boosted ? 'yes (DexScreener boost)' : undefined,
     },
     detection: {
@@ -265,9 +271,9 @@ export function tokenFacts(i: CopyInput): Record<string, unknown> {
       volumeToLiquidity: f.mult(m.volumeToLiquidity),
     },
     acceleration: {
-      volume5mVs1hAverage: f.mult(m.volumeAcceleration),
-      transactions5mVs1hAverage: f.mult(m.txAcceleration),
-      uniqueBuyers5mVs1hAverage: f.mult(m.buyerAcceleration),
+      [`volume5m${vs}`]: f.mult(m.volumeAcceleration),
+      [`transactions5m${vs}`]: f.mult(m.txAcceleration),
+      [`uniqueBuyers5m${vs}`]: f.mult(m.buyerAcceleration),
       momentumScore: isNum(m.momentumScore) ? `${Math.round(m.momentumScore)}/100` : undefined,
     },
     holders: {

@@ -216,7 +216,9 @@ describe('methodology library', () => {
     expect(SOURCE_POLICY).toMatch(/Quantpedia/);
     expect(SOURCE_POLICY).toMatch(/scrape/);
     expect(SOURCE_POLICY).toMatch(/own words/);
-    expect(SOURCE_POLICY).toMatch(/QuantSource/);
+    expect(SOURCE_POLICY).toMatch(/licensed Quantpedia Pro feed/);
+    // user-facing copy: no code signatures
+    expect(SOURCE_POLICY).not.toMatch(/Promise<|load\(\)/);
     await expect(BUILTIN_QUANT_SOURCE.load()).resolves.toBe(METHODOLOGIES);
   });
 });

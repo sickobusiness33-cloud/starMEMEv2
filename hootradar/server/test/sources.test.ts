@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TokenSnapshot } from '../../shared/types.js';
 import { fetchJson } from '../src/net/http.js';
-import { dsLatestListings, dsSearch, dsTokens, parseDsListings, parseDsPairs } from '../src/sources/dexscreener.js';
+import { dsLatestListings, dsSearch, dsTokens, pairLiquidity, parseDsListings, parseDsPairs } from '../src/sources/dexscreener.js';
 import { parseGtPools, parseGtTokenInfo, parseGtTokenPools } from '../src/sources/geckoterminal.js';
 import { emptySnapshot, mergeSnapshots, toEpochMs, toNum } from '../src/sources/merge.js';
 import { parsePumpCoins } from '../src/sources/pumpfun.js';
@@ -208,6 +208,29 @@ describe('DexScreener parsers', () => {
     expect(snaps.find((s) => s.chain === 'tron')?.links).toEqual([]);
   });
 
+  it('does not trust liquidity that the quote reserve cannot back (fake-priced or single-sided pools)', () => {
+    const snaps = parseDsPairs(fixture('ds_search_pepe.json'), null, TS);
+    const liq = (address: string) => snaps.find((s) => s.address === address)?.liquidityUsd;
+    // real fixture: reports $3,900,571.79 against 0.4 % of that in USDC → quote-backed value
+    expect(liq('A1DBHWmtuYZMpLNXE9xr4B7crD8FAxwHSDnqnk8NwAKS')).toBeLessThan(100);
+    expect(liq('A1DBHWmtuYZMpLNXE9xr4B7crD8FAxwHSDnqnk8NwAKS')).toBeGreaterThan(0);
+    expect(liq('0x4a5d095b3DDbf2776E9Bb42c90E51ed96005EF9f')).toBeLessThan(100); // "Pepe Army", $323K reported
+    // balanced pools keep the reported figure, including a 1.4x concentrated one
+    expect(liq('0x6982508145454Ce325dDbE47a25d4ec3d2311933')).toBe(32113393.11);
+    expect(liq('0x52b492a33E447Cdb854c7FC19F1e57E8BfA1777D')).toBe(371323.03);
+
+    // quote price = priceUsd / priceNative = $3,930 (ETH); the cut-off is 10x the quote backing
+    const launchPool = (quote: number) => ({
+      liquidity: { usd: 67_265.51, base: 1e9, quote },
+      priceUsd: '0.0000672',
+      priceNative: '0.0000000171',
+    });
+    expect(pairLiquidity(launchPool(1.25))).toBe(67_265.51); // backed $9.8K, 6.8x → kept
+    expect(pairLiquidity(launchPool(0.6))).toBeCloseTo(2 * 0.6 * (0.0000672 / 0.0000000171), 1); // 14x → $4.7K
+    expect(pairLiquidity({ liquidity: { usd: 5_000 } })).toBe(5_000); // no reserves → as reported
+    expect(pairLiquidity({})).toBeNull();
+  });
+
   it('marks pairs with active boosts', () => {
     const pairs = structuredClone(fixture('ds_tokens_solana.json')) as Array<Record<string, unknown>>;
     pairs[1]!.boosts = { active: 3 };
@@ -363,6 +386,19 @@ describe('pump.fun parser', () => {
 });
 
 describe('mergeSnapshots', () => {
+  it('keeps the EIP-55 checksummed casing of an EVM address whichever side brings it', () => {
+    const lower = '0x74426b6fb0966c30474a71deb2410bb78c6c7777';
+    const checksummed = '0x74426b6FB0966c30474a71Deb2410bb78c6C7777';
+    const gt = emptySnapshot('bsc', lower, 1);
+    const ds = emptySnapshot('bsc', checksummed, 2);
+    expect(mergeSnapshots(gt, ds).address).toBe(checksummed);
+    expect(mergeSnapshots(ds, gt).address).toBe(checksummed);
+    // a different token never changes identity, and Solana addresses are never re-cased
+    expect(mergeSnapshots(gt, emptySnapshot('bsc', '0x1111111111111111111111111111111111111111', 2)).address).toBe(lower);
+    const sol = emptySnapshot('solana', 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', 1);
+    expect(mergeSnapshots(sol, { address: sol.address.toLowerCase() }).address).toBe(sol.address);
+  });
+
   const base = (): TokenSnapshot => ({
     ...emptySnapshot('solana', 'Tok111', 1000),
     symbol: 'TOK',

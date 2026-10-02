@@ -24,6 +24,7 @@ import {
   isNum,
   type Lang,
 } from './format.js';
+import { volumeToLiquidityWindow } from '../engine/metrics.js';
 import type { ArticleDraft, NewsInput } from './newswriter.js';
 
 /**
@@ -102,9 +103,13 @@ export function rulesOutlook(i: CopyInput): NewsOutlook {
   const c = context(i);
   const p = PACKS[c.lang];
   const lead = leadCopy(c);
+  // a token below every alert threshold with no flow or launch signal (Radar on a quiet token)
+  // has no move to extend or digest
+  const family: Family = isQuiet(c) ? 'quiet' : familyOf(lead.code);
+  const baseline = (text: string) => (sinceLaunch(c.m) ? swapBaseline(text, c.lang) : text);
   return {
-    bullish: clampText(p.bullish(c, familyOf(lead.code)), ARTICLE_LIMITS.outlook),
-    neutral: clampText(p.neutral(c), ARTICLE_LIMITS.outlook),
+    bullish: clampText(baseline(p.bullish(c, family)), ARTICLE_LIMITS.outlook),
+    neutral: clampText(baseline(p.neutral(c, family)), ARTICLE_LIMITS.outlook),
     risk: clampText(p.risk(c, riskConcerns(c)), ARTICLE_LIMITS.outlook),
   };
 }
@@ -231,19 +236,65 @@ function signalCopies(c: Ctx): RankedCopy[] {
     .sort((a, b) => b.weight - a.weight)
     .flatMap((sig) => {
       const copy = table[sig.code](c, sig);
-      return copy ? [{ code: sig.code, copy }] : [];
+      if (!copy) return [];
+      return [{ code: sig.code, copy: RATIO_SIGNALS.has(sig.code) && sinceLaunch(c.m) ? launchBaseline(copy, c.lang) : copy }];
     });
+}
+
+/** Signals measured as "last 5 minutes vs the 1 h average". */
+const RATIO_SIGNALS: ReadonlySet<SignalCode> = new Set(['volume_surge', 'tx_acceleration', 'buyer_surge']);
+
+/**
+ * Under an hour old, a token's "1 h average" is its average since launch; say so
+ * instead of implying an hour of history it does not have.
+ */
+const LAUNCH_BASELINE: Record<Lang, Array<[string, string]>> = {
+  es: [
+    ['el ritmo medio de la última hora', 'su ritmo medio desde el lanzamiento'],
+    ['la media de la última hora', 'su media desde el lanzamiento'],
+    ['el ritmo de la última hora', 'su ritmo desde el lanzamiento'],
+    ['la media de 1 h', 'su media desde el lanzamiento'],
+    ['su media de 1 h', 'su media desde el lanzamiento'],
+    ['la media horaria', 'su media desde el lanzamiento'],
+    ['su media horaria', 'su media desde el lanzamiento'],
+  ],
+  en: [
+    ['the average pace of the past hour', 'the average pace since launch'],
+    ['the average of the past hour', 'the average since launch'],
+    ['the pace of the past hour', 'the pace since launch'],
+    ['its 1h average', 'its average since launch'],
+    ['the 1h average', 'the average since launch'],
+    ['the hourly average', 'the average since launch'],
+    ['its hourly average', 'its average since launch'],
+  ],
+};
+
+function swapBaseline(text: string, lang: Lang): string {
+  return LAUNCH_BASELINE[lang].reduce((t, [from, to]) => t.split(from).join(to), text);
+}
+
+function launchBaseline(copy: SignalCopy, lang: Lang): SignalCopy {
+  const swap = (text: string) => swapBaseline(text, lang);
+  return { headlines: copy.headlines.map(swap), aiLines: copy.aiLines.map(swap), bullet: swap(copy.bullet) };
 }
 
 function leadCopy(c: Ctx): RankedCopy {
   return signalCopies(c)[0] ?? { code: 'generic', copy: PACKS[c.lang].generic(c) };
 }
 
-type Family = 'flow' | 'participation' | 'price';
+type Family = 'flow' | 'participation' | 'price' | 'launch' | 'quiet';
+
+const ACTIVITY_SIGNALS: ReadonlySet<SignalCode> = new Set(['volume_surge', 'tx_acceleration', 'buyer_surge', 'fresh_launch']);
+
+/** Below every threshold and without any activity signal we can describe. */
+function isQuiet(c: Ctx): boolean {
+  return c.d.severity === null && !signalCopies(c).some((x) => x.code !== 'generic' && ACTIVITY_SIGNALS.has(x.code));
+}
 
 function familyOf(code: SignalCode | 'generic'): Family {
   if (code === 'buyer_surge' || code === 'holder_growth' || code === 'social_attention') return 'participation';
   if (code === 'momentum' || code === 'liquidity_growth') return 'price';
+  if (code === 'fresh_launch') return 'launch';
   return 'flow';
 }
 
@@ -349,7 +400,7 @@ interface LangPack {
   fillerBullets(c: Ctx): string[];
   quant(c: Ctx, matches: Array<{ name: string; score: string }>): string;
   bullish(c: Ctx, family: Family): string;
-  neutral(c: Ctx): string;
+  neutral(c: Ctx, family: Family): string;
   risk(c: Ctx, concerns: Concern[]): string;
 }
 
@@ -389,6 +440,34 @@ function valuation(c: Ctx): { kind: 'mc' | 'fdv'; value: string } | null {
   if (mc) return { kind: 'mc', value: mc };
   const fdv = c.f.usd(c.s.fdvUsd);
   return fdv ? { kind: 'fdv', value: fdv } : null;
+}
+
+/** A token under an hour old: its "1 h" window is its whole life. */
+function sinceLaunch(m: DerivedMetrics): boolean {
+  return isNum(m.ageMinutes) && m.ageMinutes <= 60;
+}
+
+/** Volume (and trade count) a young token has done: its whole life while it is under an hour old. */
+function launchTraction(c: Ctx): { age: string; volume: string; trades: string | null; sinceLaunch: boolean } | null {
+  const age = c.f.dur(c.m.ageMinutes);
+  const volume = c.f.usd(c.s.volumeUsd.h1);
+  if (!age || !volume || !isNum(c.m.ageMinutes)) return null;
+  const h1 = c.s.txns.h1;
+  const trades = h1?.buys != null && h1.sells != null ? c.f.num(h1.buys + h1.sells) : null;
+  return { age, volume, trades, sinceLaunch: sinceLaunch(c.m) };
+}
+
+/** Volume-to-liquidity reading with the window it was measured on, or null below 1x. */
+function turnoverFact(
+  c: Ctx,
+): { mult: string; liq: string; window: string; sinceLaunch: boolean; level: 'very_high' | 'high' | 'plain' } | null {
+  const x = c.m.volumeToLiquidity;
+  const window = volumeToLiquidityWindow(c.s, c.m.ageMinutes);
+  const mult = c.f.mult(x);
+  const liq = c.f.usd(c.s.liquidityUsd);
+  if (!isNum(x) || x < 1 || !window || !mult || !liq) return null;
+  const level = x >= WASH_TRADING_TURNOVER ? 'very_high' : x >= 2 ? 'high' : 'plain';
+  return { mult, liq, window: WINDOW_LABEL[window], sinceLaunch: window === 'h1' && sinceLaunch(c.m), level };
 }
 
 const ES: LangPack = {
@@ -539,16 +618,21 @@ const ES: LangPack = {
       };
     },
     fresh_launch: (c) => {
-      const dur = c.f.dur(c.m.ageMinutes);
-      const tpm = c.f.rate(c.m.txPerMin);
-      if (!dur || !tpm) return null;
+      const t = launchTraction(c);
+      if (!t) return null;
+      const span = t.sinceLaunch ? 'desde su lanzamiento' : 'en la última hora';
+      const trades = t.trades ? ` en ${t.trades} operaciones` : '';
       return {
         headlines: [
-          `Arranque intenso de ${c.sym} en ${c.chain}: ${tpm} transacciones por minuto`,
-          `${c.sym} registra ${tpm} transacciones por minuto a ${dur} de su lanzamiento`,
+          `Arranque intenso de ${c.sym} en ${c.chain}: ${t.volume} de volumen en ${t.age}`,
+          `${c.sym} mueve ${t.volume} ${span}, con ${t.age} de vida`,
         ],
-        aiLines: ['El token, de reciente creación, concentra una actividad on-chain inusual para su edad.'],
-        bullet: `Con solo ${dur} de vida, ya registra ${tpm} transacciones por minuto.`,
+        // figure-bearing variants: several launch stories in a row must not share one stock sentence
+        aiLines: [
+          `${t.volume} de volumen${t.trades ? ` y ${t.trades} operaciones` : ''} en solo ${t.age} de vida: un arranque fuera de lo común.`,
+          `Volumen inusual para un token recién creado: ${t.volume} ${span}, con ${t.age} de vida.`,
+        ],
+        bullet: `Con solo ${t.age} de vida, acumula ${t.volume} de volumen ${span}${trades}.`,
       };
     },
   },
@@ -567,7 +651,7 @@ const ES: LangPack = {
     buy_pressure: ['una intensa presión compradora', 'una presión compradora sostenida'],
     large_wallet_flow: ['operaciones de tamaño inusualmente grande', 'operaciones de tamaño elevado'],
     social_attention: ['un fuerte aumento de la atención pública', 'un aumento de la atención pública'],
-    fresh_launch: ['una actividad on-chain muy intensa para su edad', 'una actividad on-chain intensa para su edad'],
+    fresh_launch: ['un volumen de negociación muy intenso para su edad', 'un volumen de negociación intenso para su edad'],
     generic: ['una actividad on-chain inusual', 'una actividad on-chain inusual'],
   },
   ledeOpening: (c, phrase) => {
@@ -587,9 +671,13 @@ const ES: LangPack = {
     const h1 = s.priceChangePct.h1;
     const val = valuation(c);
     return {
-      volume: volH1 ? `el volumen de 1 h alcanza ${volH1}` : volH24 ? `el volumen de 24 h asciende a ${volH24}` : null,
+      volume: volH1
+        ? `el volumen ${sinceLaunch(m) ? 'desde su lanzamiento' : 'de 1 h'} alcanza ${volH1}`
+        : volH24
+          ? `el volumen de 24 h asciende a ${volH24}`
+          : null,
       trades: times
-        ? `las transacciones se han multiplicado por ${times} frente a la media horaria`
+        ? `las transacciones se han multiplicado por ${times} frente a ${sinceLaunch(m) ? 'su media desde el lanzamiento' : 'la media horaria'}`
         : tpm
           ? `la actividad llega a ${tpm} transacciones por minuto`
           : null,
@@ -609,10 +697,11 @@ const ES: LangPack = {
   contextBullets: (c) => {
     const { s, m, q, f } = c;
     const out: string[] = [];
-    const turnover = f.mult(m.volumeToLiquidity);
-    const liq = f.usd(s.liquidityUsd);
-    if (turnover && liq && isNum(m.volumeToLiquidity) && m.volumeToLiquidity >= 1) {
-      out.push(`El volumen negociado equivale a ${turnover} la liquidez del pool (${liq}): rotación muy elevada.`);
+    const turnover = turnoverFact(c);
+    if (turnover) {
+      const level = { very_high: ': rotación muy elevada', high: ': rotación elevada', plain: '' }[turnover.level];
+      const volume = turnover.sinceLaunch ? 'El volumen desde su lanzamiento' : `El volumen de ${turnover.window}`;
+      out.push(`${volume} equivale a ${turnover.mult} la liquidez del pool (${turnover.liq})${level}.`);
     }
     const breadth = f.share(q.regime.breadthPct);
     if (q.regime.label !== 'unknown' && breadth) {
@@ -656,10 +745,16 @@ const ES: LangPack = {
       ? 'Si la entrada de nuevos compradores y holders continúa, una base de participación más amplia podría sostener la actividad.'
       : family === 'price'
         ? 'Si el precio consolida sus avances con volumen sostenido y liquidez estable, el impulso podría prolongarse.'
-        : 'Si el volumen y el ritmo de operaciones se sostienen por encima de la media de 1 h, el interés comprador podría extenderse en las próximas horas.',
-  neutral: (c) => {
+        : family === 'launch'
+          ? 'Si el volumen se sostiene más allá de la primera hora y la liquidez aguanta, el token podría consolidar su arranque.'
+          : family === 'quiet'
+            ? 'Si el volumen y las compras repuntaran por encima de su media de 1 h, el token podría volver a captar interés.'
+            : 'Si el volumen y el ritmo de operaciones se sostienen por encima de la media de 1 h, el interés comprador podría extenderse en las próximas horas.',
+  neutral: (c, family) => {
     const val = valuation(c);
     const anchor = val ? ` en torno a una ${val.kind === 'mc' ? 'capitalización' : 'FDV'} de ${val.value}` : '';
+    if (family === 'quiet') return `Si la actividad se mantiene en su nivel actual, el precio podría seguir en lateral${anchor}.`;
+    if (family === 'launch') return `Si la negociación se enfría tras el arranque, el precio podría estabilizarse${anchor}.`;
     return `Si la actividad vuelve a su media horaria, el precio podría lateralizar${anchor} mientras el mercado digiere el movimiento.`;
   },
   risk: (c, concerns) => {
@@ -682,7 +777,7 @@ const ES: LangPack = {
         case 'liquidity':
           return `la liquidez es de solo ${x.value}`;
         case 'turnover':
-          return `un volumen ${x.value} superior a la liquidez podría reflejar wash trading`;
+          return `un volumen equivalente a ${x.value} la liquidez podría reflejar wash trading`;
         case 'sells':
           return `las ventas ya suponen el ${x.value} de las operaciones`;
         case 'young':
@@ -835,16 +930,20 @@ const EN: LangPack = {
       };
     },
     fresh_launch: (c) => {
-      const dur = c.f.dur(c.m.ageMinutes);
-      const tpm = c.f.rate(c.m.txPerMin);
-      if (!dur || !tpm) return null;
+      const t = launchTraction(c);
+      if (!t) return null;
+      const span = t.sinceLaunch ? 'since launch' : 'over the past hour';
+      const trades = t.trades ? ` across ${t.trades} trades` : '';
       return {
         headlines: [
-          `Busy start for ${c.sym} on ${c.chain}: ${tpm} transactions per minute`,
-          `${c.sym} logs ${tpm} transactions per minute ${dur} after launch`,
+          `Busy start for ${c.sym} on ${c.chain}: ${t.volume} traded in ${t.age}`,
+          `${c.sym} trades ${t.volume} ${span}, ${t.age} after launch`,
         ],
-        aiLines: ['The newly created token is drawing unusual on-chain activity for its age.'],
-        bullet: `Only ${dur} old and already at ${tpm} transactions per minute.`,
+        aiLines: [
+          `${t.volume} traded${t.trades ? ` across ${t.trades} trades` : ''} in just ${t.age}: an unusually busy start.`,
+          `Unusual volume for a brand-new token: ${t.volume} ${span}, ${t.age} after launch.`,
+        ],
+        bullet: `Only ${t.age} old and already at ${t.volume} of volume ${span}${trades}.`,
       };
     },
   },
@@ -863,7 +962,7 @@ const EN: LangPack = {
     buy_pressure: ['intense buy pressure', 'sustained buy pressure'],
     large_wallet_flow: ['unusually large trades', 'large trades'],
     social_attention: ['a sharp rise in public attention', 'rising public attention'],
-    fresh_launch: ['very intense on-chain activity for its age', 'intense on-chain activity for its age'],
+    fresh_launch: ['very heavy trading volume for its age', 'heavy trading volume for its age'],
     generic: ['unusual on-chain activity', 'unusual on-chain activity'],
   },
   ledeOpening: (c, phrase) => {
@@ -882,9 +981,13 @@ const EN: LangPack = {
     const h1 = s.priceChangePct.h1;
     const val = valuation(c);
     return {
-      volume: volH1 ? `1h volume has reached ${volH1}` : volH24 ? `24h volume stands at ${volH24}` : null,
+      volume: volH1
+        ? `${sinceLaunch(m) ? 'volume since launch' : '1h volume'} has reached ${volH1}`
+        : volH24
+          ? `24h volume stands at ${volH24}`
+          : null,
       trades: x
-        ? `transactions are running at ${x} the hourly average`
+        ? `transactions are running at ${x} ${sinceLaunch(m) ? 'the average since launch' : 'the hourly average'}`
         : tpm
           ? `activity has reached ${tpm} transactions per minute`
           : null,
@@ -904,10 +1007,11 @@ const EN: LangPack = {
   contextBullets: (c) => {
     const { s, m, q, f } = c;
     const out: string[] = [];
-    const turnover = f.mult(m.volumeToLiquidity);
-    const liq = f.usd(s.liquidityUsd);
-    if (turnover && liq && isNum(m.volumeToLiquidity) && m.volumeToLiquidity >= 1) {
-      out.push(`Traded volume equals ${turnover} the pool's liquidity (${liq}), a very high turnover.`);
+    const turnover = turnoverFact(c);
+    if (turnover) {
+      const level = { very_high: ', a very high turnover', high: ', a high turnover', plain: '' }[turnover.level];
+      const volume = turnover.sinceLaunch ? 'Volume since launch' : `${turnover.window} volume`;
+      out.push(`${volume} equals ${turnover.mult} the pool's liquidity (${turnover.liq})${level}.`);
     }
     const breadth = f.share(q.regime.breadthPct);
     if (q.regime.label !== 'unknown' && breadth) {
@@ -948,10 +1052,16 @@ const EN: LangPack = {
       ? 'If new buyers and holders keep arriving, a broader participation base could sustain the activity.'
       : family === 'price'
         ? 'If price holds its gains on sustained volume and stable liquidity, the momentum could extend.'
-        : 'If volume and trade frequency hold above the 1h average, buying interest could extend over the coming hours.',
-  neutral: (c) => {
+        : family === 'launch'
+          ? 'If volume holds beyond the first hour and liquidity stays in place, the token could consolidate its debut.'
+          : family === 'quiet'
+            ? 'If volume and buying picked up above the 1h average, the token could draw renewed interest.'
+            : 'If volume and trade frequency hold above the 1h average, buying interest could extend over the coming hours.',
+  neutral: (c, family) => {
     const val = valuation(c);
     const anchor = val ? ` around a ${val.value} ${val.kind === 'mc' ? 'market cap' : 'FDV'}` : '';
+    if (family === 'quiet') return `If activity stays at its current level, price could keep trading sideways${anchor}.`;
+    if (family === 'launch') return `If trading cools after the launch burst, price could settle${anchor}.`;
     return `If activity reverts to its hourly average, price could move sideways${anchor} while the market digests the move.`;
   },
   risk: (c, concerns) => {

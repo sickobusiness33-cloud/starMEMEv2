@@ -50,7 +50,8 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --header-h: calc(var(--topbar-h) + var(--tabbar-h) + var(--safe-top));
   --bottombar-h: 0px;
-  --content-max: 1440px;
+  --content-max: 1280px;
+  --rail-w: 340px;
 }
 
 @media (min-width: 720px) {
@@ -59,11 +60,18 @@
   }
 }
 
-/* Phones: the tab bar moves to a fixed bottom bar; the top bar grows a stats row. */
-@media (max-width: 719.98px) {
+/* Below 1024px the stats no longer fit beside the brand: the top bar grows a second row. */
+@media (max-width: 1023.98px) {
   :root {
     --topbar-h: 92px;
+  }
+}
+
+/* Phones: the tab bar moves to a fixed bottom bar. */
+@media (max-width: 719.98px) {
+  :root {
     --tabbar-h: 0px;
-    --bottombar-h: calc(58px + var(--safe-bottom));
+    --tabbar-mobile-h: 58px;
+    --bottombar-h: calc(var(--tabbar-mobile-h) + var(--safe-bottom));
   }
 }

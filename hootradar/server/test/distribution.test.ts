@@ -147,6 +147,20 @@ describe('channel formats', () => {
     expect(xLength(post)).toBeLessThanOrEqual(X_LIMIT);
   });
 
+  it('never drops a sentence that contains a decimal figure', () => {
+    // live regression: "…alcanza $2.1M y la actividad…" did not match the sentence regex, so it was
+    // skipped and the post read "…para su edad. 1M y la actividad…"
+    const first = '$RAMCAT, lanzado hace 33 min en Solana, registra un volumen de negociación muy intenso para su edad. ';
+    const second =
+      'El volumen acumulado desde su lanzamiento en todos los pools de la red ya alcanza los $2.1M en total y sigue.';
+    const post = formatX(article({ lede: first + second }), articleUrl(article(), BASE_URL));
+    const lede = post.split('\n')[1] ?? '';
+    expect(lede.startsWith('$RAMCAT, lanzado hace 33 min')).toBe(true);
+    expect(lede).not.toMatch(/\. 1M\b/);
+    expect(lede).not.toContain('1M en total'); // the whole second sentence does not fit, so none of it may appear
+    expect(xLength(post)).toBeLessThanOrEqual(X_LIMIT);
+  });
+
   it('escapes provider text for Telegram HTML', () => {
     const msg = formatTelegram(
       article({ symbol: '<b>EVIL', headline: 'Rug <script>alert("x")</script> & co', aiLine: 'a < b > c' }),

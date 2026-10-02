@@ -5,7 +5,7 @@ import { useStore } from '../store';
 import { navigate } from '../lib/hash-router';
 import { fmtClock, fmtMs, safeUrl } from '../lib/format';
 import { CopyButton } from './CopyButton';
-import { EngineLine, MatchBars, OutlookTrio, SeverityTag, TimeAgo } from './bits';
+import { EngineLine, MatchBars, OutlookTrio, RegimeTag, SeverityTag, TimeAgo } from './bits';
 import { IconBlocks, IconChart, IconGlobe, IconRadar, IconRefresh, IconTelegram, IconX } from './Icons';
 
 /** The full article, rendered inside an expanded NewsCard. */
@@ -31,7 +31,7 @@ export function ArticleDetail({ article: a }: { article: NewsArticle }) {
       <section className="detail__sec" aria-labelledby={`${a.id}-quant`}>
         <h4 className="section-title" id={`${a.id}-quant`}>
           Quant analysis
-          <RegimeChip label={a.quant.regime.label} />
+          <RegimeTag regime={a.quant.regime} />
         </h4>
         <p className="detail__text">{a.quantAnalysis}</p>
         <MatchBars matches={a.quant.matches.slice(0, 3)} />
@@ -40,7 +40,7 @@ export function ArticleDetail({ article: a }: { article: NewsArticle }) {
 
       <section className="detail__sec" aria-labelledby={`${a.id}-outlook`}>
         <h4 className="section-title" id={`${a.id}-outlook`}>
-          AI outlook
+          {a.engine === 'claude' ? 'AI outlook' : 'Outlook'}
           <EngineLine engine={a.engine} model={a.model} />
         </h4>
         <OutlookTrio outlook={a.outlook} />
@@ -58,7 +58,12 @@ export function ArticleDetail({ article: a }: { article: NewsArticle }) {
               {[...a.signals]
                 .sort((x, y) => y.weight - x.weight)
                 .map((s) => (
-                  <li key={s.code} className="signal">
+                  <li
+                    key={s.code}
+                    className="signal"
+                    data-zero={Math.round(s.weight) === 0 ? '' : undefined}
+                    title={Math.round(s.weight) === 0 ? 'Observed, but adds nothing to the score yet' : undefined}
+                  >
                     <span className="signal__label">{s.label}</span>
                     <span className="signal__weight mono">+{Math.round(s.weight)}</span>
                   </li>
@@ -103,11 +108,6 @@ export function ArticleDetail({ article: a }: { article: NewsArticle }) {
       </footer>
     </div>
   );
-}
-
-function RegimeChip({ label }: { label: string }) {
-  const tone = label === 'risk-on' ? 'tag--live' : label === 'risk-off' ? 'tag--risk' : 'tag--ghost';
-  return <span className={`tag ${tone}`}>Regime {label}</span>;
 }
 
 /* ───────────── pipeline timings ───────────── */
@@ -203,6 +203,31 @@ function prettyPayload(d: DistributionItem): string {
   return d.payload;
 }
 
+/**
+ * X's weighted length, mirroring the server's formatter (twitter-text v3): links
+ * count 23 (t.co), Latin/Greek/Cyrillic and common punctuation 1, everything
+ * else (CJK, emoji, "…") 2. The raw string length would misreport both.
+ */
+const X_URL = /https?:\/\/\S+/g;
+function xLength(text: string): number {
+  let n = (text.match(X_URL) ?? []).length * 23;
+  for (const ch of text.replace(X_URL, '')) {
+    const cp = ch.codePointAt(0) ?? 0;
+    const light = cp <= 4351 || (cp >= 8192 && cp <= 8205) || (cp >= 8208 && cp <= 8223) || (cp >= 8242 && cp <= 8247);
+    n += light ? 1 : 2;
+  }
+  return n;
+}
+
+function XCount({ text }: { text: string }) {
+  const n = xLength(text);
+  return (
+    <span className={n > 280 ? 'mono dist__count risk' : 'muted mono dist__count'} title="X length (links count as 23 characters)">
+      {n}/280
+    </span>
+  );
+}
+
 function Distribution({ articleId }: { articleId: string }) {
   const detail = useStore((s) => s.details[articleId]);
   const reload = useStore((s) => s.loadDetail);
@@ -253,7 +278,7 @@ function Distribution({ articleId }: { articleId: string }) {
               <div className="dist__head">
                 <span className="dist__channel">{CHANNEL_LABEL[d.channel] ?? d.channel}</span>
                 <span className={`tag ${STATUS_TONE[d.status] ?? 'tag--ghost'}`}>{d.status}</span>
-                {d.channel === 'x' && <span className="muted mono dist__count">{d.payload.length}/280</span>}
+                {d.channel === 'x' && <XCount text={d.payload} />}
                 <span className="dist__spacer" />
                 <CopyButton text={d.payload} what={`${CHANNEL_LABEL[d.channel] ?? d.channel} payload`} label="Copy" />
               </div>

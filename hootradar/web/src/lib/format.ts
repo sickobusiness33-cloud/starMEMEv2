@@ -67,6 +67,16 @@ export function fmtNum(n: number | null | undefined, opts: { compact?: boolean; 
   return n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }).replace('-', MINUS);
 }
 
+/**
+ * Buy/sell split as whole percentages that always add up to 100 (36.4 / 63.6 → "36/64",
+ * never "36/65" from rounding each side on its own). Null when either side is unknown.
+ */
+export function fmtSplit(buy: number | null | undefined, sell: number | null | undefined): string | null {
+  if (!isNum(buy) || !isNum(sell) || buy + sell <= 0) return null;
+  const b = Math.round((buy / (buy + sell)) * 100);
+  return `${b}/${100 - b}`;
+}
+
 /** 4.1x */
 export function fmtMult(n: number | null | undefined): string {
   if (!isNum(n)) return DASH;
@@ -161,4 +171,10 @@ export function safeUrl(url: string | null | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+/** $TICKER — some tokens already carry the "$" in their symbol ("$HALLOWEEN"); never render "$$". Empty → "—". */
+export function fmtTicker(symbol: string | null | undefined): string {
+  const s = (symbol ?? '').trim().replace(/^\$+/, '');
+  return s ? `$${s}` : DASH;
 }

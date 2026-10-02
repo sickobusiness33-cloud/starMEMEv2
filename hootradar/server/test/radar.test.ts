@@ -185,19 +185,25 @@ describe('RadarService — symbol search', () => {
     expect(final.status).toBe('done');
     expect(final.error).toBeNull();
 
-    // resolution: most liquid exact match on a supported chain, 6 more as candidates
+    // resolution: the busiest exact match on a supported chain, 6 more as candidates; the ticker is
+    // also searched as "$PEPE", and both result sets are merged without duplicates
     expect(dsSearch).toHaveBeenCalledWith('PEPE');
+    expect(dsSearch).toHaveBeenCalledWith('$PEPE');
     expect(final.token).toMatchObject({ chain: 'ethereum', address: PEPE_ETH, symbol: 'PEPE', name: 'Pepe' });
     expect(final.candidates).toHaveLength(6);
-    expect(final.candidates.map((c) => c.chain)).toEqual(['solana', 'solana', 'solana', 'solana', 'solana', 'solana']);
-    expect(final.candidates[0]).toMatchObject({ address: 'A1DBHWmtuYZMpLNXE9xr4B7crD8FAxwHSDnqnk8NwAKS', liquidityUsd: 3900571.79 });
+    expect(final.candidates.map((c) => c.chain)).toEqual(['solana', 'solana', 'solana', 'solana', 'solana', 'base']);
+    expect(new Set(final.candidates.map((c) => c.address)).size).toBe(6);
+    // real fixture: A1DB… reports $3.9M of liquidity on $86 of daily volume and must not outrank
+    // 7nfd… ($3.66M liquidity, $255K volume)
+    expect(final.candidates[0]).toMatchObject({ address: '7nfd3f4sxQcMgxEbvNFu3UJstmLXcWUywAsts5xuiFF3' });
+    expect(final.candidates.map((c) => c.address)).not.toContain('A1DBHWmtuYZMpLNXE9xr4B7crD8FAxwHSDnqnk8NwAKS');
     expect(final.stages[0]?.message).toBe('$PEPE on Ethereum via DexScreener search; 6 other matches');
 
     // on-chain + holders merged into one snapshot; metrics, detection and quant computed from it
     expect(ethLookup).toHaveBeenCalledWith(PEPE_ETH);
     expect(adapters.ethereum.enrich).toHaveBeenCalledWith(PEPE_ETH);
     expect(final.snapshot).toMatchObject({ chain: 'ethereum', holders: ENRICHMENT.holders, top10HolderPct: ENRICHMENT.top10HolderPct });
-    expect(final.snapshot?.sources).toEqual(['dexscreener', 'geckoterminal']);
+    expect(final.snapshot?.sources).toEqual(['geckoterminal', 'dexscreener']);
     expect(final.metrics?.ageMinutes).toBeGreaterThan(0);
     expect(final.detection?.score).toEqual(expect.any(Number));
     expect(final.quant?.disclaimer).toMatch(/not a forecast/);
@@ -246,11 +252,38 @@ describe('RadarService — symbol search', () => {
     const { service } = harness();
     const { id } = service.start('PEPE', 'base');
     const final = (await collect(service, id)).pop()!;
-    // every one of them has the symbol PEPE, so liquidity decides
+    // every one of them has the symbol PEPE, so 24 h volume decides ($7.8K, $204, $30)
     expect(final.token).toMatchObject({ chain: 'base', name: 'BasedPepe', address: '0x52b492a33E447Cdb854c7FC19F1e57E8BfA1777D' });
     expect(final.candidates.map((c) => [c.chain, c.name])).toEqual([
-      ['base', 'Pepe Army'],
       ['base', 'Pepe'],
+      ['base', 'Pepe Army'],
+    ]);
+  });
+
+  it('matches a symbol that carries its own "$" (dogwifhat is "$WIF" on-chain) as exact', async () => {
+    const WIF = 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm';
+    const KNOCKOFF = '21AErpiB8uSb94oQKRcwuHqyHF93njAxBSbdUrpupump';
+    vi.mocked(dsSearch).mockResolvedValue([
+      snapshot('solana', KNOCKOFF, { symbol: 'Wif', name: 'Dog wif hat', liquidityUsd: 38_000, volumeUsd: { h24: 0.54 } }),
+      snapshot('solana', WIF, { symbol: '$WIF', name: 'dogwifhat', liquidityUsd: 6_800_000, volumeUsd: { h24: 748_000 } }),
+      // fake "liquidity": a worthless token quoted against a few dollars
+      snapshot('solana', '2TDfKNETWL4Lf28oTErEHAwhqDrE5yd8uhEfEtbgM63m', {
+        symbol: '$WIF',
+        name: 'dogwifhat',
+        liquidityUsd: 59_510_874,
+        volumeUsd: { h24: 0.62 },
+      }),
+      snapshot('solana', 'WiFi1111111111111111111111111111', { symbol: 'WIFI', name: 'Wifi', liquidityUsd: 20_000_000 }),
+    ]);
+    const { service } = harness();
+    const { id } = service.start('$WIF');
+    const final = (await collect(service, id)).pop()!;
+    expect(final.token).toMatchObject({ address: WIF, symbol: '$WIF' });
+    expect(final.stages[0]?.message).toBe('$WIF on Solana via DexScreener search; 3 other matches');
+    expect(final.candidates.map((c) => c.address)).toEqual([
+      '2TDfKNETWL4Lf28oTErEHAwhqDrE5yd8uhEfEtbgM63m',
+      KNOCKOFF,
+      'WiFi1111111111111111111111111111',
     ]);
   });
 

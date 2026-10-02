@@ -70,9 +70,12 @@ function metrics(over: Partial<DerivedMetrics> = {}): DerivedMetrics {
   };
 }
 
-/** Every signal at (or beyond) full strength. */
+/**
+ * Every signal at (or beyond) full strength. At exactly 60 minutes momentum is fully
+ * phased in and launch traction has not started fading yet.
+ */
 const HOT: DerivedMetrics = metrics({
-  ageMinutes: 20,
+  ageMinutes: 60,
   txPerMin: 30,
   volumeAcceleration: 9,
   txAcceleration: 8,
@@ -88,6 +91,12 @@ const HOT: DerivedMetrics = metrics({
   avgTradeUsd: 2400,
   largeWalletFlow: 'high',
 });
+
+/** A launch-hour market strong enough for full launch traction: $3M in 60 minutes over 1,200 trades. */
+const HOT_SNAP: Partial<TokenSnapshot> = {
+  volumeUsd: { m5: 400_000, h1: 3_000_000 },
+  txns: { h1: { buys: 700, sells: 500, buyers: null, sellers: null } },
+};
 
 const codes = (d: { signals: Array<{ code: SignalCode }> }) => d.signals.map((x) => x.code).sort();
 
@@ -139,7 +148,7 @@ describe('gates', () => {
 
 describe('scoring', () => {
   it('caps the score at 100 and fires every signal at full weight', () => {
-    const d = detectAnomalies(snap(), HOT, { ...OPTS, socialMentions: 40 });
+    const d = detectAnomalies(snap(HOT_SNAP), HOT, { ...OPTS, socialMentions: 40 });
     expect(d.score).toBe(100);
     expect(d.severity).toBe('BREAKING');
     expect(codes(d)).toEqual(Object.keys(SIGNAL_MAX_WEIGHTS).sort());
@@ -157,8 +166,8 @@ describe('scoring', () => {
 
   it('ramps smoothly: halfway between onset and saturation earns half the weight', () => {
     const d = detectAnomalies(snap(), metrics({ volumeAcceleration: 4 }), OPTS);
-    expect(d.signals).toEqual([{ code: 'volume_surge', label: 'Volume 4.0x vs 1h avg', value: 4, weight: 11 }]);
-    expect(d.score).toBe(11);
+    expect(d.signals).toEqual([{ code: 'volume_surge', label: 'Volume 4.0x vs 1h avg', value: 4, weight: 15 }]);
+    expect(d.score).toBe(15);
   });
 
   it('is monotonic in every input', () => {
@@ -170,11 +179,10 @@ describe('scoring', () => {
       ['holdersGrowthPct', [-20, 0, 10, 20, 35, 50, 200]],
       ['liquidityChangePct', [-50, 0, 15, 30, 60, 100]],
       ['momentumScore', [-100, 0, 35, 50, 65, 80, 100]],
-      ['txPerMin', [0, 4, 5, 7, 10, 40]],
     ];
     for (const [key, xs] of sweeps) {
       const scores = xs.map((x) => {
-        const m = metrics({ ageMinutes: 20, buyPct: 55, buySellWindow: 'h1', [key]: x });
+        const m = metrics({ ageMinutes: 120, buyPct: 55, buySellWindow: 'h1', [key]: x });
         return detectAnomalies(snap(), m, OPTS).score;
       });
       for (let i = 1; i < scores.length; i++) {
@@ -183,6 +191,13 @@ describe('scoring', () => {
       expect(scores.at(-1), key).toBeGreaterThan(scores[0] ?? 0);
     }
 
+    const launchVolume = [10_000, 300_000, 600_000, 1_200_000, 3_000_000, 9_000_000].map(
+      (h1) =>
+        detectAnomalies(snap({ volumeUsd: { h1 }, txns: HOT_SNAP.txns }), metrics({ ageMinutes: 30 }), OPTS).score,
+    );
+    expect(launchVolume).toEqual([...launchVolume].sort((a, b) => a - b));
+    expect(launchVolume.at(-1)).toBe(SIGNAL_MAX_WEIGHTS.fresh_launch);
+
     const social = [0, 3, 5, 9, 15, 50].map((n) => detectAnomalies(snap(), metrics(), { ...OPTS, socialMentions: n }).score);
     expect(social).toEqual([...social].sort((a, b) => a - b));
     expect(social.at(-1)).toBe(SIGNAL_MAX_WEIGHTS.social_attention);
@@ -190,7 +205,11 @@ describe('scoring', () => {
 
   it('labels signals compactly with the real numbers, strongest first', () => {
     const d = detectAnomalies(
-      snap({ priceChangePct: { h1: 34.4 } }),
+      snap({
+        priceChangePct: { h1: 34.4 },
+        volumeUsd: { h1: 600_000 },
+        txns: { h1: { buys: 700, sells: 540, buyers: null, sellers: null } },
+      }),
       metrics({
         ageMinutes: 25,
         txPerMin: 12.3,
@@ -221,7 +240,7 @@ describe('scoring', () => {
       buy_pressure: '71% buys (1h)',
       large_wallet_flow: 'Avg trade $2,431 (large)',
       social_attention: '9 mentions in 2h',
-      fresh_launch: 'Launched 25m ago · 12 tx/min',
+      fresh_launch: 'Launched 25m ago · $600K volume, 1,240 trades',
     });
     const weights = d.signals.map((s) => s.weight);
     expect(weights).toEqual([...weights].sort((a, b) => b - a));
@@ -235,15 +254,40 @@ describe('scoring', () => {
     expect(byAccel.signals[0]?.label).toBe('Unique buyers 5.0x vs 1h avg');
   });
 
-  it('fresh launch fades out between 30 and 60 minutes of age', () => {
-    const weightAt = (age: number) =>
-      detectAnomalies(snap(), metrics({ ageMinutes: age, txPerMin: 20 }), OPTS).signals.find(
-        (s) => s.code === 'fresh_launch',
+  it('launch traction needs real volume, enough trades and a few minutes of survival, and fades by 90 minutes', () => {
+    const weight = (age: number, h1Volume: number, trades = 1_200) =>
+      detectAnomalies(
+        snap({ volumeUsd: { h1: h1Volume }, txns: { h1: { buys: trades / 2, sells: trades / 2, buyers: null, sellers: null } } }),
+        metrics({ ageMinutes: age }),
+        OPTS,
+      ).signals.find((s) => s.code === 'fresh_launch')?.weight ?? 0;
+    const full = SIGNAL_MAX_WEIGHTS.fresh_launch;
+    // $50K+ a minute is full traction; the typical launch (~$10K a minute) earns nothing
+    expect(weight(20, 20 * 50_000)).toBe(full);
+    expect(weight(20, 20 * 10_000)).toBe(0);
+    expect(weight(20, 20 * 30_000)).toBe(full / 2);
+    // one wallet cannot fake it: under 30 trades there is no traction, full credit from 150
+    expect(weight(20, 20 * 50_000, 30)).toBe(0);
+    expect(weight(20, 20 * 50_000, 90)).toBe(full / 2);
+    // the first two minutes belong to snipers; full credit from 10 minutes
+    expect(weight(2, 2 * 50_000)).toBe(0);
+    expect(weight(6, 6 * 50_000)).toBe(full / 2);
+    // fades between 60 and 90 minutes, when the 1 h baseline no longer holds the launch
+    expect(weight(60, 60 * 50_000)).toBe(full);
+    expect(weight(75, 60 * 50_000)).toBe(full / 2);
+    expect(weight(90, 60 * 50_000)).toBe(0);
+    expect(weight(120, 60 * 50_000)).toBe(0);
+  });
+
+  it('phases momentum in over the launch hour', () => {
+    const weight = (age: number) =>
+      detectAnomalies(snap(), metrics({ ageMinutes: age, momentumScore: 95 }), OPTS).signals.find(
+        (s) => s.code === 'momentum',
       )?.weight ?? 0;
-    expect(weightAt(10)).toBe(6);
-    expect(weightAt(45)).toBe(3);
-    expect(weightAt(60)).toBe(0);
-    expect(weightAt(61)).toBe(0);
+    expect(weight(10)).toBe(0);
+    expect(weight(35)).toBe(SIGNAL_MAX_WEIGHTS.momentum / 2);
+    expect(weight(60)).toBe(SIGNAL_MAX_WEIGHTS.momentum);
+    expect(weight(600)).toBe(SIGNAL_MAX_WEIGHTS.momentum);
   });
 
   it('is deterministic', () => {
@@ -266,9 +310,9 @@ describe('severity', () => {
   });
 
   it('respects custom thresholds', () => {
-    const m = metrics({ volumeAcceleration: 6, txAcceleration: 6 }); // 22 + 16 = 38
-    expect(detectAnomalies(snap(), m, OPTS).severity).toBeNull();
-    expect(detectAnomalies(snap(), m, { ...OPTS, thresholds: { WATCH: 30, ALERT: 38, BREAKING: 90 } }).severity).toBe(
+    const m = metrics({ volumeAcceleration: 6, txAcceleration: 6 }); // 30 + 20 = 50
+    expect(detectAnomalies(snap(), m, { ...OPTS, thresholds: { WATCH: 55, ALERT: 62, BREAKING: 78 } }).severity).toBeNull();
+    expect(detectAnomalies(snap(), m, { ...OPTS, thresholds: { WATCH: 30, ALERT: 50, BREAKING: 90 } }).severity).toBe(
       'ALERT',
     );
   });

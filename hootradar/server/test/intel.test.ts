@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IntelItem, TokenSnapshot } from '../../shared/types.js';
-import { researchWeb } from '../src/ai/web-research.js';
+import { researchWeb, webResearchEnabled } from '../src/ai/web-research.js';
 import * as biz from '../src/research/intel/biz.js';
 import { buildGdeltQuery, decodeGdeltBody, parseGdeltArticles } from '../src/research/intel/gdelt.js';
 import * as gdelt from '../src/research/intel/gdelt.js';
@@ -32,7 +32,7 @@ vi.mock('../src/research/intel/biz.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/research/intel/biz.js')>()),
   search: vi.fn(),
 }));
-vi.mock('../src/ai/web-research.js', () => ({ researchWeb: vi.fn() }));
+vi.mock('../src/ai/web-research.js', () => ({ researchWeb: vi.fn(), webResearchEnabled: vi.fn(() => true) }));
 
 const fixture = (name: string): unknown =>
   JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8'));
@@ -194,6 +194,13 @@ describe('Hacker News', () => {
       sourceType: 'community',
       publishedAt: Date.UTC(2026, 9, 1, 10),
     });
+  });
+
+  it('does not title a comment after a moderated story placeholder', () => {
+    const json = {
+      hits: [{ _tags: ['comment'], objectID: '9', comment_text: 'dogwifhat again', story_title: '[dead]', created_at_i: 1790700000 }],
+    };
+    expect(hn.parseHnHits(json, NOW)[0]?.title).toBe('Hacker News comment');
   });
 
   it('centres long snippets on the mention', () => {
@@ -411,6 +418,16 @@ describe('gatherIntel', () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('leaves Claude web research out of the run and the status list when it is not configured', async () => {
+    vi.mocked(webResearchEnabled).mockReturnValueOnce(false);
+    vi.mocked(gdelt.search).mockResolvedValue([]);
+    vi.mocked(hn.search).mockResolvedValue([]);
+    vi.mocked(biz.search).mockResolvedValue([]);
+    const { providers } = await gatherIntel(BONK, NOW);
+    expect(providers.map((p) => p.provider)).toEqual(['gdelt', 'hn', 'biz', 'official']);
+    expect(researchWeb).not.toHaveBeenCalled();
   });
 
   it('runs every provider, filters, dedupes and reports per-provider status', async () => {

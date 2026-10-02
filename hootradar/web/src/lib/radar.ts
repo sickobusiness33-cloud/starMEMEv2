@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { ChainId, RadarReport, RadarStreamEvent } from '@shared/types';
 import { api, ApiError, errorMessage, isAbortError, radarStreamUrl } from './api';
+import { fmtTicker } from './format';
 
 /**
  * Radar investigations: POST /api/radar → follow /api/radar/:id/stream.
@@ -26,6 +27,12 @@ interface RadarState {
   report: RadarReport | null;
   error: string | null;
   retryAfterSec: number | null;
+  /**
+   * Client clock minus server clock (ms), estimated from report frames
+   * (smallest observed `Date.now() - report.updatedAt`). Lets the UI time a
+   * running stage from its server `startedAt` without trusting either clock alone.
+   */
+  skewMs: number | null;
   recent: RecentSearch[];
   run: (query: string, chain: ChainId | null) => void;
   reset: () => void;
@@ -91,10 +98,12 @@ export const useRadar = create<RadarState>()((set, get) => {
 
   const accept = (seq: number, report: RadarReport) => {
     if (!isCurrent(seq)) return;
-    set({ report });
+    const observed = Date.now() - report.updatedAt;
+    const prevSkew = get().skewMs;
+    set({ report, skewMs: prevSkew === null ? observed : Math.min(prevSkew, observed) });
     const { query, chain } = get();
     if (report.token && query) {
-      const label = `$${report.token.symbol}`;
+      const label = fmtTicker(report.token.symbol);
       const recent = get().recent.map((r) => (sameSearch(r, { q: query, chain }) && r.label !== label ? { ...r, label } : r));
       if (recent.some((r, i) => r !== get().recent[i])) {
         set({ recent });
@@ -158,6 +167,7 @@ export const useRadar = create<RadarState>()((set, get) => {
     report: null,
     error: null,
     retryAfterSec: null,
+    skewMs: null,
     recent: loadRecent(),
 
     run: (query, chain) => {
@@ -171,7 +181,7 @@ export const useRadar = create<RadarState>()((set, get) => {
         RECENT_MAX,
       );
       saveRecent(recent);
-      set({ query: q, chain, phase: 'starting', report: null, error: null, retryAfterSec: null, recent });
+      set({ query: q, chain, phase: 'starting', report: null, error: null, retryAfterSec: null, skewMs: null, recent });
       abort = new AbortController();
       api
         .startRadar(q, chain, abort.signal)
@@ -191,7 +201,7 @@ export const useRadar = create<RadarState>()((set, get) => {
     reset: () => {
       stopActive();
       runSeq++;
-      set({ query: null, chain: null, phase: 'idle', report: null, error: null, retryAfterSec: null });
+      set({ query: null, chain: null, phase: 'idle', report: null, error: null, retryAfterSec: null, skewMs: null });
     },
 
     removeRecent: (r) => {

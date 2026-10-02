@@ -257,7 +257,7 @@ function FeedFooter() {
 
 function FeedSkeleton() {
   return (
-    <div className="feed" aria-busy="true" aria-label="Loading the live feed">
+    <div className="feed" role="status" aria-busy="true" aria-label="Loading the live feed">
       <ol className="feed__list">
         {[0, 1, 2, 3].map((i) => (
           <li key={i} className="feed__item">

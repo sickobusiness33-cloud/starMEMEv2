@@ -134,7 +134,7 @@ export function parseDsPairs(json: unknown, chain: ChainId | null, ts: number = 
 }
 
 function tokenFromPairs(pairs: Array<Record<string, unknown>>, chain: ChainId | null, ts: number): TokenSnapshot {
-  const best = pairs.reduce((a, b) => (pairLiquidity(b) > pairLiquidity(a) ? b : a));
+  const best = pairs.reduce((a, b) => ((pairLiquidity(b) ?? -1) > (pairLiquidity(a) ?? -1) ? b : a));
   const base = asRecord(best.baseToken);
   const address = toStr(base.address) ?? '';
   const symbol = toStr(base.symbol) ?? '';
@@ -148,7 +148,7 @@ function tokenFromPairs(pairs: Array<Record<string, unknown>>, chain: ChainId | 
     priceUsd: toNum(best.priceUsd),
     marketCapUsd: toNum(best.marketCap),
     fdvUsd: toNum(best.fdv),
-    liquidityUsd: toNum(asRecord(best.liquidity).usd),
+    liquidityUsd: pairLiquidity(best),
     volumeUsd: mapWindows(best.volume, toNum),
     priceChangePct: mapWindows(best.priceChange, toNum),
     txns: mapWindows(best.txns, readTxCounts),
@@ -160,8 +160,27 @@ function tokenFromPairs(pairs: Array<Record<string, unknown>>, chain: ChainId | 
   };
 }
 
-function pairLiquidity(pair: Record<string, unknown>): number {
-  return toNum(asRecord(pair.liquidity).usd) ?? -1;
+/**
+ * A pool's reported liquidity values both reserves at the pool's own price. When
+ * that price is manipulated (a worthless token quoted against a few USDC) or the
+ * pool is single-sided (a launch pool holding almost only the new token), the
+ * figure can be thousands of times what a seller could ever take out. Real pools
+ * report 1-3x twice their quote reserve; above 10x we keep the quote-backed value,
+ * twice the quote reserve priced in USD (priceUsd / priceNative = quote price).
+ */
+const MAX_LIQUIDITY_TO_QUOTE_BACKING = 10;
+
+export function pairLiquidity(pair: Record<string, unknown>): number | null {
+  const liquidity = asRecord(pair.liquidity);
+  const reported = toNum(liquidity.usd);
+  if (reported === null) return null;
+  const quoteReserve = toNum(liquidity.quote);
+  const priceUsd = toNum(pair.priceUsd);
+  const priceNative = toNum(pair.priceNative);
+  if (quoteReserve === null || priceUsd === null || priceNative === null || priceNative <= 0) return reported;
+  const backed = 2 * quoteReserve * (priceUsd / priceNative);
+  if (!Number.isFinite(backed) || reported <= MAX_LIQUIDITY_TO_QUOTE_BACKING * backed) return reported;
+  return Math.round(backed * 100) / 100;
 }
 
 /** DexScreener has no unique-wallet counts. */

@@ -214,6 +214,19 @@ describe('tokens and snapshots', () => {
     expect(db.latestSnapshots(T0 - HOUR, 1).map((s) => s.address)).toEqual([SOL_B]);
   });
 
+  it('latestSnapshots can keep only tokens whose latest snapshot clears the market minimums', () => {
+    const market = (liquidityUsd: number | null, h1: number | null) => ({ liquidityUsd, volumeUsd: { h1 } });
+    db.insertSnapshot(snap({ address: SOL_A, ts: T0 - 20 * MIN, ...market(1_000, 100) }));
+    db.insertSnapshot(snap({ address: SOL_A, ts: T0 - 5 * MIN, ...market(20_000, 30_000) }));
+    db.insertSnapshot(snap({ address: SOL_B, ts: T0 - 10 * MIN, ...market(50_000, 40_000) }));
+    db.insertSnapshot(snap({ address: SOL_B, ts: T0 - 2 * MIN, ...market(9, 2) })); // rugged since
+    db.insertSnapshot(snap({ chain: 'base', address: EVM_CHECKSUM, ts: T0 - MIN, ...market(null, null) }));
+
+    const active = { minLiquidityUsd: 10_000, minVolumeH1Usd: 10_000 };
+    expect(db.latestSnapshots(T0 - HOUR, 10, active).map((s) => s.address)).toEqual([SOL_A]);
+    expect(db.latestSnapshots(T0 - HOUR, 10).map((s) => s.address)).toEqual([EVM_CHECKSUM, SOL_B, SOL_A]);
+  });
+
   it('upsertToken keeps the earliest creation time and never lets an older observation win', () => {
     db.upsertToken(snap({ ts: T0, symbol: 'NEW', createdAt: T0 - 2 * HOUR }));
     db.upsertToken(snap({ ts: T0 - 10 * MIN, symbol: 'OLD', createdAt: T0 - 3 * HOUR }));
@@ -239,6 +252,24 @@ describe('tokens and snapshots', () => {
       'D1111111111111111111111111111111',
     ]);
     expect(db.trackedAddresses('solana', 24, 2, T0)).toHaveLength(2);
+  });
+
+  it('trackedAddresses puts tokens that clear the market minimums ahead of fresher inactive ones', () => {
+    const ACTIVE = 'A2222222222222222222222222222222';
+    const THIN = 'T2222222222222222222222222222222';
+    const QUIET = 'Q2222222222222222222222222222222';
+    const NEW = 'N2222222222222222222222222222222';
+    const market = (liquidityUsd: number | null, h1: number | null) => ({ liquidityUsd, volumeUsd: { h1 } });
+    db.upsertToken(snap({ address: ACTIVE, createdAt: T0 - HOUR, ts: T0 - 10 * MIN, ...market(20_000, 9_000) }));
+    db.upsertToken(snap({ address: THIN, createdAt: T0 - HOUR, ts: T0 - MIN, ...market(1_000, 50_000) }));
+    db.upsertToken(snap({ address: QUIET, createdAt: T0 - HOUR, ts: T0 - 2 * MIN, ...market(40_000, 100) }));
+    db.upsertToken(snap({ address: NEW, createdAt: T0 - MIN, ts: T0, ...market(null, null) }));
+
+    const active = { minLiquidityUsd: 5_000, minVolumeH1Usd: 5_000 };
+    expect(db.trackedAddresses('solana', 24, 10, T0, active)).toEqual([ACTIVE, NEW, THIN, QUIET]);
+    expect(db.trackedAddresses('solana', 24, 1, T0, active)).toEqual([ACTIVE]);
+    // without minimums the order is plain recency
+    expect(db.trackedAddresses('solana', 24, 10, T0)).toEqual([NEW, THIN, QUIET, ACTIVE]);
   });
 
   it('coalesces identical observations but stores every change', () => {
@@ -390,10 +421,10 @@ describe('counts and prune', () => {
     });
   });
 
-  it('prunes snapshots and tokens older than 48 h and radar reports older than 7 days', () => {
+  it('prunes snapshots older than 6 h, tokens older than 48 h and radar reports older than 7 days', () => {
     const now = T0;
-    db.insertSnapshot(snap({ ts: now - 49 * HOUR, priceUsd: 1 }));
-    db.insertSnapshot(snap({ ts: now - 47 * HOUR, priceUsd: 2 }));
+    db.insertSnapshot(snap({ ts: now - 7 * HOUR, priceUsd: 1 }));
+    db.insertSnapshot(snap({ ts: now - 5 * HOUR, priceUsd: 2 }));
     db.upsertToken(snap({ address: SOL_B, ts: now - 49 * HOUR, createdAt: now - 50 * HOUR }));
     db.upsertToken(snap({ address: SOL_A, ts: now - HOUR, createdAt: now - 50 * HOUR }));
     const oldRadar = radar({ createdAt: now - 8 * 24 * HOUR });

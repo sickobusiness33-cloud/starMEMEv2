@@ -4,7 +4,7 @@
  * freshness ranking. One provider failing never fails the whole search.
  */
 import type { IntelItem, TokenSnapshot } from '../../../../shared/types.js';
-import { researchWeb } from '../../ai/web-research.js';
+import { researchWeb, webResearchEnabled } from '../../ai/web-research.js';
 import { errMsg, logger } from '../../log.js';
 import { addressKey } from '../../sources/merge.js';
 import { classifyFreshness, FUTURE_TOLERANCE_MS } from '../freshness.js';
@@ -35,6 +35,8 @@ export interface ProviderStatus {
 interface Provider {
   name: string;
   timeoutMs: number;
+  /** a provider that is not configured is left out of the run and of the status list */
+  enabled?: () => boolean;
   search(t: IntelQuery): Promise<IntelItem[]>;
 }
 
@@ -46,6 +48,7 @@ const PROVIDERS: Provider[] = [
   {
     name: 'claude-web',
     timeoutMs: WEB_RESEARCH_TIMEOUT_MS,
+    enabled: webResearchEnabled,
     search: (t) => researchWeb({ chain: t.chain, address: t.address, symbol: t.symbol, name: t.name }),
   },
 ];
@@ -68,7 +71,7 @@ export async function gatherIntel(
   now: number,
 ): Promise<{ items: IntelItem[]; providers: ProviderStatus[] }> {
   const terms = intelTerms(t);
-  const runs = await Promise.all(PROVIDERS.map((p) => runProvider(p, t)));
+  const runs = await Promise.all(PROVIDERS.filter((p) => p.enabled?.() ?? true).map((p) => runProvider(p, t)));
   const providers: ProviderStatus[] = [];
   const relevant: IntelItem[] = [];
   for (const run of runs) {

@@ -237,7 +237,9 @@ describe('format helpers', () => {
     expect(fmtAge(24, 'en')).toBe('24 min ago');
     expect(fmtAge(0.4, 'en')).toBe('less than 1 min ago');
     expect(fmtAge(null, 'es')).toBe('—');
-    expect(fmtDuration(21.6)).toBe('22 min');
+    expect(fmtDuration(21.6)).toBe('21 min');
+    expect(fmtDuration(0.4)).toBe('1 min');
+    expect(fmtDuration(13.64)).toBe(fmtAge(13.64, 'en').replace(' ago', ''));
     expect(fmtNum(1284)).toBe('1,284');
     expect(fmtNum(12840, 'es')).toBe('12.840');
     expect(fmtNum(null)).toBe('—');
@@ -251,6 +253,57 @@ describe('format helpers', () => {
 /* ───────────── rules writer ───────────── */
 
 describe('rules writer', () => {
+  it('writes a launch story in Spanish: volume since launch, consistent age, launch-specific outlook', () => {
+    const snapshot: TokenSnapshot = {
+      ...richSnapshot(),
+      symbol: 'MICRO',
+      liquidityUsd: 63_926.64,
+      marketCapUsd: 472_175,
+      volumeUsd: { m5: 515_764, h1: 1_147_886.87 },
+      txns: { h1: { buys: 3_900, sells: 3_082, buyers: null, sellers: null } },
+      priceChangePct: { m5: 72, h1: 866 },
+    };
+    const metrics: DerivedMetrics = {
+      ...NULL_METRICS,
+      ageMinutes: 13.64,
+      txPerMin: 565.8,
+      txAcceleration: 1,
+      volumeAcceleration: 1,
+      buyPct: 56,
+      sellPct: 44,
+      buySellWindow: 'm5',
+      liquidityChangePct: 231,
+      momentumScore: 100,
+      volumeToLiquidity: 17.96,
+    };
+    const detection: Detection = {
+      score: 47,
+      severity: 'ALERT',
+      signals: [
+        { code: 'fresh_launch', label: 'Launched 13m ago · $1.1M volume, 6982 trades', value: 84_158, weight: 34 },
+        { code: 'liquidity_growth', label: 'Liquidity +231% within 1h', value: 231, weight: 12 },
+        { code: 'momentum', label: 'Momentum 100/100 (1h +866%)', value: 100, weight: 1.4 },
+      ],
+      rejected: [],
+    };
+    const a = writeArticleRules({ snapshot, metrics, detection, quant: RICH_QUANT, lang: 'es', previous: null });
+    expectWithinLimits(a);
+    expectCleanCopy(allText(a));
+    expect(a.headline).toContain('$1.1M');
+    expect(a.headline).toMatch(/13 min/);
+    expect(a.lede).toContain('lanzado hace 13 min');
+    expect(allText(a)).not.toContain('14 min');
+    expect(a.lede).toContain('registra un volumen de negociación intenso para su edad. El volumen desde su lanzamiento alcanza $1.1M');
+    expect(a.whyItMatters.join(' ')).toContain('El volumen desde su lanzamiento equivale a 18x la liquidez del pool ($64K): rotación muy elevada.');
+    expect(a.outlook.bullish).toContain('más allá de la primera hora');
+    expect(a.outlook.neutral).toContain('tras el arranque');
+    expect(a.outlook.neutral).toContain('$472K');
+    expect(a.outlook.risk).toContain('un volumen equivalente a 18x la liquidez podría reflejar wash trading');
+    // the card line carries this token's own figures, not a stock sentence shared by every launch story
+    expect(a.aiLine).toContain('$1.1M');
+    expect(a.aiLine).toMatch(/13 min/);
+  });
+
   it('writes Spanish wire copy from the strongest signals with the input figures', () => {
     const input = richInput('es');
     const a = writeArticleRules(input);
@@ -263,6 +316,9 @@ describe('rules writer', () => {
     // volume_surge carries the most weight, so it leads the headline
     expect(a.headline).toContain('$WIRED');
     expect(a.headline).toContain('4,2x');
+    // 24 minutes old: its "1 h" average is its average since launch
+    expect(allText(a)).not.toMatch(/media de 1 h|media horaria|ritmo de la última hora/);
+    expect(a.headline).toMatch(/desde el lanzamiento/);
     expect(a.lede).toContain(`$WIRED, lanzado ${fmtAge(24.4, 'es')} en Solana, está registrando`);
     expect(a.lede).toContain(fmtUsd(s.volumeUsd.h1 ?? null));
     expect(a.lede).toContain('3,1');
@@ -491,7 +547,7 @@ describe('Radar brief', () => {
     expect(b).toMatchObject({ engine: 'rules', model: null });
     expect(b.summary).toContain('$WIRED (Solana)');
     expect(b.summary).toContain(fmtUsd(input.snapshot.liquidityUsd));
-    expect(b.summary).toContain('3 referencias públicas: 1 LIVE, 1 RECENT y 1 sin fecha');
+    expect(b.summary).toContain('3 menciones públicas (1 de la última hora, 1 de las últimas 24 h y 1 sin fecha)');
     expect(b.bullets.length).toBeGreaterThanOrEqual(3);
     expect(b.bullets.length).toBeLessThanOrEqual(5);
     expect(b.bullets.join(' ')).toContain('WIRED token draws traders on Solana');
@@ -502,10 +558,53 @@ describe('Radar brief', () => {
     initClaude(loadConfig({}));
     const input = sparseInput('en');
     const b = await writeRadarBrief({ ...input, detection: { ...input.detection, severity: null, score: 12 }, intel: [] });
-    expect(b.summary).toContain('We found no public references');
+    expect(b.summary).toContain('We found no public mentions');
     expect(b.summary).toContain('below our alert thresholds');
+    expect(b.outlook.neutral).toContain('If activity stays at its current level');
+    expect(b.outlook.neutral).not.toContain('digests the move');
     expect(b.bullets.length).toBeGreaterThanOrEqual(3);
     expectCleanCopy([b.summary, ...b.bullets, ...Object.values(b.outlook)].join('\n'));
+  });
+
+  it('keeps official project channels apart from coverage and explains why the scanner ignores a token', async () => {
+    initClaude(loadConfig({}));
+    const input = richInput('es');
+    const official = (id: string, title: string): IntelItem => ({
+      id,
+      title,
+      url: `https://${id}.example`,
+      sourceName: `${id}.example`,
+      sourceType: 'official',
+      provider: 'dexscreener',
+      publishedAt: null,
+      freshness: 'UNKNOWN',
+      snippet: null,
+      matchedOn: 'project',
+    });
+    const old: IntelItem = { ...intel()[1]!, id: 'old', title: 'Dog token thread', publishedAt: T0 - 97 * 24 * 60 * MIN, freshness: 'OLD' };
+    const b = await writeRadarBrief({
+      ...input,
+      detection: {
+        score: 3,
+        severity: null,
+        signals: [],
+        rejected: ['1h volume $812 below $10,000 minimum', 'Older than 7 days (851.3d)'],
+      },
+      intel: [official('site', 'Project website'), official('x', 'Project X (Twitter) account @dog'), old],
+    });
+    expect(b.summary).toContain('Hallamos 1 mención pública (1 de hace más de 24 h) y 2 canales oficiales del proyecto.');
+    expect(b.summary).toContain(
+      'queda fuera de nuestra vigilancia: volumen de 1 h de $812 por debajo del mínimo de $10K y lanzado hace más de 7 días',
+    );
+    // the latest mention is the dated third-party thread, never the project's own website
+    expect(b.bullets.join(' ')).toContain('«Dog token thread»');
+    expect(b.bullets.join(' ')).not.toContain('Project website');
+    expect(b.outlook.bullish).toContain('Si el volumen y las compras repuntaran');
+    expectCleanCopy([b.summary, ...b.bullets, ...Object.values(b.outlook)].join('\n'));
+
+    const onlyOfficial = await writeRadarBrief({ ...input, intel: [official('site', 'Project website')] });
+    expect(onlyOfficial.summary).toContain('No encontramos menciones públicas del token; sí 1 canal oficial del proyecto.');
+    expect(onlyOfficial.bullets.join(' ')).not.toContain('Mención más reciente');
   });
 
   it('uses Claude structured output when configured', async () => {

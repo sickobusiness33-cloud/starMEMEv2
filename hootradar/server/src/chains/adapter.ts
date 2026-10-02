@@ -22,11 +22,21 @@ const DISCOVERY_REFRESH_LIMIT = 60;
 
 interface DiscoverySource {
   name: string;
+  /** a source whose data refreshes slower than the discovery cadence is polled at most this often */
+  minIntervalMs?: number;
   fetch(config: ChainConfig, now: number): Promise<TokenSnapshot[]>;
 }
 
+/**
+ * GeckoTerminal serves `new_pools` from its CDN for 60 s (s-maxage=60), and its
+ * free tier allows ~30 requests a minute per client across every chain. Polling
+ * faster only spends that budget (and earns 429s) on identical responses.
+ */
+const GT_NEW_POOLS_INTERVAL_MS = 55_000;
+
 const geckoNewPools: DiscoverySource = {
   name: 'geckoterminal',
+  minIntervalMs: GT_NEW_POOLS_INTERVAL_MS,
   fetch: (config) => gtNewPools(config.geckoNetwork, config.id),
 };
 
@@ -64,6 +74,8 @@ class GenericChainAdapter implements ChainAdapter {
   /** order sets refresh priority when more tokens are discovered than get refreshed */
   private readonly sources: DiscoverySource[];
   private readonly maxAgeMs: number;
+  /** when each throttled discovery source was last attempted */
+  private readonly lastPolled = new Map<string, number>();
 
   constructor(
     readonly config: ChainConfig,
@@ -95,14 +107,31 @@ class GenericChainAdapter implements ChainAdapter {
     return dsTokens(this.config.dexscreenerChainId, this.config.id, addresses);
   }
 
-  /** Null when GeckoTerminal does not know the token; throws on provider failure. */
-  enrich(address: string): Promise<TokenEnrichment | null> {
-    return gtTokenInfo(this.config.geckoNetwork, address.trim());
+  /**
+   * GeckoTerminal token info plus the unique-wallet counts of the token's main
+   * pool (both cached by the source module). Null when GeckoTerminal does not know
+   * the token; throws when token info failed. A failed pool lookup only drops the wallets.
+   */
+  async enrich(address: string): Promise<TokenEnrichment | null> {
+    const addr = address.trim();
+    const { geckoNetwork, id } = this.config;
+    const [info, pool] = await Promise.allSettled([gtTokenInfo(geckoNetwork, addr), gtTokenTopPool(geckoNetwork, id, addr)]);
+    if (info.status === 'rejected') throw info.reason;
+    if (!info.value) return null;
+    if (pool.status === 'rejected') this.log.debug('enrich pool lookup failed', { address: addr, error: errMsg(pool.reason) });
+    const top = pool.status === 'fulfilled' ? pool.value : null;
+    return top
+      ? { ...info.value, wallets: { pairAddress: top.pairAddress, txns: top.txns }, poolCreatedAt: top.createdAt }
+      : info.value;
   }
 
   /**
-   * DexScreener's most liquid pair, overlaid on GeckoTerminal's top pool (which
-   * adds unique buyers/sellers and m15/m30) and token info (holders, security).
+   * The token's main pool from DexScreener and GeckoTerminal, plus GeckoTerminal
+   * token info (holders, security). When both providers describe the same pool,
+   * DexScreener's figures overlay GeckoTerminal's (which add unique buyers/sellers
+   * and m15/m30). When they picked different pools — DexScreener's token endpoint
+   * returns a single pair, not always the deepest — the more liquid pool is used
+   * and the other contributes only token-level facts, never its per-pool windows.
    * Null when neither market source knows the token; throws only if every source failed.
    */
   async lookup(address: string): Promise<TokenSnapshot | null> {
@@ -121,29 +150,56 @@ class GenericChainAdapter implements ChainAdapter {
     const key = this.normalizeAddress(addr);
     const dsSnap = ds.status === 'fulfilled' ? (ds.value.find((s) => this.normalizeAddress(s.address) === key) ?? null) : null;
     const gtSnap = pool.status === 'fulfilled' ? pool.value : null;
-    const market = gtSnap && dsSnap ? mergeSnapshots(gtSnap, dsSnap) : (dsSnap ?? gtSnap);
+    const market = gtSnap && dsSnap ? this.combineMarkets(gtSnap, dsSnap) : (dsSnap ?? gtSnap);
     if (!market) return null;
     return info.status === 'fulfilled' && info.value ? mergeSnapshots(market, info.value) : market;
   }
 
-  /** Run every discovery source; merge by normalized address in source order. */
+  private combineMarkets(gt: TokenSnapshot, ds: TokenSnapshot): TokenSnapshot {
+    const pairKey = (s: TokenSnapshot) => (s.pairAddress ? this.normalizeAddress(s.pairAddress) : null);
+    if (pairKey(gt) === null || pairKey(gt) === pairKey(ds)) return mergeSnapshots(gt, ds);
+    const [main, other] = (ds.liquidityUsd ?? -1) >= (gt.liquidityUsd ?? -1) ? [ds, gt] : [gt, ds];
+    return mergeSnapshots(main, {
+      symbol: main.symbol === '' ? other.symbol : undefined,
+      name: main.name === '' ? other.name : undefined,
+      marketCapUsd: main.marketCapUsd ?? other.marketCapUsd,
+      fdvUsd: main.fdvUsd ?? other.fdvUsd,
+      createdAt: other.createdAt,
+      imageUrl: main.imageUrl ?? other.imageUrl,
+      links: other.links,
+      sources: other.sources,
+      boosted: other.boosted,
+    });
+  }
+
+  /** Run every discovery source that is due; merge by normalized address in source order. */
   private async collect(now: number): Promise<Map<string, TokenSnapshot>> {
-    const results = await Promise.allSettled(this.sources.map((s) => s.fetch(this.config, now)));
+    const due = this.sources.filter((s) => this.isDue(s, now));
+    const results = await Promise.allSettled(due.map((s) => s.fetch(this.config, now)));
     const found = new Map<string, TokenSnapshot>();
     const errors: string[] = [];
     results.forEach((result, i) => {
-      const name = this.sources[i]?.name ?? `source ${i}`;
+      const name = due[i]?.name ?? `source ${i}`;
       if (result.status === 'rejected') {
         errors.push(`${name}: ${errMsg(result.reason)}`);
         return;
       }
       for (const snap of result.value) this.add(found, snap);
     });
-    if (errors.length === this.sources.length) {
+    if (due.length > 0 && errors.length === due.length) {
       throw new Error(`all discovery sources failed (${errors.join('; ')})`);
     }
     if (errors.length > 0) this.log.warn('discovery source failed', { errors });
     return found;
+  }
+
+  /** Throttled sources count an attempt whether or not it succeeds, so a failing provider is not hammered. */
+  private isDue(source: DiscoverySource, now: number): boolean {
+    if (!source.minIntervalMs) return true;
+    const last = this.lastPolled.get(source.name);
+    if (last !== undefined && now - last < source.minIntervalMs) return false;
+    this.lastPolled.set(source.name, now);
+    return true;
   }
 
   private add(found: Map<string, TokenSnapshot>, snap: TokenSnapshot): void {

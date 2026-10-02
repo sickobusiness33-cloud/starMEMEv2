@@ -16,8 +16,8 @@ export const SOURCE_POLICY =
   'general academic knowledge and cites the original peer-reviewed paper (DOI link, or the public working-paper page when ' +
   'the publisher blocks automated checks). A public Quantpedia strategy page is linked only where we verified, with a single ' +
   'lightweight request, that the URL resolves; otherwise the paper link stands alone. Reference links were last checked on ' +
-  '1 October 2026. A licensed Quantpedia Pro/API feed can be plugged in through the QuantSource interface ' +
-  '({ name, load(): Promise<QuantMethodology[]> }) without changing how matching works.';
+  '1 October 2026. A licensed Quantpedia Pro feed can be connected as an additional methodology source without ' +
+  'changing how matching works.';
 
 /* ─────────── references (each URL verified to end in HTTP 200 on 2026-10-01) ─────────── */
 

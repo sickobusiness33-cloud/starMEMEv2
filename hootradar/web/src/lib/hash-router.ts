@@ -79,7 +79,10 @@ export function navigate(tab: Tab, params?: Record<string, string | null | undef
     history.replaceState(null, '', hash);
     update();
   } else {
-    location.hash = hash; // fires hashchange → update()
+    location.hash = hash;
+    // Sync now rather than on the (async) hashchange: a keyboard or tap switch renders in the
+    // same frame as the input. The hashchange that follows sees an unchanged key and no-ops.
+    update();
   }
 }
 

@@ -140,7 +140,7 @@ export async function createServer(deps: ServerDeps): Promise<FastifyInstance> {
     stream.onClose(() => streams.delete(stream));
     return stream;
   };
-  const leaders = cached(LEADERS_TTL_MS, (now) => buildLeaders(deps.db, now));
+  const leaders = cached(LEADERS_TTL_MS, (now) => buildLeaders(deps.db, deps.config, now));
   const ctx: Ctx = { ...deps, stats, leaders, live, openStream };
 
   installHooks(app);
@@ -486,12 +486,16 @@ function registerQuantRoutes(app: FastifyInstance, ctx: Ctx): void {
 }
 
 /**
- * Leaders over the latest observation of every token seen in the last 2 h.
+ * Leaders over the latest observation of every token seen in the last 2 h that
+ * clears the scanner's market minimums: a pool with $11 of liquidity "resembles"
+ * every momentum methodology on a single trade, which says nothing.
  * Metrics are history-free (growth features stay null), which keeps this cheap.
  */
-function buildLeaders(db: Db, now: number): QuantLeadersResponse {
-  const snapshots = db.latestSnapshots(now - LEADERS_WINDOW_MS, LEADERS_UNIVERSE);
-  const regime = computeRegime(snapshots, now);
+function buildLeaders(db: Db, config: AppConfig, now: number): QuantLeadersResponse {
+  const since = now - LEADERS_WINDOW_MS;
+  const regime = computeRegime(db.latestSnapshots(since, LEADERS_UNIVERSE), now);
+  const { minLiquidityUsd, minVolumeH1Usd } = config.scan;
+  const snapshots = db.latestSnapshots(since, LEADERS_UNIVERSE, { minLiquidityUsd, minVolumeH1Usd });
   const entries = snapshots.map((snapshot) => ({
     snapshot,
     metrics: deriveMetrics(snapshot, [], now),
@@ -527,7 +531,10 @@ async function registerWeb(app: FastifyInstance, webDist: string | null): Promis
   const assetsDir = join(root, 'assets') + sep;
   await app.register(fastifyStatic, {
     root,
-    wildcard: false,
+    // Look files up per request: a web rebuild while the server runs must not leave the
+    // fresh index.html pointing at hashed assets the server never learned about (blank app).
+    // Missing files fall through to the not-found handler (SPA fallback / JSON 404).
+    wildcard: true,
     cacheControl: false,
     setHeaders: (reply, path) => {
       reply.header('cache-control', path.startsWith(assetsDir) ? ASSET_CACHE_CONTROL : 'no-cache');

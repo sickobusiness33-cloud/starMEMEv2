@@ -45,6 +45,11 @@ const RESEARCH_SYSTEM_PROMPT = `You are the research desk of HootRadar, a real-t
 - Finish with a short plain-text list (at most 8 lines) of the most relevant sources you found, with their publication dates when shown. No speculation and no price predictions.`;
 
 /** Recent public coverage of a token found through Claude's web search tool. [] without an API key or on failure. */
+/** Web research needs a configured Claude client; without one the provider is not run at all. */
+export function webResearchEnabled(): boolean {
+  return claudeSession() !== null;
+}
+
 export async function researchWeb(t: WebResearchTarget): Promise<IntelItem[]> {
   const session = claudeSession();
   if (!session) return [];

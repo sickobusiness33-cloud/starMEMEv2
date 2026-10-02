@@ -2,7 +2,7 @@ import { memo, useState } from 'react';
 import type { DetectionEvent } from '@shared/types';
 import { useStore } from '../store';
 import { navigate } from '../lib/hash-router';
-import { fmtClock } from '../lib/format';
+import { fmtClock, fmtTicker } from '../lib/format';
 import { useChainMeta } from './bits';
 
 const MAX_ROWS = 60;
@@ -70,7 +70,7 @@ const TapeRow = memo(function TapeRow({ event: e, enteredAt }: { event: Detectio
           {fmtClock(e.ts)}
         </time>
         <span className="dot" style={{ ['--dot' as string]: chain.color }} aria-hidden="true" />
-        <span className="tape__sym">${e.symbol}</span>
+        <span className="tape__sym">{fmtTicker(e.symbol)}</span>
         <span className="tape__sev">
           {e.severity} <span className="tape__score">{e.score}</span>
         </span>

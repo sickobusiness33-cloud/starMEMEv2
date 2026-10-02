@@ -92,7 +92,8 @@ describe('deriveMetrics on real provider data', () => {
     expect(m.largeWalletFlow).toBe('normal');
     expect(m.volumeToLiquidity).toBeCloseTo(92073.6481958185 / 7360.8047, 6); // young → h1 volume
     expect(m.illiquidity).toBeCloseTo(163.216 / (92073.6481958185 / 1e6), 3);
-    expect(m.momentumScore).toBeGreaterThan(80);
+    // h1 and h6 (+163%) only measure the 15 minutes since launch, so momentum rests on m5 (+4.007%) alone
+    expect(m.momentumScore).toBeCloseTo(100 * Math.tanh(4.007 / 10), 6);
     // no holder data from this provider and no history → unknown, not zero
     expect(m.holdersGrowthPct).toBeNull();
     expect(m.holdersGrowthWindowMin).toBeNull();
@@ -239,6 +240,16 @@ describe('deriveMetrics edge cases', () => {
 
     const flat = deriveMetrics(snap({ priceChangePct: { m5: 0, h1: 0, h6: 0 } }), [], T0).momentumScore;
     expect(flat).toBe(0);
+  });
+
+  it('momentum ignores windows longer than the token has existed (they only measure the launch)', () => {
+    const changes = { m5: 5, h1: 300, h6: 300 };
+    const at = (ageMin: number) =>
+      deriveMetrics(snap({ createdAt: T0 - ageMin * MIN, priceChangePct: changes }), [], T0).momentumScore;
+    expect(at(3)).toBeNull(); // even m5 reaches back to the launch
+    expect(at(20)).toBeCloseTo(100 * Math.tanh(0.5), 6); // m5 only
+    expect(at(90)).toBeCloseTo((100 * (0.2 * Math.tanh(0.5) + 0.5 * Math.tanh(12))) / 0.7, 6); // m5 + h1
+    expect(at(400)).toBeCloseTo(100 * (0.2 * Math.tanh(0.5) + 0.5 * Math.tanh(12) + 0.3 * Math.tanh(6)), 6);
   });
 
   it('volatility proxy is the dispersion of hour-scaled changes and needs two windows', () => {

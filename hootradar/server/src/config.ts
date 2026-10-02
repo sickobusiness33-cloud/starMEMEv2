@@ -35,13 +35,23 @@ const EnvSchema = z.object({
   SCAN_INTERVAL_MS: num(30000),
   REFRESH_INTERVAL_MS: num(20000),
   MAX_TOKEN_AGE_HOURS: num(24),
-  MIN_LIQUIDITY_USD: num(5000),
-  MIN_VOLUME_H1_USD: num(5000),
-  THRESHOLD_WATCH: num(45),
-  THRESHOLD_ALERT: num(62),
-  THRESHOLD_BREAKING: num(78),
+  /*
+   * Detection defaults, calibrated by replaying live snapshots from all four chains
+   * (Oct 2026) through the scorer. Tokens under $10K of liquidity or $10K of 1 h
+   * volume are dust: one wallet moves them, so they never reach the feed. Among the
+   * rest, the per-token score maximum has a median under 10 and a top decile around
+   * 20-30; only standout launches ($300K+ traded in minutes, hundreds of unique
+   * buyers) and multi-signal surges of older tokens clear 42. That puts roughly
+   * 10-15 ALERT/BREAKING articles an hour into the feed, about twice as many WATCH
+   * events, and keeps BREAKING (60: several signal families saturated at once) rare.
+   */
+  MIN_LIQUIDITY_USD: num(10000),
+  MIN_VOLUME_H1_USD: num(10000),
+  THRESHOLD_WATCH: num(22),
+  THRESHOLD_ALERT: num(42),
+  THRESHOLD_BREAKING: num(60),
   ARTICLE_COOLDOWN_MIN: num(30),
-  MAX_ARTICLES_PER_HOUR: num(40),
+  MAX_ARTICLES_PER_HOUR: num(30),
   AUTOPUBLISH: bool,
 
   DISCORD_WEBHOOK_URL: optStr,

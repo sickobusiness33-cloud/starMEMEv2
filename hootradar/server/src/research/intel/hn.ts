@@ -112,7 +112,9 @@ function storyItem(hit: Record<string, unknown>, id: string, terms?: Pick<IntelT
 function commentItem(hit: Record<string, unknown>, id: string, terms?: Pick<IntelTerms, 'address' | 'name' | 'symbol'>): HitContent | null {
   const text = htmlToText(toStr(hit.comment_text));
   if (!text) return null;
-  const story = htmlToText(toStr(hit.story_title));
+  const storyTitle = htmlToText(toStr(hit.story_title));
+  // moderated stories keep a placeholder title ("[dead]", "[flagged]") that says nothing to a reader
+  const story = /^\[(dead|flagged|deleted)\]$/i.test(storyTitle.trim()) ? '' : storyTitle;
   return {
     title: clip(story ? `Re: ${story}` : 'Hacker News comment', TITLE_MAX),
     url: HN_ITEM + id,

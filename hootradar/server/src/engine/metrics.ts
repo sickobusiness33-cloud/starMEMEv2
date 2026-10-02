@@ -19,12 +19,15 @@ const BUY_SHARE_WINDOWS: TimeWindow[] = ['m5', 'h1', 'h24'];
 /**
  * Momentum blends price change across horizons. Each change is squashed with
  * tanh(pct / scale) so one parabolic window cannot dominate; scales grow with
- * the horizon because longer windows naturally move more.
+ * the horizon because longer windows naturally move more. A window longer than
+ * the token's life only measures the return since its (arbitrary) launch price —
+ * a 20-minute-old token is "+300% in 1 h" by construction — so such windows are
+ * left out and the remaining ones renormalized.
  */
-const MOMENTUM_COMPONENTS: Array<{ window: TimeWindow; weight: number; scale: number }> = [
-  { window: 'm5', weight: 0.2, scale: 10 },
-  { window: 'h1', weight: 0.5, scale: 25 },
-  { window: 'h6', weight: 0.3, scale: 50 },
+const MOMENTUM_COMPONENTS: Array<{ window: TimeWindow; minutes: number; weight: number; scale: number }> = [
+  { window: 'm5', minutes: 5, weight: 0.2, scale: 10 },
+  { window: 'h1', minutes: 60, weight: 0.5, scale: 25 },
+  { window: 'h6', minutes: 360, weight: 0.3, scale: 50 },
 ];
 
 /** Volume measured over h1 is used instead of h24 while the token is younger than this. */
@@ -60,7 +63,7 @@ export function deriveMetrics(s: TokenSnapshot, history: TokenSnapshot[], now: n
     holdersGrowthPct: holders?.pct ?? null,
     holdersGrowthWindowMin: holders?.minutes ?? null,
     liquidityChangePct: liquidity?.pct ?? null,
-    momentumScore: momentumScore(s),
+    momentumScore: momentumScore(s, ageMinutes),
     volatilityProxy: volatilityProxy(s),
     avgTradeUsd,
     largeWalletFlow: largeWalletFlow(avgTradeUsd, h1Txns, s.liquidityUsd),
@@ -145,12 +148,12 @@ function growthFromHistory(
   return { pct: ((value - ref.value) / ref.value) * 100, minutes: (current.ts - ref.ts) / MINUTE_MS };
 }
 
-function momentumScore(s: TokenSnapshot): number | null {
+function momentumScore(s: TokenSnapshot, ageMinutes: number | null): number | null {
   let sum = 0;
   let weights = 0;
   for (const c of MOMENTUM_COMPONENTS) {
     const pct = s.priceChangePct[c.window];
-    if (pct == null) continue;
+    if (pct == null || (ageMinutes != null && ageMinutes < c.minutes)) continue;
     sum += c.weight * Math.tanh(pct / c.scale);
     weights += c.weight;
   }
@@ -191,9 +194,16 @@ function largeWalletFlow(
 
 function volumeToLiquidity(s: TokenSnapshot, ageMinutes: number | null): number | null {
   if (s.liquidityUsd == null || s.liquidityUsd <= 0) return null;
-  const young = ageMinutes != null && ageMinutes < YOUNG_TOKEN_MINUTES;
-  const volume = young ? (s.volumeUsd.h1 ?? s.volumeUsd.h24 ?? null) : (s.volumeUsd.h24 ?? null);
+  const window = volumeToLiquidityWindow(s, ageMinutes);
+  const volume = window ? (s.volumeUsd[window] ?? null) : null;
   return volume != null ? volume / s.liquidityUsd : null;
+}
+
+/** Which volume window `volumeToLiquidity` uses: h1 (else h24) under 2 h of age, h24 otherwise. */
+export function volumeToLiquidityWindow(s: TokenSnapshot, ageMinutes: number | null): 'h1' | 'h24' | null {
+  const young = ageMinutes != null && ageMinutes < YOUNG_TOKEN_MINUTES;
+  if (young && s.volumeUsd.h1 != null) return 'h1';
+  return s.volumeUsd.h24 != null ? 'h24' : null;
 }
 
 function illiquidity(s: TokenSnapshot): number | null {

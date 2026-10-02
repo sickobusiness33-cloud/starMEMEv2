@@ -432,6 +432,8 @@ describe('quant endpoints', () => {
   });
 
   it('computes leaders from recent snapshots, links articles and caches for 15 s', async () => {
+    // the fixture pools are a few minutes old: only some clear $5K liquidity and $2K of 1h volume
+    await rebuild({ config: loadConfig({ CHAINS: 'solana,base', MIN_LIQUIDITY_USD: '5000', MIN_VOLUME_H1_USD: '2000' }) });
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(T0 + 60 * SEC);
     const tokens = [...SOLANA_TOKENS, ...BASE_TOKENS];
@@ -455,6 +457,11 @@ describe('quant endpoints', () => {
       expect(t.score).toBeGreaterThan(0);
       expect(t.articleId).toBe(articleIds.get(`${t.chain}:${t.address}`));
     }
+    // dust never leads a methodology, however well its one trade "fits"
+    const eligible = new Set(
+      tokens.filter((s) => (s.liquidityUsd ?? 0) >= 5000 && (s.volumeUsd.h1 ?? 0) >= 2000).map((s) => `${s.chain}:${s.address}`),
+    );
+    for (const t of leaderTokens) expect(eligible.has(`${t.chain}:${t.address}`)).toBe(true);
 
     vi.setSystemTime(T0 + 70 * SEC);
     const cached = (await h.app.inject({ method: 'GET', url: '/api/quant/leaders' })).json();
@@ -562,6 +569,14 @@ describe('static web app', () => {
     const res = await h.app.inject({ method: 'GET', url: '/assets/index-abc123.js' });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toMatch(/javascript/);
+    expect(res.headers['cache-control']).toBe('public, max-age=31536000, immutable');
+  });
+
+  it('serves assets written after startup (web rebuilt while the server runs)', async () => {
+    writeFileSync(join(dir, 'assets', 'index-def456.js'), 'console.log("rebuilt");');
+    const res = await h.app.inject({ method: 'GET', url: '/assets/index-def456.js' });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('rebuilt');
     expect(res.headers['cache-control']).toBe('public, max-age=31536000, immutable');
   });
 

@@ -194,6 +194,106 @@ describe('rate limiters', () => {
     expect(startedAt[2]! - startedAt[1]!).toBeGreaterThanOrEqual(1000);
   });
 
+  it('pauses the whole limiter after a 429 instead of letting queued requests hit the provider', async () => {
+    registerLimiter('test-429', { perMinute: 600 });
+    const startedAt: Array<[string, number]> = [];
+    stubFetch(async (url) => {
+      const path = new URL(url).pathname;
+      startedAt.push([path, Date.now()]);
+      return path === '/first' && startedAt.length === 1 ? jsonResponse({}, 429) : jsonResponse({ path });
+    });
+    const t0 = Date.now();
+    const first = fetchJson('https://example.test/first', { limiter: 'test-429' });
+    await vi.advanceTimersByTimeAsync(0);
+    const second = fetchJson('https://example.test/second', { limiter: 'test-429', retries: 0 });
+    await vi.advanceTimersByTimeAsync(19_000);
+    expect(startedAt.map(([p]) => p)).toEqual(['/first']); // no retry and no queued request inside the pause
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(Promise.all([first, second])).resolves.toEqual([{ path: '/first' }, { path: '/second' }]);
+    expect(startedAt.slice(1).every(([, at]) => at - t0 >= 20_000)).toBe(true);
+  });
+
+  it('never pauses for less than 15 s, even when the provider says retry-after: 0', async () => {
+    registerLimiter('test-429c', { perMinute: 600 });
+    const calls: number[] = [];
+    stubFetch(async () => {
+      calls.push(Date.now());
+      return calls.length === 1 ? jsonResponse({}, 429, { 'retry-after': '0' }) : jsonResponse({});
+    });
+    const t0 = Date.now();
+    const p = fetchJson('https://example.test/zero', { limiter: 'test-429c' });
+    await vi.advanceTimersByTimeAsync(14_000);
+    expect(calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(p).resolves.toEqual({});
+    expect(calls[1]! - t0).toBeGreaterThanOrEqual(15_000);
+  });
+
+  it('doubles the pause on consecutive 429s and resets after a success', async () => {
+    registerLimiter('test-429d', { perMinute: 600 });
+    let status = 429;
+    const calls: number[] = [];
+    stubFetch(async () => {
+      calls.push(Date.now());
+      return jsonResponse({}, status);
+    });
+    const t0 = Date.now();
+    const first = fetchJson('https://example.test/a', { limiter: 'test-429d', retries: 0 }).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await first).toBeInstanceOf(HttpError);
+    const second = fetchJson('https://example.test/b', { limiter: 'test-429d', retries: 0 }).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(20_000); // first pause: 20 s
+    expect(await second).toBeInstanceOf(HttpError);
+    expect(calls[1]! - t0).toBeGreaterThanOrEqual(20_000);
+    status = 200;
+    const third = fetchJson('https://example.test/c', { limiter: 'test-429d', retries: 0 });
+    await vi.advanceTimersByTimeAsync(39_000);
+    expect(calls).toHaveLength(2); // second pause: 40 s
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(third).resolves.toEqual({});
+    status = 429;
+    const fourth = fetchJson('https://example.test/d', { limiter: 'test-429d', retries: 0 }).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(0);
+    await fourth;
+    const tFourth = calls.at(-1)!;
+    status = 200;
+    const fifth = fetchJson('https://example.test/e', { limiter: 'test-429d', retries: 0 });
+    await vi.advanceTimersByTimeAsync(21_000); // the success reset the streak: back to 20 s
+    await expect(fifth).resolves.toEqual({});
+    expect(calls.at(-1)! - tFourth).toBeGreaterThanOrEqual(20_000);
+    expect(calls.at(-1)! - tFourth).toBeLessThan(21_000);
+  });
+
+  it('fails fast while paused when the caller cannot wait', async () => {
+    registerLimiter('test-429e', { perMinute: 600 });
+    const fetchMock = stubFetch(async () => (fetchMock.mock.calls.length === 1 ? jsonResponse({}, 429) : jsonResponse({})));
+    await expect(fetchJson('https://example.test/x', { limiter: 'test-429e', retries: 0 })).rejects.toBeInstanceOf(HttpError);
+    const err = await fetchJson('https://example.test/y', { limiter: 'test-429e', retries: 0, maxPauseWaitMs: 0 }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(HttpError);
+    expect((err as HttpError).status).toBe(429);
+    expect((err as HttpError).message).toMatch(/^rate limited by example\.test, retrying in 20s$/);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // never reached the provider
+  });
+
+  it('honours a retry-after longer than the retry cap for the limiter pause', async () => {
+    registerLimiter('test-429b', { perMinute: 600 });
+    const calls: number[] = [];
+    stubFetch(async () => {
+      calls.push(Date.now());
+      return calls.length === 1 ? jsonResponse({}, 429, { 'retry-after': '45' }) : jsonResponse({});
+    });
+    const t0 = Date.now();
+    const p = fetchJson('https://example.test/later', { limiter: 'test-429b' });
+    await vi.advanceTimersByTimeAsync(44_000);
+    expect(calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(p).resolves.toEqual({});
+    expect(calls[1]! - t0).toBeGreaterThanOrEqual(45_000);
+  });
+
   it('rejects an unknown limiter key', async () => {
     stubFetch(async () => jsonResponse({}));
     await expect(fetchJson('https://example.test/u', { limiter: 'nope' })).rejects.toThrow('unknown rate limiter');

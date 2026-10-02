@@ -15,5 +15,6 @@ export default defineConfig({
     fs: { allow: ['..'] },
     proxy: { '/api': { target: apiTarget, changeOrigin: true } },
   },
-  build: { outDir: 'dist', sourcemap: false, target: 'es2022' },
+  // assetsInlineLimit 0: fonts stay files — the server's CSP is font-src 'self' (no data: URIs)
+  build: { outDir: 'dist', sourcemap: false, target: 'es2022', assetsInlineLimit: 0 },
 });

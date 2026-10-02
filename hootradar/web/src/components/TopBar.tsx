@@ -27,13 +27,16 @@ export function TopBar() {
 type PillState = 'active' | 'booting' | 'degraded' | 'offline';
 
 function pillModel(stats: Stats | null, conn: ConnState, retryAt: number | null, now: number) {
-  if (conn === 'offline') return { state: 'offline' as PillState, text: 'OFFLINE', sub: 'NO NETWORK', title: 'Your device is offline.' };
+  if (conn === 'offline') {
+    return { state: 'offline' as PillState, text: 'OFFLINE', short: 'OFFLINE', sub: 'NO NETWORK', title: 'Your device is offline.' };
+  }
   if (!stats || conn !== 'open') {
     const retry = retryAt && retryAt > now ? ` · RETRY ${shortSince(now, retryAt)}` : '';
     const text = stats ? 'RECONNECTING' : 'CONNECTING';
     return {
       state: 'offline' as PillState,
       text,
+      short: stats ? 'RECONNECTING' : 'CONNECTING',
       sub: `STREAM${retry}`,
       title: stats ? 'Live stream interrupted — numbers below are the last values received.' : 'Connecting to the engine…',
     };
@@ -41,11 +44,14 @@ function pillModel(stats: Stats | null, conn: ConnState, retryAt: number | null,
   const { engine } = stats;
   const sub = engine.ai === 'claude' ? `CLAUDE · ${engine.model ?? 'model unknown'}` : 'RULES ENGINE';
   const aiNote = engine.aiError ? ` Last AI error: ${engine.aiError}` : '';
-  if (engine.status === 'starting') return { state: 'booting' as PillState, text: 'BOOTING', sub, title: `Engine starting.${aiNote}` };
+  if (engine.status === 'starting') {
+    return { state: 'booting' as PillState, text: 'BOOTING', short: 'BOOTING', sub, title: `Engine starting.${aiNote}` };
+  }
   if (engine.status === 'degraded') {
     return {
       state: 'degraded' as PillState,
       text: engine.ai === 'claude' ? 'AI ENGINE DEGRADED' : 'ENGINE DEGRADED · RULES',
+      short: engine.ai === 'claude' ? 'AI DEGRADED' : 'RULES DEGRADED',
       sub,
       title: `Engine degraded.${aiNote}`,
     };
@@ -53,6 +59,7 @@ function pillModel(stats: Stats | null, conn: ConnState, retryAt: number | null,
   return {
     state: 'active' as PillState,
     text: engine.ai === 'claude' ? 'AI ENGINE ACTIVE' : 'ENGINE ACTIVE · RULES',
+    short: engine.ai === 'claude' ? 'AI ACTIVE' : 'RULES ACTIVE',
     sub,
     title: engine.ai === 'claude' ? `News written by Claude (${engine.model ?? 'model unknown'}).${aiNote}` : 'News written by the deterministic rules engine (no AI key configured).',
   };
@@ -75,7 +82,12 @@ const EnginePillView = memo(function EnginePillView({ model }: { model: ReturnTy
   return (
     <div className="engine" data-state={model.state} title={model.title}>
       <span className="engine__dot" aria-hidden="true" />
-      <span className="engine__text">{model.text}</span>
+      <span className="engine__text">
+        <span className="engine__full">{model.text}</span>
+        <span className="engine__short" aria-hidden="true">
+          {model.short}
+        </span>
+      </span>
       <span className="engine__sub">{model.sub}</span>
     </div>
   );
@@ -87,19 +99,54 @@ function StatRow() {
   const stats = useStore((s) => s.stats);
   return (
     <dl className="stats">
-      <Stat value={stats?.chainsScanning ?? null} of={stats?.chainsTotal ?? null} label="Chains scanning" title="Chains whose last scan succeeded in the last 2 minutes" />
-      <Stat value={stats?.tokensAnalyzed24h ?? null} label="Tokens analyzed" title="24H · distinct tokens analyzed in the last 24 hours" />
-      <Stat value={stats?.anomalies24h ?? null} label="Anomalies detected" title="24H · detection events of any severity in the last 24 hours" />
-      <Stat value={stats?.breaking24h ?? null} label="Breaking events" title="24H · BREAKING events in the last 24 hours" breaking />
+      <Stat
+        value={stats?.chainsScanning ?? null}
+        of={stats?.chainsTotal ?? null}
+        label="Chains scanning"
+        short="Chains"
+        title="Chains whose last scan succeeded in the last 2 minutes"
+      />
+      <Stat
+        value={stats?.tokensAnalyzed24h ?? null}
+        label="Tokens analyzed"
+        short="Tokens 24H"
+        title="24H · distinct tokens analyzed in the last 24 hours"
+      />
+      <Stat
+        value={stats?.anomalies24h ?? null}
+        label="Anomalies detected"
+        short="Anomalies"
+        title="24H · detection events of any severity in the last 24 hours"
+      />
+      <Stat
+        value={stats?.breaking24h ?? null}
+        label="Breaking events"
+        short="Breaking"
+        title="24H · BREAKING events in the last 24 hours"
+        breaking
+      />
     </dl>
   );
 }
 
-const Stat = memo(function Stat(props: { value: number | null; of?: number | null; label: string; title: string; breaking?: boolean }) {
-  const { value, of, label, title, breaking } = props;
+const Stat = memo(function Stat(props: {
+  value: number | null;
+  of?: number | null;
+  label: string;
+  /** narrow-layout label; the full label stays available to screen readers */
+  short: string;
+  title: string;
+  breaking?: boolean;
+}) {
+  const { value, of, label, short, title, breaking } = props;
   return (
     <div className="stat" title={title} data-breaking={breaking && value ? '' : undefined}>
-      <dt className="stat__label">{label}</dt>
+      <dt className="stat__label">
+        <span className="stat__full">{label}</span>
+        <span className="stat__short" aria-hidden="true">
+          {short}
+        </span>
+      </dt>
       <dd className="stat__value">
         {value === null ? <span className="muted">—</span> : <NumberFlow value={value} locales="en-US" />}
         {of != null && value !== null && <span className="stat__of">/{of}</span>}

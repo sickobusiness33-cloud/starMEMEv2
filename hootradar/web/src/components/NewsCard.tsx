@@ -2,7 +2,7 @@ import { memo, useEffect, useState, type CSSProperties, type KeyboardEvent } fro
 import type { NewsArticle } from '@shared/types';
 import { QUANT_DISCLAIMER } from '@shared/types';
 import { isEntering, useStore, type EnterInfo } from '../store';
-import { fmtNum, fmtPct, fmtUsd, fmtWindow } from '../lib/format';
+import { fmtNum, fmtPct, fmtSplit, fmtTicker, fmtUsd, fmtWindow } from '../lib/format';
 import { BuySellBar, EngineBadge, QuantMeter, SeverityTag, TimeAgo, useChainMeta } from './bits';
 import { ArticleDetail } from './ArticleDetail';
 
@@ -77,7 +77,7 @@ export const NewsCard = memo(function NewsCard({ article: a, enter }: Props) {
           <span className="card__id">
             <SeverityTag severity={a.severity} />
             {a.updateOf && <span className="tag tag--ghost">Update</span>}
-            <span className="card__ticker">${a.symbol}</span>
+            <span className="card__ticker">{fmtTicker(a.symbol)}</span>
             <span className="card__name">{a.name}</span>
           </span>
           <span className="card__meta">
@@ -94,9 +94,7 @@ export const NewsCard = memo(function NewsCard({ article: a, enter }: Props) {
           <Metric label="TX/MIN" value={fmtNum(m.txPerMin)} />
           <span className="metric metric--bs">
             <span className="metric__label">BUY/SELL</span>
-            <span className="metric__value">
-              {m.buyPct === null || m.sellPct === null ? '—' : `${Math.round(m.buyPct)}/${Math.round(m.sellPct)}`}
-            </span>
+            <span className="metric__value">{fmtSplit(m.buyPct, m.sellPct) ?? '—'}</span>
             <BuySellBar buy={m.buyPct} sell={m.sellPct} />
           </span>
           {m.holdersGrowthPct !== null ? (

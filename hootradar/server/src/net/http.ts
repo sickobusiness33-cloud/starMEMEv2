@@ -12,6 +12,17 @@ const DEFAULT_RETRIES = 1;
 const BASE_BACKOFF_MS = 750;
 const MAX_BACKOFF_MS = 10_000;
 const CACHE_MAX_ENTRIES = 500;
+/**
+ * A 429 pauses the provider's whole limiter, not just the request that got it:
+ * rate limits are per client, so every queued request would be refused as well.
+ * Without a `retry-after` we wait long enough for a per-minute window to roll over.
+ * Some providers (GeckoTerminal) answer 429 with `retry-after: 0`-ish values while
+ * their window is still closed; honouring that literally produced a 429 every 2-3 s,
+ * so the pause never drops below 15 s.
+ */
+const RATE_LIMIT_PAUSE_DEFAULT_MS = 20_000;
+const RATE_LIMIT_PAUSE_MIN_MS = 15_000;
+const RATE_LIMIT_PAUSE_MAX_MS = 60_000;
 
 export class HttpError extends Error {
   /** HTTP status; 0 when no response arrived (network failure or timeout). */
@@ -39,6 +50,12 @@ export interface FetchOpts {
   limiter?: string;
   /** cache successful responses by URL for this long */
   cacheTtlMs?: number;
+  /**
+   * Fail fast (HttpError 429) instead of queueing when the limiter is paused after a
+   * 429 for longer than this. For callers with their own short deadline, e.g. a
+   * Radar intel provider, where waiting out the pause only ends in a timeout.
+   */
+  maxPauseWaitMs?: number;
 }
 
 /* ───────────────────────────── Rate limiters ───────────────────────────── */
@@ -63,6 +80,9 @@ class Limiter {
   private tokens: number;
   private refilledAt: number;
   private lastStartAt = Number.NEGATIVE_INFINITY;
+  private pausedUntil = 0;
+  /** consecutive 429 answers; each one doubles the next pause, a success resets it */
+  strikes = 0;
   private inFlight = 0;
   private readonly queue: Array<(release: Release) => void> = [];
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -86,6 +106,21 @@ class Limiter {
   dispose(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+  }
+
+  pausedUntilMs(): number {
+    return this.pausedUntil;
+  }
+
+  /** Holds every queued and future request until `until` (a later pause wins). */
+  pauseUntil(until: number): void {
+    if (until <= this.pausedUntil) return;
+    this.pausedUntil = until;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.drain();
   }
 
   private get serialized(): boolean {
@@ -123,7 +158,7 @@ class Limiter {
   private waitMs(now: number): number {
     const forToken = this.tokens >= 1 ? 0 : Math.ceil((1 - this.tokens) / this.refillPerMs);
     const forInterval = this.lastStartAt + this.minIntervalMs - now;
-    return Math.max(forToken, forInterval, 0);
+    return Math.max(forToken, forInterval, this.pausedUntil - now, 0);
   }
 
   private releaser(): Release {
@@ -152,11 +187,41 @@ registerLimiter('gdelt', { perMinute: 10, minIntervalMs: 5_500 });
 registerLimiter('hn', { perMinute: 60 });
 registerLimiter('biz', { perMinute: 30, minIntervalMs: 1_000 });
 
-function acquire(key: string | undefined): Promise<Release> {
+/**
+ * Pauses a provider's limiter after it answered 429; logs once per pause. Repeated
+ * 429s double the pause (20 s, 40 s, 60 s cap) so a provider that keeps refusing
+ * this client is asked less and less often.
+ */
+function backOffLimiter(key: string | undefined, url: string, retryAfterMs: number | null): void {
+  if (key === undefined) return;
+  const limiter = limiters.get(key);
+  if (!limiter) return;
+  limiter.strikes += 1;
+  const escalated = RATE_LIMIT_PAUSE_DEFAULT_MS * 2 ** Math.min(limiter.strikes - 1, 4);
+  const pauseMs = Math.min(Math.max(retryAfterMs ?? escalated, RATE_LIMIT_PAUSE_MIN_MS), RATE_LIMIT_PAUSE_MAX_MS);
+  const until = Date.now() + pauseMs;
+  if (until <= limiter.pausedUntilMs()) return;
+  limiter.pauseUntil(until);
+  log.warn('rate limited, pausing provider', { limiter: key, url: describeUrl(url), pauseMs });
+}
+
+function acquire(key: string | undefined, url: string, maxPauseWaitMs?: number): Promise<Release> {
   if (key === undefined) return Promise.resolve(() => {});
   const limiter = limiters.get(key);
   if (!limiter) return Promise.reject(new Error(`unknown rate limiter "${key}"`));
+  const pausedFor = limiter.pausedUntilMs() - Date.now();
+  if (maxPauseWaitMs !== undefined && pausedFor > maxPauseWaitMs) {
+    const seconds = Math.ceil(pausedFor / 1000);
+    return Promise.reject(
+      new HttpError(429, url, `rate limited by ${describeUrl(url).split('/')[0]}, retrying in ${seconds}s`, pausedFor),
+    );
+  }
   return limiter.acquire();
+}
+
+function clearStrikes(key: string | undefined): void {
+  const limiter = key === undefined ? undefined : limiters.get(key);
+  if (limiter) limiter.strikes = 0;
 }
 
 /* ───────────────────────────── TTL cache ───────────────────────────── */
@@ -253,7 +318,7 @@ async function fetchWithRetry<T>(url: string, opts: FetchOpts, parse: BodyParser
 }
 
 async function fetchOnce<T>(url: string, opts: FetchOpts, parse: BodyParser<T>, accept: string): Promise<T> {
-  const release = await acquire(opts.limiter);
+  const release = await acquire(opts.limiter, url, opts.maxPauseWaitMs);
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -265,8 +330,10 @@ async function fetchOnce<T>(url: string, opts: FetchOpts, parse: BodyParser<T>, 
     const body = await res.text();
     if (!res.ok) {
       const retryAfter = parseRetryAfter(res.headers.get('retry-after'), Date.now());
+      if (res.status === 429) backOffLimiter(opts.limiter, url, retryAfter);
       throw new HttpError(res.status, url, `HTTP ${res.status} from ${describeUrl(url)}`, retryAfter);
     }
+    clearStrikes(opts.limiter);
     return parse(body, url, res.status);
   } catch (e) {
     if (e instanceof HttpError) throw e;

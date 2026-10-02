@@ -18,7 +18,20 @@ export interface ChainConfig {
 }
 
 export type TokenEnrichment = Pick<TokenSnapshot, 'holders' | 'top10HolderPct' | 'security'> &
-  Partial<Pick<TokenSnapshot, 'imageUrl' | 'links'>>;
+  Partial<Pick<TokenSnapshot, 'imageUrl' | 'links'>> & {
+    /**
+     * Unique buyer/seller counts of the token's main pool (GeckoTerminal), which the
+     * batch market refresh (DexScreener) does not report. Only meaningful for the pool
+     * named here: callers must not apply them to a snapshot of another pool.
+     */
+    wallets?: { pairAddress: string | null; txns: TokenSnapshot['txns'] };
+    /**
+     * Creation time of the token's main pool (GeckoTerminal). A lower bound on the
+     * token's age: it fills a snapshot whose age is unknown (and an earlier date wins),
+     * so a weeks-old token found through a dateless listing cannot pass as a launch.
+     */
+    poolCreatedAt?: number | null;
+  };
 
 /**
  * One adapter per blockchain. Adding a chain = adding a ChainConfig (+ optional
@@ -33,7 +46,7 @@ export interface ChainAdapter {
   discover(): Promise<TokenSnapshot[]>;
   /** Batch market-data refresh for already-known tokens. Missing tokens are simply absent from the result. */
   refresh(addresses: string[]): Promise<TokenSnapshot[]>;
-  /** Holders, holder concentration and security flags. Rate-limited provider: call sparingly. */
+  /** Holders, holder concentration, security flags and pool wallet counts. Rate-limited provider: call sparingly. */
   enrich(address: string): Promise<TokenEnrichment | null>;
   /** Full lookup of one token by address (Radar). */
   lookup(address: string): Promise<TokenSnapshot | null>;

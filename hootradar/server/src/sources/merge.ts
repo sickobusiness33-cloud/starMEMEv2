@@ -52,7 +52,7 @@ export function emptySnapshot(chain: ChainId, address: string, ts: number): Toke
 export function mergeSnapshots(base: TokenSnapshot, extra: Partial<TokenSnapshot>): TokenSnapshot {
   return {
     chain: base.chain,
-    address: base.address,
+    address: preferChecksummed(base.address, extra.address),
     symbol: pickText(extra.symbol, base.symbol),
     name: pickText(extra.name, base.name),
     pairAddress: extra.pairAddress ?? base.pairAddress,
@@ -74,6 +74,16 @@ export function mergeSnapshots(base: TokenSnapshot, extra: Partial<TokenSnapshot
     sources: unique([...base.sources, ...(extra.sources ?? [])]),
     boosted: base.boosted || extra.boosted === true,
   };
+}
+
+/**
+ * Same EVM address, different casing: GeckoTerminal reports EVM addresses in
+ * lowercase, DexScreener in EIP-55 checksum casing. Keep the checksummed form.
+ */
+function preferChecksummed(address: string, other: string | undefined): string {
+  if (!other || !/^0x/i.test(address) || other === address) return address;
+  if (other.toLowerCase() !== address.toLowerCase()) return address;
+  return address === address.toLowerCase() ? other : address;
 }
 
 function pickText(preferred: string | undefined, fallback: string): string {

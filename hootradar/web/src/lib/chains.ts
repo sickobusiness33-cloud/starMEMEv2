@@ -67,3 +67,20 @@ export const STATUS_COLOR: Record<ChainStatus, string> = {
   down: 'var(--red)',
   idle: 'var(--text-3)',
 };
+
+const KNOWN_IDS = Object.keys(KNOWN);
+
+/** Chains the user can target (Radar select, deep links): the server's live list, else the known four. */
+export function useChainOptions(): ChainMeta[] {
+  const chains = useStore((s) => s.stats?.chains);
+  return useMemo(() => (chains && chains.length > 0 ? chains.map(metaFrom) : KNOWN_IDS.map(fallbackMeta)), [chains]);
+}
+
+/** A chain id from untrusted input (hash params, localStorage) that the server will accept, or null (= auto). */
+export function validChainId(raw: string | null | undefined): ChainId | null {
+  if (!raw) return null;
+  const id = raw.trim().toLowerCase();
+  const live = useStore.getState().stats?.chains;
+  const ids = live && live.length > 0 ? live.map((c) => c.id) : KNOWN_IDS;
+  return ids.includes(id) ? id : null;
+}

@@ -12,7 +12,11 @@ const MINUTE_MS = 60_000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
 const SCANNING_WINDOW_MS = 2 * MINUTE_MS;
 const DEGRADED_WINDOW_MS = 10 * MINUTE_MS;
-const TRACKED_PER_CHAIN = 150;
+/**
+ * Young tokens refreshed per chain and cycle (DexScreener batches of 30). Active
+ * tokens are refreshed first, so busy launchpad chains keep every tradeable token.
+ */
+const TRACKED_PER_CHAIN = 240;
 /** snapshots of one cycle processed in parallel; one slow AI write must not stall the chain */
 const PROCESS_CONCURRENCY = 4;
 const COUNTS_TTL_MS = 30_000;
@@ -202,11 +206,11 @@ export class Scanner {
   /** null = nothing to do (no tracked tokens to refresh). */
   private async fetch(c: ChainState, kind: CycleKind): Promise<TokenSnapshot[] | null> {
     if (kind === 'discover') return c.adapter.discover();
-    const addresses = this.d.db.trackedAddresses(
-      c.adapter.config.id,
-      this.d.config.scan.maxTokenAgeHours,
-      TRACKED_PER_CHAIN,
-    );
+    const { maxTokenAgeHours, minLiquidityUsd, minVolumeH1Usd } = this.d.config.scan;
+    const addresses = this.d.db.trackedAddresses(c.adapter.config.id, maxTokenAgeHours, TRACKED_PER_CHAIN, Date.now(), {
+      minLiquidityUsd,
+      minVolumeH1Usd,
+    });
     return addresses.length ? c.adapter.refresh(addresses) : null;
   }
 

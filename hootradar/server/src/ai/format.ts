@@ -76,10 +76,13 @@ export function fmtAge(minutes: number | null, lang: Lang): string {
   return lang === 'es' ? `hace ${span}` : `${span} ago`;
 }
 
-/** A length of time: "22 min", "3 h", "2 d". Rounds to the nearest unit. */
+/**
+ * A length of time: "21 min", "3 h", "2 d". Counts whole elapsed units, like
+ * fmtAge, so one article never calls the same age "hace 13 min" and "14 min".
+ */
 export function fmtDuration(minutes: number | null): string {
   if (!isNum(minutes) || minutes < 0) return DASH;
-  return fmtSpan(Math.max(1, minutes), Math.round);
+  return fmtSpan(Math.max(1, minutes), Math.floor);
 }
 
 function fmtSpan(minutes: number, round: (x: number) => number): string {

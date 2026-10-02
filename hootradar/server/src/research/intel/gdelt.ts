@@ -4,7 +4,8 @@
  * and throttling with plain text instead of JSON, so bodies are decoded defensively.
  */
 import type { IntelItem, IntelSourceType } from '../../../../shared/types.js';
-import { fetchText } from '../../net/http.js';
+import { errMsg } from '../../log.js';
+import { fetchText, HttpError } from '../../net/http.js';
 import { asArray, asRecord, toHttpUrl, toStr } from '../../sources/merge.js';
 import { classifyFreshness, parsePublishedDate } from '../freshness.js';
 import { cleanTerm, intelTerms, stableId, type IntelQuery, type IntelTerms, type MatchedOn } from './match.js';
@@ -20,10 +21,33 @@ const MIN_KEYWORD_CHARS = 3;
 /** Article must also talk about crypto: cuts "Bonk" the sound effect, "Cat" the pet. */
 const CONTEXT_KEYWORDS = ['crypto', 'cryptocurrency', 'token', 'memecoin', 'blockchain', 'defi'];
 
+/**
+ * GDELT answers an over-eager client slowly (10-15 s) with a 429 or 503. After
+ * such an answer it is left alone for a while, doubling from 1 to 10 minutes,
+ * so a Radar search does not spend its time budget on a request that will fail.
+ */
+const COOLDOWN_BASE_MS = 60_000;
+const COOLDOWN_MAX_MS = 10 * 60_000;
+const cooldown = { failures: 0, until: 0, lastError: '' };
+
+/** Test hook. */
+export function resetGdeltCooldown(): void {
+  Object.assign(cooldown, { failures: 0, until: 0, lastError: '' });
+}
+
+function isThrottled(e: unknown): boolean {
+  return e instanceof HttpError && (e.status === 0 || e.status === 429 || e.status >= 500);
+}
+
 export async function search(t: IntelQuery): Promise<IntelItem[]> {
   const terms = intelTerms(t);
   const query = buildGdeltQuery(terms);
   if (query === null) return [];
+  const now = Date.now();
+  if (now < cooldown.until) {
+    const seconds = Math.ceil((cooldown.until - now) / 1000);
+    throw new Error(`GDELT unavailable after "${cooldown.lastError}", next attempt in ${seconds}s`);
+  }
   const params = [
     `query=${encodeURIComponent(query)}`,
     'mode=artlist',
@@ -32,13 +56,26 @@ export async function search(t: IntelQuery): Promise<IntelItem[]> {
     `maxrecords=${MAX_RECORDS}`,
     'sort=datedesc',
   ];
-  const body = await fetchText(`${GDELT_API}?${params.join('&')}`, {
-    limiter: 'gdelt',
-    cacheTtlMs: CACHE_TTL_MS,
-    timeoutMs: REQUEST_TIMEOUT_MS,
-    // GDELT throttles per IP for several seconds: a quick retry only fails again and hides the 429
-    retries: 0,
-  });
+  let body: string;
+  try {
+    body = await fetchText(`${GDELT_API}?${params.join('&')}`, {
+      limiter: 'gdelt',
+      cacheTtlMs: CACHE_TTL_MS,
+      timeoutMs: REQUEST_TIMEOUT_MS,
+      // GDELT throttles per IP for several seconds: a quick retry only fails again and hides the 429
+      retries: 0,
+      // and while it is refusing us, report that at once instead of waiting out the pause into a timeout
+      maxPauseWaitMs: 0,
+    });
+  } catch (e) {
+    if (isThrottled(e)) {
+      cooldown.failures += 1;
+      cooldown.until = Date.now() + Math.min(COOLDOWN_MAX_MS, COOLDOWN_BASE_MS * 2 ** (cooldown.failures - 1));
+      cooldown.lastError = errMsg(e);
+    }
+    throw e;
+  }
+  cooldown.failures = 0;
   return parseGdeltArticles(decodeGdeltBody(body), Date.now(), queryMatchedOn(terms));
 }
 

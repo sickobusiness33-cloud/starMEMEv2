@@ -148,7 +148,10 @@ function xWeight(cp: number): number {
 function fitX(text: string, budget: number): string | null {
   if (budget <= 1) return null;
   if (xLength(text) <= budget) return text;
-  const sentences = text.match(/[^.!?]+[.!?]+(?:\s+|$)/g) ?? [];
+  // A sentence ends at . ! ? followed by whitespace or the end. Matching lazily from the previous
+  // end keeps the pieces contiguous: "$2.1M" or "3.1x" inside a sentence is not a boundary, and a
+  // sentence can never be skipped (which used to leave an orphan "1M y la actividad…" fragment).
+  const sentences = text.match(/[\s\S]*?[.!?]+(?:\s+|$)/g) ?? [];
   let whole = '';
   for (const sentence of sentences) {
     if (xLength(whole + sentence) > budget) break;

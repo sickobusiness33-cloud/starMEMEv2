@@ -16,18 +16,26 @@ export interface DetectOpts {
   socialMentions?: number | null;
 }
 
-/** Maximum contribution of each signal to the 0-100 score (the sum exceeds 100 and is capped). */
+/**
+ * Maximum contribution of each signal to the 0-100 score (the sum exceeds 100 and is capped).
+ *
+ * Flow anomalies (volume / trades vs the token's own 1 h average) carry the most
+ * weight. They cannot fire during a token's first hour, when the 1 h window holds
+ * nothing but the launch itself (the ratio is ≈1 by construction), so `fresh_launch`
+ * stands in for them on young tokens with a comparable weight, measured against
+ * absolute traction instead of a baseline the token does not have yet.
+ */
 export const SIGNAL_MAX_WEIGHTS: Readonly<Record<SignalCode, number>> = {
-  volume_surge: 22,
-  tx_acceleration: 16,
-  buyer_surge: 14,
-  holder_growth: 14,
-  liquidity_growth: 8,
-  momentum: 12,
-  buy_pressure: 8,
-  large_wallet_flow: 6,
-  social_attention: 8,
-  fresh_launch: 6,
+  volume_surge: 30,
+  tx_acceleration: 20,
+  buyer_surge: 22,
+  holder_growth: 18,
+  liquidity_growth: 12,
+  momentum: 16,
+  buy_pressure: 10,
+  large_wallet_flow: 8,
+  social_attention: 10,
+  fresh_launch: 34,
 };
 
 const MAX_AGE_MINUTES = 7 * 24 * 60;
@@ -60,7 +68,7 @@ export function detectAnomalies(s: TokenSnapshot, m: DerivedMetrics, o: DetectOp
     buyPressure(m),
     largeWalletFlow(m),
     socialAttention(o.socialMentions ?? null),
-    freshLaunch(m),
+    freshLaunch(s, m),
   ].filter((x): x is Scored => x !== null && x.strength > 0);
 
   const total = scored.reduce((sum, x) => sum + SIGNAL_MAX_WEIGHTS[x.code] * x.strength, 0);
@@ -116,7 +124,11 @@ function txAcceleration(m: DerivedMetrics): Scored | null {
   return { code: 'tx_acceleration', strength: ramp(x, 2, 6), value: x, label: `Trades ${mult(x)}x vs 1h avg` };
 }
 
-/** Either a rising rate of new buyers or a large absolute crowd of buyers in 5 minutes. */
+/**
+ * Either a rising rate of new buyers or a large absolute crowd of buyers in 5 minutes.
+ * Crowd ramp from live data: among tokens clearing the market gates the median has
+ * ~25 unique buyers in 5 minutes and the top decile ~190.
+ */
 function buyerSurge(m: DerivedMetrics): Scored | null {
   const accel = m.buyerAcceleration;
   const crowd = m.uniqueBuyersM5;
@@ -126,7 +138,7 @@ function buyerSurge(m: DerivedMetrics): Scored | null {
       : null;
   const byCrowd: Scored | null =
     crowd != null
-      ? { code: 'buyer_surge', strength: ramp(crowd, 40, 120), value: crowd, label: `${crowd} unique buyers in 5m` }
+      ? { code: 'buyer_surge', strength: ramp(crowd, 50, 200), value: crowd, label: `${crowd.toLocaleString('en-US')} unique buyers in 5m` }
       : null;
   if (!byAccel) return byCrowd;
   if (!byCrowd) return byAccel;
@@ -146,12 +158,24 @@ function liquidityGrowth(m: DerivedMetrics): Scored | null {
   return { code: 'liquidity_growth', strength: ramp(x, 15, 60), value: x, label: `Liquidity ${signedPct(x)} within 1h` };
 }
 
+/**
+ * Price momentum is phased in over the launch hour: a 10-minute-old token is
+ * routinely ±50% in five minutes while its price is still being discovered, so
+ * the same reading says far less than it does on a token with an hour of history.
+ * Launch traction is scored by `fresh_launch` instead.
+ */
 function momentum(s: TokenSnapshot, m: DerivedMetrics): Scored | null {
   const x = m.momentumScore;
   if (x == null) return null;
   const h1 = s.priceChangePct.h1;
   const detail = h1 != null ? ` (1h ${signedPct(h1)})` : '';
-  return { code: 'momentum', strength: ramp(x, 35, 80), value: x, label: `Momentum ${Math.round(x)}/100${detail}` };
+  const maturity = m.ageMinutes == null ? 1 : ramp(m.ageMinutes, 10, 60);
+  return {
+    code: 'momentum',
+    strength: ramp(x, 35, 80) * maturity,
+    value: x,
+    label: `Momentum ${Math.round(x)}/100${detail}`,
+  };
 }
 
 function buyPressure(m: DerivedMetrics): Scored | null {
@@ -175,17 +199,41 @@ function socialAttention(mentions: number | null): Scored | null {
   return { code: 'social_attention', strength: ramp(mentions, 3, 15), value: mentions, label: `${mentions} mentions in 2h` };
 }
 
-/** Busy first hour of trading; full weight under 30 minutes, fading out by 60. */
-function freshLaunch(m: DerivedMetrics): Scored | null {
+/**
+ * Launch traction: how much real trading a token attracted since it launched.
+ * Calibrated on live launches across the four chains (Oct 2026): the median young
+ * token that clears the liquidity/volume gates trades ~$10K a minute, the top
+ * decile ~$40K. Onset sits at that median and full weight at $50K/min, so only
+ * launches well above typical draw attention. Two guards keep it honest: enough
+ * separate trades that one wallet cannot fake it, and a few minutes of survival
+ * (the first minutes belong to snipers and bots). It fades out between 60 and 90
+ * minutes, when the 1 h baseline no longer contains the launch and the flow
+ * signals take over.
+ */
+function freshLaunch(s: TokenSnapshot, m: DerivedMetrics): Scored | null {
   const age = m.ageMinutes;
-  const rate = m.txPerMin;
-  if (age == null || rate == null || age > 60) return null;
+  const volume = s.volumeUsd.h1 ?? null;
+  const trades = txTotal(s.txns.h1);
+  if (age == null || volume == null || trades == null || age > LAUNCH_FADE_END_MIN) return null;
+  const perMinute = volume / Math.min(60, Math.max(1, age));
+  const strength =
+    ramp(perMinute, 10_000, 50_000) *
+    ramp(trades, 30, 150) *
+    ramp(age, 2, 10) *
+    (1 - ramp(age, LAUNCH_FADE_START_MIN, LAUNCH_FADE_END_MIN));
   return {
     code: 'fresh_launch',
-    strength: ramp(rate, 5, 10) * (1 - ramp(age, 30, 60)),
-    value: age,
-    label: `Launched ${Math.round(age)}m ago · ${mult(rate)} tx/min`,
+    strength,
+    value: perMinute,
+    label: `Launched ${Math.round(age)}m ago · ${usdShort(volume)} volume, ${trades.toLocaleString('en-US')} trades`,
   };
+}
+
+const LAUNCH_FADE_START_MIN = 60;
+const LAUNCH_FADE_END_MIN = 90;
+
+function txTotal(t: TokenSnapshot['txns'][TimeWindow]): number | null {
+  return t?.buys != null && t.sells != null ? t.buys + t.sells : null;
 }
 
 /* ───────────── helpers ───────────── */
@@ -211,4 +259,11 @@ function signedPct(x: number): string {
 
 function usd(x: number): string {
   return `$${Math.round(x).toLocaleString('en-US')}`;
+}
+
+/** "$156K", "$1.2M" */
+function usdShort(x: number): string {
+  if (x >= 1e6) return `$${(x / 1e6).toFixed(1)}M`;
+  if (x >= 1e3) return `$${Math.round(x / 1e3)}K`;
+  return `$${Math.round(x)}`;
 }

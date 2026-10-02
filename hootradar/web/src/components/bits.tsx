@@ -1,6 +1,6 @@
 import { memo, useMemo } from 'react';
 import clsx from 'clsx';
-import type { ChainId, Freshness, NewsOutlook, QuantMatch, Severity } from '@shared/types';
+import type { ChainId, Freshness, MarketRegime, NewsOutlook, QuantMatch, Severity } from '@shared/types';
 import { QUANT_DISCLAIMER } from '@shared/types';
 import { useStore } from '../store';
 import { fallbackMeta, type ChainMeta } from '../lib/chains';
@@ -180,6 +180,26 @@ export function TokenImage({ src, symbol, size = 28 }: { src: string | null; sym
           }}
         />
       )}
+    </span>
+  );
+}
+
+const REGIME_TONE: Record<MarketRegime['label'], string> = {
+  'risk-on': 'tag--live',
+  neutral: 'tag--ghost',
+  'risk-off': 'tag--risk',
+  unknown: 'tag--unknown',
+};
+
+/** Market regime as a compact tag: `Regime risk-on`. */
+export function RegimeTag({ regime }: { regime: MarketRegime }) {
+  const detail =
+    regime.breadthPct !== null
+      ? `${Math.round(regime.breadthPct)}% of ${regime.sampleSize} tracked tokens up over 1H`
+      : `Not enough tracked tokens to classify the market (${regime.sampleSize})`;
+  return (
+    <span className={clsx('tag', REGIME_TONE[regime.label])} title={detail}>
+      Regime {regime.label}
     </span>
   );
 }

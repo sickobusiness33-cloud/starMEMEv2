@@ -208,6 +208,28 @@ describe('adapter.discover', () => {
     expect(dsTokensMock).not.toHaveBeenCalled();
   });
 
+  it('polls GeckoTerminal new_pools at most every 55 s (its CDN TTL) while other sources run every cycle', async () => {
+    const adapter = createAdapter(CHAIN_CONFIGS.solana);
+    await adapter.discover();
+    vi.setSystemTime(NOW + 30_000);
+    const second = await adapter.discover();
+    expect(gtNewPoolsMock).toHaveBeenCalledTimes(1);
+    expect(pumpNewestMock).toHaveBeenCalledTimes(2);
+    expect(dsLatestListingsMock).toHaveBeenCalledTimes(2);
+    expect(second.some((t) => t.sources.includes('geckoterminal'))).toBe(false);
+
+    // a failed attempt also waits for the next window
+    gtNewPoolsMock.mockRejectedValueOnce(new Error('HTTP 429'));
+    vi.setSystemTime(NOW + 60_000);
+    await adapter.discover();
+    vi.setSystemTime(NOW + 90_000);
+    await adapter.discover();
+    expect(gtNewPoolsMock).toHaveBeenCalledTimes(2);
+    vi.setSystemTime(NOW + 120_000);
+    await adapter.discover();
+    expect(gtNewPoolsMock).toHaveBeenCalledTimes(3);
+  });
+
   it('drops tokens older than maxTokenAgeHours', async () => {
     dsTokensMock.mockResolvedValue([]);
     const tokens = await createAdapter(CHAIN_CONFIGS.solana, { maxTokenAgeHours: 40 / 3600 }).discover();
@@ -258,6 +280,22 @@ describe('adapter.refresh / enrich', () => {
     expect(gtTokenInfoMock).toHaveBeenCalledWith('solana', BONK);
     expect(info?.holders).toBe(1024516);
   });
+
+  it('enrich adds the unique-wallet counts of the main pool, and survives a failed pool lookup', async () => {
+    gtTokenInfoMock.mockResolvedValue(parseGtTokenInfo(fixture('gt_token_info_bonk.json')));
+    const pool = parseGtTokenPools(fixture('gt_token_pools_bonk.json'), 'solana', BONK, NOW)!;
+    gtTokenTopPoolMock.mockResolvedValue(pool);
+    const adapter = createAdapter(CHAIN_CONFIGS.solana);
+    const info = await adapter.enrich(BONK);
+    expect(gtTokenTopPoolMock).toHaveBeenCalledWith('solana', 'solana', BONK);
+    expect(info?.wallets).toEqual({ pairAddress: pool.pairAddress, txns: pool.txns });
+    expect(info?.wallets?.txns.m5?.buyers).toBe(8);
+
+    gtTokenTopPoolMock.mockRejectedValue(new Error('HTTP 429'));
+    const degraded = await adapter.enrich(BONK);
+    expect(degraded?.holders).toBe(1024516);
+    expect(degraded?.wallets).toBeUndefined();
+  });
 });
 
 describe('adapter.lookup', () => {
@@ -288,6 +326,21 @@ describe('adapter.lookup', () => {
     expect(snap!.txns.m15).toEqual({ buys: 27, sells: 66, buyers: 20, sellers: 45 });
     expect(snap!.security?.mintAuthority).toBe(false);
     expect(snap!.links.map((l) => l.url)).toContain('https://t.me/Official_Bonk_Inu');
+  });
+
+  it('never mixes two different pools: the deeper one wins and the other adds token-level facts only', async () => {
+    const gtPool = parseGtTokenPools(fixture('gt_token_pools_bonk.json'), 'solana', BONK, NOW)!;
+    const dsPair = parseDsPairs(fixture('ds_tokens_solana.json'), 'solana', NOW).find((s) => s.address === BONK)!;
+    // DexScreener's token endpoint answered with a shallow side pool
+    dsTokensMock.mockResolvedValue([
+      { ...dsPair, pairAddress: 'SidePooL1111111111111111111111111111111111', liquidityUsd: 20_000, volumeUsd: { m5: 1, h1: 2 } },
+    ]);
+    const snap = await createAdapter(CHAIN_CONFIGS.solana).lookup(BONK);
+    expect(snap).toMatchObject({ pairAddress: gtPool.pairAddress, liquidityUsd: gtPool.liquidityUsd });
+    expect(snap!.volumeUsd).toEqual(gtPool.volumeUsd);
+    expect(snap!.txns).toEqual(gtPool.txns);
+    expect(snap!.sources).toEqual(['geckoterminal', 'dexscreener']);
+    expect(snap!.holders).toBe(1024516);
   });
 
   it('works from GeckoTerminal alone when DexScreener fails', async () => {

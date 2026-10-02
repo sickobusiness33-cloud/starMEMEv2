@@ -31,7 +31,7 @@ with a deterministic rules writer as fallback) and frontend (React 19 + Vite).
 
 | Provider | Used for | Limit we enforce |
 |---|---|---|
-| GeckoTerminal `api.geckoterminal.com/api/v2` | `networks/{net}/new_pools` discovery (all chains), `tokens/{addr}/info` (holders, top-10 %, mint/freeze authority, honeypot), `tokens/{addr}/pools` lookup | 25 req/min global |
+| GeckoTerminal `api.geckoterminal.com/api/v2` | `networks/{net}/new_pools` discovery (all chains, polled every 55 s: the CDN caches it 60 s), `tokens/{addr}/info` (holders, top-10 %, mint/freeze authority, honeypot), `tokens/{addr}/pools` lookup + unique-wallet counts on enrichment | 25 req/min global |
 | DexScreener `api.dexscreener.com` | `tokens/v1/{chain}/{a,b,…≤30}` batch refresh, `latest/dex/search?q=` (Radar symbol search), `token-profiles/latest/v1` + `token-boosts/latest/v1` (discovery; boosts are paid promotion → `boosted=true`) | 250/min for pairs/tokens/search, 55/min for profiles/boosts |
 | pump.fun `frontend-api-v3.pump.fun/coins?sort=created_timestamp` | Solana newest launches | 30/min |
 | GDELT DOC 2.0 `api.gdeltproject.org/api/v2/doc/doc` | news/articles mentions (Radar) | 1 request / 5.5 s (serialized) |
@@ -133,7 +133,7 @@ export class Db {
   insertSnapshot(s: TokenSnapshot): void
   history(chain: ChainId, address: string, sinceTs: number): TokenSnapshot[]          // oldest→newest
   latestSnapshots(sinceTs: number, limit?: number): TokenSnapshot[]                     // latest per token
-  trackedAddresses(chain: ChainId, maxAgeHours: number, limit: number): string[]        // young tokens, most recently active first
+  trackedAddresses(chain: ChainId, maxAgeHours: number, limit: number, now?: number, active?: { minLiquidityUsd; minVolumeH1Usd }): string[] // young tokens; those clearing the market minimums first, then most recently seen
   insertDetection(e: DetectionEvent): void
   recentDetections(limit: number): DetectionEvent[]
   detectionsFor(chain: ChainId, address: string, limit: number): DetectionEvent[]
@@ -150,7 +150,7 @@ export class Db {
   saveRadar(r: RadarReport): void
   getRadar(id: string): RadarReport | null
   counts(sinceTs: number): { tokensAnalyzed: number; anomalies: number; breaking: number; articles: number; distributed: number; perChainTokens: Record<string, number> }
-  prune(now: number): void      // snapshots > 48h, radar > 7d
+  prune(now: number): void      // snapshots > 6h (nothing reads past 2h), tokens > 48h, radar > 7d
   close(): void
 }
 ```
@@ -174,13 +174,19 @@ export class Pipeline { constructor(d: { db: Db; bus: Bus; config: AppConfig; ad
 export function buildStats(d: { db: Db; scanner: Scanner; engine: EngineState; distribution: DistributionQueue; startedAt: number; now: number }): Stats
 ```
 Scanner loop: per chain, `discover()` every `discoverIntervalMs` (staggered across chains),
-`refresh(trackedAddresses)` every `refreshIntervalMs`. Every snapshot → `db.insertSnapshot` + `pipeline.process`.
+`refresh(trackedAddresses)` every `refreshIntervalMs` (240 tokens per chain, active ones first). Every snapshot → `db.insertSnapshot` + `pipeline.process`.
+
+Rate-limit health: a 429 pauses the provider's whole limiter (retry-after, never less than 15 s, at most 60 s)
+instead of letting queued requests hit the provider. DexScreener liquidity that the pool's quote reserve
+cannot back (more than 10x twice the quote reserve: fake-priced or single-sided pools) is replaced by the
+quote-backed value, and Radar ranks symbol matches by 24 h volume before liquidity.
 Chain status: `scanning` if last success < 2 min, `degraded` if last attempt failed but a success < 10 min, `down` otherwise, `idle` before first run.
 
 Pipeline decision per snapshot:
 1. `deriveMetrics` with 90-min history → `detectAnomalies`.
 2. severity null → stop. WATCH → store `DetectionEvent` (dedupe: max one per token per 10 min unless score +10) and emit `detection`. No article.
-3. ALERT/BREAKING → `adapter.enrich()` (holders/security; cache 3 min per token) → recompute metrics/detection
+3. ALERT/BREAKING → `adapter.enrich()` (holders/security, main-pool wallet counts and main-pool creation time; cache 3 min per token;
+   the pool's creation time fills an unknown token age, earliest wins, so a weeks-old token cannot pass as a launch) → recompute metrics/detection
    → `matchQuant` → `writeArticle` → `db.insertArticle` → `distribution.enqueue` → `bus.emit('article')`.
    Cooldown: one article per token per `articleCooldownMin` unless severity escalates (ALERT→BREAKING) or score +15;
    a follow-up sets `updateOf`. Global cap `maxArticlesPerHour`. Honeypot = 'yes' → never publish.
@@ -277,7 +283,8 @@ GET  /api/radar/:id/stream               SSE RadarStreamEvent
 GET  /api/quant/library                  QuantLibraryResponse
 GET  /api/quant/leaders                  QuantLeadersResponse (cached 15 s)
 ```
-Static: serves `web/dist` with SPA fallback when it exists. SSE: `content-type: text/event-stream`,
+Static: serves `web/dist` with SPA fallback when it exists (files are looked up per request, so a web rebuild
+while the server runs is served at once). SSE: `content-type: text/event-stream`,
 `cache-control: no-cache, no-transform`, `x-accel-buffering: no`; clean up listeners on close.
 Basic hardening: radar POST rate limit 10/min per IP, body limit 4 KB, CORS off by default.
 

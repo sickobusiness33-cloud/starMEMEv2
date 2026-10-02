@@ -1,5 +1,5 @@
 import { useStore } from '../store';
-import { fmtClock, fmtMs } from '../lib/format';
+import { fmtClock, fmtMs, fmtTicker } from '../lib/format';
 import { pipelineSteps } from './ArticleDetail';
 import { TimeAgo } from './bits';
 
@@ -21,7 +21,7 @@ export function PipelinePanel() {
         </h2>
         {latest && (
           <span className="label pipe__which">
-            ${latest.symbol} · <TimeAgo ts={latest.createdAt} />
+            {fmtTicker(latest.symbol)} · <TimeAgo ts={latest.createdAt} />
           </span>
         )}
       </div>
