@@ -1,0 +1,610 @@
+/* Reset, mobile-native baseline, typography and shared primitives. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg);
+  -webkit-tap-highlight-color: transparent; /* our own :active feedback replaces the gray tap flash */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  overscroll-behavior: none; /* no pull-to-refresh / rubber band on the app shell */
+  scrollbar-color: var(--line-2) transparent;
+  scroll-padding-top: calc(var(--header-h) + 12px);
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  overscroll-behavior: none;
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+ul,
+ol,
+figure,
+pre {
+  margin: 0;
+}
+
+ul,
+ol {
+  padding: 0;
+  list-style: none;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+}
+
+button {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  text-align: inherit;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+/* iOS zooms into inputs under 16px and never zooms back. */
+input,
+select,
+textarea {
+  font-size: 16px;
+}
+
+/* Controls are not content: no long-press text selection, no tap delay. */
+button,
+a,
+select,
+[role='button'],
+[role='tab'],
+.chip,
+.seg__btn {
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+button,
+[role='button'],
+[role='tab'] {
+  -webkit-touch-callout: none;
+}
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--cyan-selection);
+  color: var(--text);
+}
+
+/* ───────────── app shell + the one allowed decoration ───────────── */
+
+.app {
+  position: relative;
+  isolation: isolate;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: var(--bottombar-h);
+}
+
+.app::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: 32px 32px;
+  background-position: -1px -1px;
+  mask-image: linear-gradient(to bottom, #000 0%, rgb(0 0 0 / 0.35) 85%);
+}
+
+/* ───────────── type primitives ───────────── */
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.num,
+.mono {
+  font-variant-numeric: tabular-nums;
+}
+
+.label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.muted {
+  color: var(--text-3);
+}
+
+.dim {
+  color: var(--text-2);
+}
+
+.pos {
+  color: var(--green);
+}
+
+.risk {
+  color: var(--red);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* ───────────── dots ───────────── */
+
+.dot {
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dot, var(--text-3));
+}
+
+/* ───────────── tags ───────────── */
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.tag--breaking {
+  background: var(--green);
+  border-color: var(--green);
+  color: var(--on-green);
+}
+
+.tag--alert {
+  border-color: var(--cyan-line-strong);
+  color: var(--cyan);
+}
+
+.tag--watch {
+  color: var(--text-2);
+}
+
+.tag--ai {
+  border-color: var(--cyan-line);
+  background: var(--cyan-dim);
+  color: var(--cyan);
+}
+
+.tag--rules {
+  color: var(--text-2);
+}
+
+.tag--risk {
+  border-color: var(--red-line);
+  background: var(--red-dim);
+  color: var(--red);
+}
+
+.tag--live {
+  border-color: var(--green-line);
+  background: var(--green-dim);
+  color: var(--green);
+}
+
+.tag--recent {
+  border-color: var(--cyan-line);
+  color: var(--cyan);
+}
+
+.tag--old {
+  color: var(--text-3);
+}
+
+.tag--unknown {
+  border-style: dashed;
+  color: var(--text-3);
+}
+
+.tag--ghost {
+  border-color: var(--line);
+  color: var(--text-3);
+}
+
+/* ───────────── buttons ───────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: none;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  white-space: nowrap;
+  transition:
+    transform var(--dur-press) var(--ease-out),
+    background-color var(--dur-hover) ease,
+    border-color var(--dur-hover) ease,
+    color var(--dur-hover) ease;
+}
+
+.btn svg {
+  flex: none;
+}
+
+.btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+}
+
+.btn--primary {
+  border-color: var(--green);
+  background: var(--green);
+  color: var(--on-green);
+}
+
+.btn--ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+.btn--sm {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 10.5px;
+}
+
+.btn--icon {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+}
+
+.btn[data-done] {
+  border-color: var(--green-line);
+  color: var(--green);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover:not(:disabled) {
+    border-color: var(--text-3);
+    color: var(--text);
+  }
+  .btn--primary:hover:not(:disabled) {
+    border-color: var(--green);
+    background: var(--green-hover);
+    color: var(--on-green);
+  }
+  .btn--ghost:hover:not(:disabled) {
+    border-color: transparent;
+    background: var(--bg-3);
+  }
+}
+
+/* Text links inside content (cyan = links). */
+.link {
+  color: var(--cyan);
+  text-decoration: underline;
+  text-decoration-color: var(--cyan-underline);
+  text-underline-offset: 3px;
+  transition: text-decoration-color var(--dur-hover) ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .link:hover {
+    text-decoration-color: var(--cyan);
+  }
+}
+
+/* ───────────── chips (toggle filters) ───────────── */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line-2);
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  white-space: nowrap;
+  transition:
+    transform var(--dur-press) var(--ease-out),
+    background-color var(--dur-hover) ease,
+    border-color var(--dur-hover) ease,
+    color var(--dur-hover) ease;
+}
+
+.chip:active {
+  transform: scale(0.97);
+}
+
+.chip[aria-pressed='true'] {
+  border-color: var(--text-3);
+  background: var(--bg-3);
+  color: var(--text);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .chip:hover {
+    border-color: var(--text-3);
+    color: var(--text);
+  }
+}
+
+/* ───────────── segmented control ───────────── */
+
+.seg {
+  display: inline-flex;
+  flex: none;
+  padding: 2px;
+  gap: 2px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.seg__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+  transition:
+    transform var(--dur-press) var(--ease-out),
+    background-color var(--dur-hover) ease,
+    color var(--dur-hover) ease;
+}
+
+.seg__btn:active {
+  transform: scale(0.97);
+}
+
+.seg__btn[aria-pressed='true'] {
+  background: var(--bg-3);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+}
+
+.seg__count {
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+.seg__btn[aria-pressed='true'] .seg__count {
+  color: var(--text-2);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .seg__btn:hover {
+    color: var(--text);
+  }
+}
+
+/* ───────────── panels ───────────── */
+
+.panel {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+}
+
+.panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 40px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.panel__body {
+  padding: 12px 14px;
+}
+
+/* ───────────── meters ───────────── */
+
+.bar {
+  position: relative;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.bar__fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--cyan);
+  transform-origin: left center;
+}
+
+/* ───────────── skeleton (first load only) ───────────── */
+
+.skel {
+  border-radius: 4px;
+  background: var(--bg-3);
+  animation: skel-pulse 1.4s linear infinite alternate;
+}
+
+@keyframes skel-pulse {
+  from {
+    opacity: 0.45;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ───────────── empty / error states ───────────── */
+
+.state {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding: 28px 20px;
+  border: 1px dashed var(--line-2);
+  border-radius: var(--radius);
+  color: var(--text-2);
+}
+
+.state__alert {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+}
+
+.state__title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.state__text {
+  max-width: 56ch;
+  text-wrap: pretty;
+}
+
+/* ───────────── reduced motion: keep fades, drop movement & pulses ───────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .btn,
+  .chip,
+  .seg__btn {
+    transition:
+      background-color var(--dur-hover) ease,
+      border-color var(--dur-hover) ease,
+      color var(--dur-hover) ease;
+  }
+  .btn:active:not(:disabled),
+  .chip:active,
+  .seg__btn:active {
+    transform: none;
+  }
+  .skel {
+    animation: none;
+    opacity: 0.7;
+  }
+}

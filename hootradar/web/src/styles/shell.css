@@ -1,0 +1,755 @@
+/* App shell: sticky header (top bar + tab bar), mobile bottom tab bar, main column, toasts. */
+
+/* ───────────── header ─────────────
+   No transform / filter / backdrop-filter here: the tab bar inside becomes
+   position:fixed on phones and must stay relative to the viewport. */
+
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+
+.main {
+  flex: 1;
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: 16px max(var(--gutter), env(safe-area-inset-right, 0px)) 40px max(var(--gutter), env(safe-area-inset-left, 0px));
+}
+
+@media (min-width: 720px) {
+  .main {
+    padding-top: 20px;
+  }
+}
+
+/* ───────────── top bar ───────────── */
+
+.topbar {
+  padding-top: var(--safe-top);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar__inner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  max-width: var(--content-max);
+  height: calc(var(--topbar-h) - 1px);
+  margin: 0 auto;
+  padding: 0 max(var(--gutter), env(safe-area-inset-right, 0px)) 0 max(var(--gutter), env(safe-area-inset-left, 0px));
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  height: 32px;
+  border-radius: var(--radius-sm);
+}
+
+.brand__name {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--text);
+}
+
+.logo-mark {
+  flex: none;
+}
+
+/* engine pill */
+
+.engine {
+  --engine-c: var(--green);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  background: var(--bg-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  color: var(--text);
+  cursor: default;
+}
+
+.engine[data-state='booting'] {
+  --engine-c: var(--cyan);
+}
+
+.engine[data-state='degraded'] {
+  --engine-c: var(--amber);
+  border-color: var(--amber-line);
+}
+
+.engine[data-state='offline'] {
+  --engine-c: var(--text-3);
+  color: var(--text-2);
+}
+
+.engine__dot {
+  position: relative;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--engine-c);
+}
+
+/* Constant "alive" signal: an expanding ring, linear because it never starts or stops. */
+.engine[data-state='active'] .engine__dot::after,
+.engine[data-state='booting'] .engine__dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--engine-c);
+  animation: engine-ring 2.4s linear infinite;
+}
+
+@keyframes engine-ring {
+  from {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  to {
+    transform: scale(3.4);
+    opacity: 0;
+  }
+}
+
+.engine__short {
+  display: none;
+}
+
+.engine__sub {
+  padding-left: 8px;
+  border-left: 1px solid var(--line-2);
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+/* Claude is configured but its last call failed (stories fall back to rules): say it in amber */
+.engine[data-warn] .engine__sub,
+.engine[data-warn] .engine__short {
+  color: var(--amber);
+}
+
+/* stats */
+
+/* Right-aligned against the clock: the engine pill changes width with its state
+   (RECONNECTING ↔ ENGINE ACTIVE), and that must not move the counters — NumberFlow
+   animates a value change from the number's previous on-screen position, so a shifted
+   row would send every changed digit sliding across its neighbours' labels. */
+.stats {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+.stat {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  padding: 0 14px;
+  border-left: 1px solid var(--line);
+  cursor: default;
+}
+
+.stat:last-child {
+  border-right: 1px solid var(--line);
+}
+
+.stat__label {
+  order: 2;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+
+.stat__short {
+  display: none;
+}
+
+.stat__value {
+  order: 1;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.stat__of {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.stat[data-breaking] .stat__value {
+  color: var(--green);
+}
+
+.clock {
+  flex: none;
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.clock__tz {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+}
+
+/* ≤ 1199: one row, compact labels. The engine sub-label moves to the tooltip, so the pill
+   switches to its short label, which names the engine on its own (AI ACTIVE / RULES ACTIVE). */
+@media (max-width: 1199.98px) {
+  /* hidden visually, still read: the full label + sub-label are the accessible name at every width */
+  .engine__sub,
+  .engine__full {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .engine__short {
+    display: inline;
+  }
+  .stat {
+    padding: 0 12px;
+  }
+  .stat__full {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .stat__short {
+    display: inline;
+  }
+}
+
+/* < 1024: two rows — brand · engine · clock, then the four stats as a strip */
+@media (max-width: 1023.98px) {
+  .topbar__inner {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: 44px minmax(0, 1fr);
+    gap: 0 12px;
+    align-items: center;
+  }
+  .brand {
+    grid-area: 1 / 1;
+  }
+  .engine {
+    grid-area: 1 / 2;
+    justify-self: start;
+  }
+  .clock {
+    grid-area: 1 / 3;
+  }
+  .stats {
+    grid-area: 2 / 1 / 3 / 4;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    align-self: stretch;
+    border-top: 1px solid var(--line);
+  }
+  .stat {
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+    padding: 0 10px;
+  }
+  .stat:first-child {
+    padding-left: 0;
+    border-left: 0;
+  }
+  .stat:last-child {
+    border-right: 0;
+  }
+  .stat__value {
+    order: 0;
+  }
+  .stat__label {
+    order: 1;
+    font-size: 10px;
+  }
+}
+
+@media (max-width: 359.98px) {
+  .brand__name {
+    display: none;
+  }
+}
+
+/* ───────────── tab bar ───────────── */
+
+.tabbar {
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--line);
+}
+
+.tabbar__inner {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 16px;
+  max-width: var(--content-max);
+  height: calc(var(--tabbar-h) - 1px);
+  margin: 0 auto;
+  padding: 0 max(var(--gutter), env(safe-area-inset-right, 0px)) 0 max(var(--gutter), env(safe-area-inset-left, 0px));
+}
+
+.tabs {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  margin-left: -12px;
+}
+
+.tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  transition:
+    transform var(--dur-press) var(--ease-out),
+    color var(--dur-hover) ease;
+}
+
+.tab:active {
+  transform: scale(0.97);
+}
+
+.tab.is-active {
+  color: var(--text);
+}
+
+.tab:focus-visible {
+  outline-offset: -4px;
+  border-radius: 8px;
+}
+
+.tab__icon {
+  display: none;
+  flex: none;
+}
+
+.tab__kbd {
+  display: none;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  line-height: 14px;
+  text-align: center;
+  color: var(--text-3);
+}
+
+/* the shortcut hint only means something with a keyboard and a mouse */
+@media (hover: hover) and (pointer: fine) and (min-width: 720px) {
+  .tab__kbd {
+    display: inline-block;
+  }
+  /* a "new stories" badge next to the "1" hint would read as a doubled 1: the badge wins */
+  .tab__badge ~ .tab__kbd {
+    display: none;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .tab:hover {
+    color: var(--text);
+  }
+}
+
+.tab__badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--green);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: var(--on-green);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 2px neon underline. Width 100px scaled to the active tab (keep in sync with INDICATOR_BASE). */
+.tabs__indicator {
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  width: 100px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--green);
+  transform-origin: left center;
+  pointer-events: none;
+  transition: transform var(--dur-ui) var(--ease-out);
+}
+
+.tabs__indicator[data-instant] {
+  transition: none;
+}
+
+/* chain status chips */
+
+.chain-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.chain-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+  white-space: nowrap;
+  cursor: default;
+}
+
+.chain-chip[data-status='degraded'] {
+  border-color: var(--amber-line);
+}
+
+.chain-chip[data-status='down'] {
+  border-color: var(--red-line-soft);
+}
+
+.chain-chip__since {
+  min-width: 3ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+}
+
+@media (max-width: 899.98px) {
+  .chain-chip__since {
+    display: none;
+  }
+}
+
+/* phones: fixed bottom tab bar, thumb-reachable, padded for the home indicator */
+@media (max-width: 719.98px) {
+  .tabbar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 40;
+    padding: 0 env(safe-area-inset-right, 0px) var(--safe-bottom) env(safe-area-inset-left, 0px);
+    border-top: 1px solid var(--line);
+    border-bottom: 0;
+    background: var(--bar-glass);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    backdrop-filter: blur(14px) saturate(140%);
+  }
+  .tabbar__inner {
+    height: var(--tabbar-mobile-h);
+    padding: 0;
+  }
+  .tabs {
+    flex: 1;
+    gap: 0;
+    margin: 0;
+  }
+  .tab {
+    flex: 1;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    padding: 0 4px;
+    font-size: 10px;
+  }
+  .tab__icon {
+    display: block;
+  }
+  .tab__badge {
+    position: absolute;
+    top: 7px;
+    left: calc(50% + 6px);
+  }
+  .tabs__indicator {
+    top: -1px;
+    bottom: auto;
+  }
+  .tabbar__chains {
+    display: none;
+  }
+}
+
+/* ───────────── stream health banner ─────────────
+   Hangs under the header (absolute: no layout shift). Enters with ease-out; leaves a
+   little faster; visibility flips after the fade so it never catches clicks while hidden. */
+
+.conn-banner {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  border-bottom: 1px solid var(--line-2);
+  background: var(--banner-bg);
+  box-shadow: var(--shadow-banner);
+  transition:
+    opacity var(--dur-ui) var(--ease-out),
+    transform var(--dur-ui) var(--ease-out),
+    visibility 0s linear 0s;
+}
+
+.conn-banner[data-phase='hidden'] {
+  visibility: hidden;
+  opacity: 0;
+  transform: translateY(-6px);
+  pointer-events: none;
+  transition:
+    opacity 160ms var(--ease-out),
+    transform 160ms var(--ease-out),
+    visibility 0s linear 160ms;
+}
+
+.conn-banner__inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  max-width: var(--content-max);
+  min-height: 38px;
+  margin: 0 auto;
+  padding: 6px max(var(--gutter), env(safe-area-inset-right, 0px)) 6px max(var(--gutter), env(safe-area-inset-left, 0px));
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.conn-banner__dot {
+  --dot: var(--text-3);
+}
+
+.conn-banner__title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.conn-banner__retry {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+}
+
+.conn-banner__btn {
+  height: 26px;
+}
+
+@media (max-width: 719.98px) {
+  .conn-banner__text {
+    display: none;
+  }
+}
+
+/* ───────────── tab panels ───────────── */
+
+.view {
+  min-width: 0;
+}
+
+.view:focus {
+  outline: none;
+}
+
+/* ───────────── toasts (headless Sonner: our JSX, Sonner's motion and stacking) ───────────── */
+
+.toast {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  box-shadow:
+    0 1px 0 var(--grid-line) inset,
+    var(--shadow-toast);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.toast--breaking {
+  border-color: var(--green-line-soft);
+  box-shadow:
+    inset 2px 0 0 var(--green),
+    var(--shadow-toast);
+}
+
+.toast__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.toast__ticker {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.toast__chain {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+}
+
+.toast__close {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin: -4px -6px -4px auto;
+  border-radius: var(--radius-sm);
+  color: var(--text-3);
+  transition:
+    transform var(--dur-press) var(--ease-out),
+    color var(--dur-hover) ease,
+    background-color var(--dur-hover) ease;
+}
+
+.toast__close:active {
+  transform: scale(0.97);
+}
+
+.toast__text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+
+.toast__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.toast__score {
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.toast--small {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .toast__close:hover {
+    background: var(--bg-3);
+    color: var(--text);
+  }
+}
+
+/* ───────────── reduced motion ───────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .engine[data-state='active'] .engine__dot::after,
+  .engine[data-state='booting'] .engine__dot::after {
+    animation: none;
+    opacity: 0;
+  }
+  .tab,
+  .toast__close {
+    transition:
+      color var(--dur-hover) ease,
+      background-color var(--dur-hover) ease;
+  }
+  .tab:active,
+  .toast__close:active {
+    transform: none;
+  }
+  .conn-banner,
+  .conn-banner[data-phase='hidden'] {
+    transform: none;
+  }
+  /* the underline jumps instead of sliding */
+  .tabs__indicator {
+    transition: none;
+  }
+}

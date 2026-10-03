@@ -1,0 +1,109 @@
+/* HootRadar design tokens — values from docs/DESIGN.md. Extend here, never fork. */
+:root {
+  color-scheme: dark;
+
+  /* surfaces */
+  --bg: #050607; /* page */
+  --bg-1: #0a0c0e; /* bars, rails */
+  --bg-2: #0e1114; /* cards */
+  --bg-3: #141a1e; /* raised / hover / expanded */
+  --line: #1a2026; /* hairlines */
+  --line-2: #26303a; /* stronger borders, focus base */
+
+  /* text */
+  --text: #e8ecef;
+  --text-2: #a1abb4;
+  /* #7a858f, not the brief's #66717b: that failed WCAG AA (3.5–4.1:1) on every surface at the
+     9.5–12.5px sizes it is used for. This one is 4.66:1 on --bg-3 up to 5.39:1 on --bg, and stays
+     clearly below --text-2 (8.1:1), so the three-step hierarchy holds. */
+  --text-3: #7a858f;
+
+  /* signal colors — each has exactly one job */
+  --green: #3dff8f; /* live, BREAKING, positive, primary action */
+  --green-dim: rgb(61 255 143 / 0.12);
+  --on-green: #03140a;
+  --cyan: #2fe0ff; /* AI, ALERT, links, focus */
+  --cyan-dim: rgb(47 224 255 / 0.12);
+  --red: #ff5a6a; /* risk only (risk outlook, risk flags, sells) */
+  --red-dim: rgb(255 90 106 / 0.12);
+  --amber: #ffc04d; /* degraded status and held-back states only (chain degraded, AI fallback, severity cap) */
+  --amber-dim: rgb(255 192 77 / 0.12);
+
+  /* derived tints — always mixed from the tokens above, so changing a token carries through */
+  --green-hover: #6bffaa; /* primary button hover */
+  --on-cyan: #001218; /* text on a cyan fill (skip link) */
+  --green-line: color-mix(in srgb, var(--green) 45%, transparent);
+  --green-line-soft: color-mix(in srgb, var(--green) 32%, transparent);
+  --green-bar: color-mix(in srgb, var(--green) 70%, transparent);
+  --green-glow: color-mix(in srgb, var(--green) 60%, transparent);
+  --green-glow-soft: color-mix(in srgb, var(--green) 20%, transparent);
+  --cyan-line: color-mix(in srgb, var(--cyan) 45%, transparent);
+  --cyan-line-strong: color-mix(in srgb, var(--cyan) 60%, transparent);
+  --cyan-underline: color-mix(in srgb, var(--cyan) 35%, transparent);
+  --cyan-selection: color-mix(in srgb, var(--cyan) 28%, transparent);
+  --red-line: color-mix(in srgb, var(--red) 45%, transparent);
+  --red-line-soft: color-mix(in srgb, var(--red) 30%, transparent);
+  --red-bar: color-mix(in srgb, var(--red) 70%, transparent);
+  --amber-line: color-mix(in srgb, var(--amber) 35%, transparent);
+
+  /* translucent surfaces */
+  --bar-glass: color-mix(in srgb, var(--bg-1) 94%, transparent); /* phone bottom tab bar */
+  --banner-bg: color-mix(in srgb, var(--bg-2) 97%, transparent); /* connection banner */
+  --grid-line: rgb(255 255 255 / 0.022); /* the page grid, the one allowed decoration */
+  --hover-veil: rgb(255 255 255 / 0.012); /* card hover wash */
+  --well: rgb(0 0 0 / 0.18); /* recessed strip (provider status) */
+
+  /* elevation */
+  --shadow-pill: 0 10px 28px rgb(0 0 0 / 0.55);
+  --shadow-banner: 0 12px 28px rgb(0 0 0 / 0.45);
+  --shadow-toast: 0 14px 36px rgb(0 0 0 / 0.55);
+
+  /* motion (from the animate skill — do not invent curves) */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --dur-press: 120ms; /* press feedback */
+  --dur-hover: 150ms; /* hover color */
+  --dur-ui: 200ms; /* indicator slides, small popovers */
+  --dur-enter: 220ms; /* list entries, accordion */
+
+  /* type */
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  /* shape */
+  --radius: 10px;
+  --radius-sm: 6px;
+
+  /* layout */
+  --gutter: 16px;
+  --topbar-h: 52px;
+  --tabbar-h: 40px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --header-h: calc(var(--topbar-h) + var(--tabbar-h) + var(--safe-top));
+  --bottombar-h: 0px;
+  --content-max: 1280px;
+  --rail-w: 340px;
+}
+
+@media (min-width: 720px) {
+  :root {
+    --gutter: 24px;
+  }
+}
+
+/* Below 1024px the stats no longer fit beside the brand: the top bar grows a second row. */
+@media (max-width: 1023.98px) {
+  :root {
+    --topbar-h: 92px;
+  }
+}
+
+/* Phones: the tab bar moves to a fixed bottom bar. */
+@media (max-width: 719.98px) {
+  :root {
+    --tabbar-h: 0px;
+    --tabbar-mobile-h: 58px;
+    --bottombar-h: calc(var(--tabbar-mobile-h) + var(--safe-bottom));
+  }
+}
