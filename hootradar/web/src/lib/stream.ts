@@ -2,6 +2,7 @@ import type { StreamEvent } from '@shared/types';
 import { useStore } from '../store';
 import { api, errorMessage, STREAM_URL } from './api';
 import { notifyBreaking } from './notify';
+import { noteArrival } from './announce';
 
 /**
  * The app's single connection to /api/stream.
@@ -114,7 +115,7 @@ function dispatch(event: StreamEvent): void {
     case 'hello':
       attempt = 0;
       clearRestTimer();
-      s.hello(event);
+      for (const { article, result } of s.hello(event)) noteArrival(article, result);
       s.setLoadError(null);
       s.setConn('open');
       break;
@@ -122,6 +123,8 @@ function dispatch(event: StreamEvent): void {
       const result = s.ingestArticle(event.article);
       const watchingTop = store().liveAtTop && document.visibilityState === 'visible';
       if (result !== 'duplicate' && event.article.severity === 'BREAKING' && !watchingTop) notifyBreaking(event.article);
+      // screen readers hear about every new story in LIVE, BREAKING or not, toast or not
+      noteArrival(event.article, result);
       break;
     }
     case 'detection':

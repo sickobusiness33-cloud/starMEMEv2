@@ -4,17 +4,17 @@
  * trade counts; the DexScreener refresh fills those in.
  */
 import type { TokenSnapshot } from '../../../shared/types.js';
-import { fetchJson } from '../net/http.js';
+import { fetchJson, type CallOpts } from '../net/http.js';
 import { asArray, asRecord, compactLinks, emptySnapshot, makeLink, toEpochMs, toHttpUrl, toNum, toStr } from './merge.js';
 
 const PUMP_API = 'https://frontend-api-v3.pump.fun';
 const MAX_LIMIT = 50;
 const NEWEST_TTL_MS = 10_000;
 
-export async function pumpNewest(limit = 40): Promise<TokenSnapshot[]> {
+export async function pumpNewest(limit = 40, o: Pick<CallOpts, 'signal' | 'maxQueueMs'> = {}): Promise<TokenSnapshot[]> {
   const n = Math.min(MAX_LIMIT, Math.max(1, Math.floor(limit)));
   const url = `${PUMP_API}/coins?offset=0&limit=${n}&sort=created_timestamp&order=DESC&includeNsfw=false`;
-  const json = await fetchJson(url, { limiter: 'pumpfun', cacheTtlMs: NEWEST_TTL_MS });
+  const json = await fetchJson(url, { limiter: 'pumpfun', cacheTtlMs: NEWEST_TTL_MS, signal: o.signal, maxQueueMs: o.maxQueueMs });
   return parsePumpCoins(json);
 }
 
@@ -28,15 +28,18 @@ export function parsePumpCoins(json: unknown, ts: number = Date.now()): TokenSna
     if (!mint || coin.is_banned === true) continue;
     const symbol = toStr(coin.symbol) ?? '';
     const marketCapUsd = toNum(coin.usd_market_cap) ?? toNum(coin.market_cap_usd);
+    const createdAt = toEpochMs(coin.created_timestamp);
     out.push({
       ...emptySnapshot('solana', mint, ts),
       symbol,
       name: toStr(coin.name) ?? symbol,
       pairAddress: poolAddress(coin),
       dex: 'pump.fun',
+      // the bonding curve opens with the coin; a graduated coin's AMM pool opened later, at an unreported time
+      pairCreatedAt: coin.complete === true ? null : createdAt,
       priceUsd: priceFromMarketCap(marketCapUsd, coin),
       marketCapUsd,
-      createdAt: toEpochMs(coin.created_timestamp),
+      createdAt,
       imageUrl: toHttpUrl(coin.image_uri),
       links: compactLinks([
         makeLink('twitter', coin.twitter),

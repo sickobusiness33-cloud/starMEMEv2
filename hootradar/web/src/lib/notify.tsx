@@ -9,22 +9,33 @@ import { IconCheck, IconClose } from '../components/Icons';
 /**
  * Toasts are headless (`toast.custom`): our JSX, Sonner's positioning,
  * stacking, swipe and hidden-tab timer pausing. One <Toaster /> lives at the root.
+ * Sonner's toaster <section> is already a polite live region, so the toast bodies
+ * carry no role of their own (a nested status/alert gets read twice).
  */
+
+/**
+ * Open a story in LIVE (toast "View", tape row): switch tab, bring it in, expand and
+ * focus it. A failure says so instead of leaving the reader on a tab that did nothing.
+ */
+export async function openArticle(id: string): Promise<void> {
+  navigate('live');
+  const res = await useStore.getState().focusArticle(id);
+  if (!res.ok) notifyError(res.message);
+}
 
 function BreakingToast({ id, article }: { id: string | number; article: NewsArticle }) {
   const chain = getChainMeta(article.chain);
   const view = () => {
     toast.dismiss(id);
-    navigate('live');
-    void useStore.getState().focusArticle(article.id);
+    void openArticle(article.id);
   };
   return (
-    <div className="toast toast--breaking" role="status">
+    <div className="toast toast--breaking">
       <div className="toast__row">
         <span className="tag tag--breaking">Breaking</span>
         <span className="toast__ticker mono">{fmtTicker(article.symbol)}</span>
         <span className="toast__chain mono">
-          <span className="dot" style={{ ['--dot' as string]: chain.color }} />
+          <span className="dot" style={{ ['--dot' as string]: chain.color }} aria-hidden="true" />
           {chain.short}
         </span>
         <button type="button" className="toast__close" aria-label="Dismiss" onClick={() => toast.dismiss(id)}>
@@ -52,7 +63,7 @@ export function notifyBreaking(article: NewsArticle): void {
 export function notifyCopied(what: string): void {
   toast.custom(
     () => (
-      <div className="toast toast--small" role="status">
+      <div className="toast toast--small">
         <IconCheck size={13} className="pos" />
         <span>{what} copied</span>
       </div>
@@ -64,8 +75,9 @@ export function notifyCopied(what: string): void {
 export function notifyError(message: string): void {
   toast.custom(
     () => (
-      <div className="toast toast--small" role="alert">
-        <span className="dot" style={{ ['--dot' as string]: 'var(--red)' }} />
+      <div className="toast toast--small">
+        <span className="dot" style={{ ['--dot' as string]: 'var(--red)' }} aria-hidden="true" />
+        <span className="sr-only">Error: </span>
         <span>{message}</span>
       </div>
     ),

@@ -5,8 +5,9 @@
 import type { TokenSnapshot } from '../../../shared/types.js';
 import { errMsg, logger, type Logger } from '../log.js';
 import { dsLatestListings, dsTokens, type DsListing } from '../sources/dexscreener.js';
+import type { CallOpts } from '../net/http.js';
 import { gtNewPools, gtTokenInfo, gtTokenTopPool } from '../sources/geckoterminal.js';
-import { emptySnapshot, mergeSnapshots } from '../sources/merge.js';
+import { emptySnapshot, mergeAcrossPools, mergeSnapshots } from '../sources/merge.js';
 import { pumpNewest } from '../sources/pumpfun.js';
 import type { ChainAdapter, ChainConfig, TokenEnrichment } from './types.js';
 
@@ -20,11 +21,20 @@ const PUMPFUN_DISCOVERY_LIMIT = 40;
 /** discovered tokens that get a DexScreener market-data refresh per cycle (2 batch calls) */
 const DISCOVERY_REFRESH_LIMIT = 60;
 
+/**
+ * Each discovery source must answer within this long (queueing for its provider's
+ * limiter included). A provider that is paused or slow is abandoned for this cycle
+ * instead of holding back the sources that already answered.
+ */
+const DISCOVERY_SOURCE_DEADLINE_MS = 12_000;
+/** GeckoTerminal paused after a 429 for longer than this: skip it this cycle (polled again in 55 s) */
+const GT_DISCOVERY_MAX_PAUSE_WAIT_MS = 5_000;
+
 interface DiscoverySource {
   name: string;
   /** a source whose data refreshes slower than the discovery cadence is polled at most this often */
   minIntervalMs?: number;
-  fetch(config: ChainConfig, now: number): Promise<TokenSnapshot[]>;
+  fetch(config: ChainConfig, now: number, signal: AbortSignal): Promise<TokenSnapshot[]>;
 }
 
 /**
@@ -37,20 +47,25 @@ const GT_NEW_POOLS_INTERVAL_MS = 55_000;
 const geckoNewPools: DiscoverySource = {
   name: 'geckoterminal',
   minIntervalMs: GT_NEW_POOLS_INTERVAL_MS,
-  fetch: (config) => gtNewPools(config.geckoNetwork, config.id),
+  fetch: (config, _now, signal) =>
+    gtNewPools(config.geckoNetwork, config.id, {
+      signal,
+      maxQueueMs: DISCOVERY_SOURCE_DEADLINE_MS,
+      maxPauseWaitMs: GT_DISCOVERY_MAX_PAUSE_WAIT_MS,
+    }),
 };
 
 const dexscreenerListings: DiscoverySource = {
   name: 'dexscreener-listings',
-  fetch: async (config, now) =>
-    (await dsLatestListings())
+  fetch: async (config, now, signal) =>
+    (await dsLatestListings({ signal, maxQueueMs: DISCOVERY_SOURCE_DEADLINE_MS }))
       .filter((l) => l.dsChainId === config.dexscreenerChainId)
       .map((l) => listingSnapshot(config, l, now)),
 };
 
 const pumpfunNewest: DiscoverySource = {
   name: 'pumpfun',
-  fetch: () => pumpNewest(PUMPFUN_DISCOVERY_LIMIT),
+  fetch: (_config, _now, signal) => pumpNewest(PUMPFUN_DISCOVERY_LIMIT, { signal, maxQueueMs: DISCOVERY_SOURCE_DEADLINE_MS }),
 };
 
 /** Chain-specific launchpads, on top of the generic discovery sources. */
@@ -102,9 +117,9 @@ class GenericChainAdapter implements ChainAdapter {
     return this.youngestFirst([...found.values()], now);
   }
 
-  refresh(addresses: string[]): Promise<TokenSnapshot[]> {
+  refresh(addresses: string[], o: CallOpts = {}): Promise<TokenSnapshot[]> {
     if (addresses.length === 0) return Promise.resolve([]);
-    return dsTokens(this.config.dexscreenerChainId, this.config.id, addresses);
+    return dsTokens(this.config.dexscreenerChainId, this.config.id, addresses, o);
   }
 
   /**
@@ -112,10 +127,10 @@ class GenericChainAdapter implements ChainAdapter {
    * pool (both cached by the source module). Null when GeckoTerminal does not know
    * the token; throws when token info failed. A failed pool lookup only drops the wallets.
    */
-  async enrich(address: string): Promise<TokenEnrichment | null> {
+  async enrich(address: string, o: CallOpts = {}): Promise<TokenEnrichment | null> {
     const addr = address.trim();
     const { geckoNetwork, id } = this.config;
-    const [info, pool] = await Promise.allSettled([gtTokenInfo(geckoNetwork, addr), gtTokenTopPool(geckoNetwork, id, addr)]);
+    const [info, pool] = await Promise.allSettled([gtTokenInfo(geckoNetwork, addr, o), gtTokenTopPool(geckoNetwork, id, addr, o)]);
     if (info.status === 'rejected') throw info.reason;
     if (!info.value) return null;
     if (pool.status === 'rejected') this.log.debug('enrich pool lookup failed', { address: addr, error: errMsg(pool.reason) });
@@ -134,14 +149,14 @@ class GenericChainAdapter implements ChainAdapter {
    * and the other contributes only token-level facts, never its per-pool windows.
    * Null when neither market source knows the token; throws only if every source failed.
    */
-  async lookup(address: string): Promise<TokenSnapshot | null> {
+  async lookup(address: string, o: CallOpts = {}): Promise<TokenSnapshot | null> {
     const addr = address.trim();
     if (!this.isAddress(addr)) return null;
     const { geckoNetwork, dexscreenerChainId, id } = this.config;
     const [ds, pool, info] = await Promise.allSettled([
-      dsTokens(dexscreenerChainId, id, [addr]),
-      gtTokenTopPool(geckoNetwork, id, addr),
-      gtTokenInfo(geckoNetwork, addr),
+      dsTokens(dexscreenerChainId, id, [addr], o),
+      gtTokenTopPool(geckoNetwork, id, addr, o),
+      gtTokenInfo(geckoNetwork, addr, o),
     ]);
     const failed = [ds, pool, info].filter((r) => r.status === 'rejected').map((r) => errMsg(r.reason));
     if (failed.length === 3) throw new Error(`lookup failed: ${failed.join('; ')}`);
@@ -150,32 +165,20 @@ class GenericChainAdapter implements ChainAdapter {
     const key = this.normalizeAddress(addr);
     const dsSnap = ds.status === 'fulfilled' ? (ds.value.find((s) => this.normalizeAddress(s.address) === key) ?? null) : null;
     const gtSnap = pool.status === 'fulfilled' ? pool.value : null;
-    const market = gtSnap && dsSnap ? this.combineMarkets(gtSnap, dsSnap) : (dsSnap ?? gtSnap);
+    const market = gtSnap && dsSnap ? mergeAcrossPools(gtSnap, dsSnap, 'deeper') : (dsSnap ?? gtSnap);
     if (!market) return null;
     return info.status === 'fulfilled' && info.value ? mergeSnapshots(market, info.value) : market;
   }
 
-  private combineMarkets(gt: TokenSnapshot, ds: TokenSnapshot): TokenSnapshot {
-    const pairKey = (s: TokenSnapshot) => (s.pairAddress ? this.normalizeAddress(s.pairAddress) : null);
-    if (pairKey(gt) === null || pairKey(gt) === pairKey(ds)) return mergeSnapshots(gt, ds);
-    const [main, other] = (ds.liquidityUsd ?? -1) >= (gt.liquidityUsd ?? -1) ? [ds, gt] : [gt, ds];
-    return mergeSnapshots(main, {
-      symbol: main.symbol === '' ? other.symbol : undefined,
-      name: main.name === '' ? other.name : undefined,
-      marketCapUsd: main.marketCapUsd ?? other.marketCapUsd,
-      fdvUsd: main.fdvUsd ?? other.fdvUsd,
-      createdAt: other.createdAt,
-      imageUrl: main.imageUrl ?? other.imageUrl,
-      links: other.links,
-      sources: other.sources,
-      boosted: other.boosted,
-    });
-  }
-
-  /** Run every discovery source that is due; merge by normalized address in source order. */
+  /**
+   * Run every discovery source that is due, each within its own deadline; merge by
+   * normalized address in source order.
+   */
   private async collect(now: number): Promise<Map<string, TokenSnapshot>> {
     const due = this.sources.filter((s) => this.isDue(s, now));
-    const results = await Promise.allSettled(due.map((s) => s.fetch(this.config, now)));
+    const results = await Promise.allSettled(
+      due.map((s) => withDeadline((signal) => s.fetch(this.config, now, signal), DISCOVERY_SOURCE_DEADLINE_MS, s.name)),
+    );
     const found = new Map<string, TokenSnapshot>();
     const errors: string[] = [];
     results.forEach((result, i) => {
@@ -202,13 +205,19 @@ class GenericChainAdapter implements ChainAdapter {
     return true;
   }
 
+  /** Two sources may report different pools of one token: the deeper pool is kept whole. */
   private add(found: Map<string, TokenSnapshot>, snap: TokenSnapshot): void {
     const key = this.normalizeAddress(snap.address);
     const prev = found.get(key);
-    found.set(key, prev ? mergeSnapshots(prev, snap) : snap);
+    found.set(key, prev ? mergeAcrossPools(prev, snap, 'deeper') : snap);
   }
 
-  /** DexScreener refresh of the first discovered tokens; on failure they keep their discovery data. */
+  /**
+   * DexScreener refresh of the first discovered tokens; on failure they keep their
+   * discovery data. The refresh describes the token's main pool, which is not always
+   * the new pool discovery found: its pool then replaces the discovered one whole
+   * (the scanner's refreshes read the same pool, so the token's history stays one series).
+   */
   private async fillMarketData(found: Map<string, TokenSnapshot>): Promise<void> {
     const targets = [...found.values()].slice(0, DISCOVERY_REFRESH_LIMIT).map((s) => s.address);
     if (targets.length === 0) return;
@@ -217,7 +226,7 @@ class GenericChainAdapter implements ChainAdapter {
       for (const snap of fresh) {
         const key = this.normalizeAddress(snap.address);
         const prev = found.get(key);
-        if (prev) found.set(key, mergeSnapshots(prev, snap));
+        if (prev) found.set(key, mergeAcrossPools(prev, snap, 'extra'));
       }
     } catch (e) {
       this.log.warn('discovery refresh failed', { error: errMsg(e), tokens: targets.length });
@@ -230,6 +239,23 @@ class GenericChainAdapter implements ChainAdapter {
       .filter((s) => s.symbol !== '')
       .filter((s) => s.createdAt === null || now - s.createdAt <= this.maxAgeMs)
       .sort(newestFirst);
+  }
+}
+
+/** Runs `work` with an abort signal that fires after `ms`; rejects at the deadline even if `work` ignores the signal. */
+async function withDeadline<T>(work: (signal: AbortSignal) => Promise<T>, ms: number, label: string): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`${label} did not answer within ${Math.round(ms / 1000)}s`));
+    }, ms);
+  });
+  try {
+    return await Promise.race([work(controller.signal), deadline]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

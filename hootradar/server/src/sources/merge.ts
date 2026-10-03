@@ -47,9 +47,23 @@ export function emptySnapshot(chain: ChainId, address: string, ts: number): Toke
  * For every field a non-null value in `extra` wins, otherwise `base` is kept;
  * per-window maps and security flags merge field by field. Sources and links
  * are unioned (links deduped by URL), `boosted` is OR-ed, `createdAt` keeps the
- * earliest known value and `ts` the latest. Pure and deterministic.
+ * earliest known value and `ts` the latest. The liquidity provenance
+ * (`liquiditySource`, `liquidityAdjusted`) follows whichever liquidity figure won,
+ * and `pairCreatedAt` follows `pairAddress`. Pure and deterministic.
+ *
+ * Field-by-field merging is only right for two observations of the SAME pool (or
+ * when one side names no pool): use `mergeAcrossPools` when the pools may differ.
  */
 export function mergeSnapshots(base: TokenSnapshot, extra: Partial<TokenSnapshot>): TokenSnapshot {
+  const liquidityFromExtra = extra.liquidityUsd != null;
+  const pairFromExtra = extra.pairAddress != null;
+  const pairCreatedAt = pairFromExtra
+    ? samePool(base, { pairAddress: extra.pairAddress ?? null })
+      ? (extra.pairCreatedAt ?? base.pairCreatedAt)
+      : extra.pairCreatedAt
+    : base.pairCreatedAt;
+  const liquiditySource = liquidityFromExtra ? extra.liquiditySource : base.liquiditySource;
+  const liquidityAdjusted = liquidityFromExtra ? extra.liquidityAdjusted : base.liquidityAdjusted;
   return {
     chain: base.chain,
     address: preferChecksummed(base.address, extra.address),
@@ -57,6 +71,10 @@ export function mergeSnapshots(base: TokenSnapshot, extra: Partial<TokenSnapshot
     name: pickText(extra.name, base.name),
     pairAddress: extra.pairAddress ?? base.pairAddress,
     dex: extra.dex ?? base.dex,
+    // optional provenance fields are only present when a provider reported them
+    ...(pairCreatedAt !== undefined ? { pairCreatedAt } : {}),
+    ...(liquiditySource !== undefined ? { liquiditySource } : {}),
+    ...(liquidityAdjusted !== undefined ? { liquidityAdjusted } : {}),
     ts: Math.max(base.ts, extra.ts ?? base.ts),
     priceUsd: extra.priceUsd ?? base.priceUsd,
     marketCapUsd: extra.marketCapUsd ?? base.marketCapUsd,
@@ -74,6 +92,65 @@ export function mergeSnapshots(base: TokenSnapshot, extra: Partial<TokenSnapshot
     sources: unique([...base.sources, ...(extra.sources ?? [])]),
     boosted: base.boosted || extra.boosted === true,
   };
+}
+
+/** True when both observations describe the same pool, or at least one names no pool. */
+export function samePool(a: Pick<TokenSnapshot, 'pairAddress'>, b: Pick<TokenSnapshot, 'pairAddress'>): boolean {
+  if (a.pairAddress == null || b.pairAddress == null) return true;
+  return addressKey(a.pairAddress) === addressKey(b.pairAddress);
+}
+
+/** The snapshot carries market figures of its own pool (not only identity / valuation). */
+export function hasMarketData(s: TokenSnapshot): boolean {
+  return (
+    s.liquidityUsd != null ||
+    Object.values(s.volumeUsd).some((v) => v != null) ||
+    Object.values(s.txns).some((t) => t != null && (t.buys != null || t.sells != null))
+  );
+}
+
+/**
+ * `main`'s pool with only the token-level facts of `other` (another pool of the same
+ * token): identity, valuation, holders, security, age, links, image, sources, boost.
+ * Per-pool figures (windows, liquidity, price, dex, pool age) never cross pools, so a
+ * window can never pair one pool's trade counts with another pool's wallets.
+ */
+export function withTokenFacts(main: TokenSnapshot, other: TokenSnapshot): TokenSnapshot {
+  return mergeSnapshots(main, {
+    ts: other.ts,
+    symbol: main.symbol === '' ? other.symbol : undefined,
+    name: main.name === '' ? other.name : undefined,
+    marketCapUsd: main.marketCapUsd ?? other.marketCapUsd,
+    fdvUsd: main.fdvUsd ?? other.fdvUsd,
+    holders: main.holders ?? other.holders,
+    top10HolderPct: main.top10HolderPct ?? other.top10HolderPct,
+    security: main.security ? null : other.security,
+    createdAt: other.createdAt,
+    imageUrl: main.imageUrl ?? other.imageUrl,
+    links: other.links,
+    sources: other.sources,
+    boosted: other.boosted,
+  });
+}
+
+/**
+ * Merges two observations of one token that may describe different pools. Same pool
+ * (or one side names none): field-by-field `mergeSnapshots`. Different pools: one pool
+ * is kept whole and the other only adds token-level facts. `prefer: 'extra'` keeps
+ * `extra`'s pool whenever it has market data (an authoritative refresh); 'deeper' keeps
+ * the more liquid pool (ties go to `extra`).
+ */
+export function mergeAcrossPools(
+  base: TokenSnapshot,
+  extra: TokenSnapshot,
+  prefer: 'extra' | 'deeper' = 'deeper',
+): TokenSnapshot {
+  if (samePool(base, extra)) return mergeSnapshots(base, extra);
+  const extraWins =
+    prefer === 'extra'
+      ? hasMarketData(extra) || !hasMarketData(base)
+      : (extra.liquidityUsd ?? -1) >= (base.liquidityUsd ?? -1);
+  return extraWins ? withTokenFacts(extra, base) : withTokenFacts(base, extra);
 }
 
 /**

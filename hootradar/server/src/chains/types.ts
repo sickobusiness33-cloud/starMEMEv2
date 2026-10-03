@@ -1,4 +1,5 @@
 import type { ChainId, TokenSnapshot } from '../../../shared/types.js';
+import type { CallOpts } from '../net/http.js';
 
 export interface ChainConfig {
   id: ChainId;
@@ -45,11 +46,14 @@ export interface ChainAdapter {
    */
   discover(): Promise<TokenSnapshot[]>;
   /** Batch market-data refresh for already-known tokens. Missing tokens are simply absent from the result. */
-  refresh(addresses: string[]): Promise<TokenSnapshot[]>;
-  /** Holders, holder concentration, security flags and pool wallet counts. Rate-limited provider: call sparingly. */
-  enrich(address: string): Promise<TokenEnrichment | null>;
-  /** Full lookup of one token by address (Radar). */
-  lookup(address: string): Promise<TokenSnapshot | null>;
+  refresh(addresses: string[], o?: CallOpts): Promise<TokenSnapshot[]>;
+  /**
+   * Holders, holder concentration, security flags and pool wallet counts. Rate-limited
+   * provider: call sparingly. `o.lane: 'radar'` draws from the interactive budget.
+   */
+  enrich(address: string, o?: CallOpts): Promise<TokenEnrichment | null>;
+  /** Full lookup of one token by address (Radar: pass `lane: 'radar'` and the stage's signal). */
+  lookup(address: string, o?: CallOpts): Promise<TokenSnapshot | null>;
   isAddress(query: string): boolean;
   /** canonical key form of an address (lowercase for EVM) */
   normalizeAddress(address: string): string;

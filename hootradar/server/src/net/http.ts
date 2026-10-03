@@ -303,6 +303,15 @@ registerLimiter('biz', { perMinute: 30, minIntervalMs: 1_000, maxQueue: 30 });
 /** Which share of a provider's budget a request draws from. */
 export type Lane = 'scan' | 'radar';
 
+/** What a caller of a provider module can ask of its requests. */
+export interface CallOpts {
+  /** 'radar' draws from the interactive lane of the provider's budget (default: the scanner's) */
+  lane?: Lane;
+  signal?: AbortSignal;
+  maxQueueMs?: number;
+  maxPauseWaitMs?: number;
+}
+
 /** The limiter key of a provider's lane: "geckoterminal" or "geckoterminal-radar". */
 export function laneLimiter(provider: string, lane: Lane | undefined): string {
   return lane === 'radar' ? `${provider}-radar` : provider;

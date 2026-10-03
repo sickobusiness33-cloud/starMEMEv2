@@ -2,9 +2,17 @@ import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TokenSnapshot } from '../../shared/types.js';
 import { fetchJson } from '../src/net/http.js';
-import { dsLatestListings, dsSearch, dsTokens, pairLiquidity, parseDsListings, parseDsPairs } from '../src/sources/dexscreener.js';
+import {
+  dsLatestListings,
+  dsSearch,
+  dsTokens,
+  pairLiquidity,
+  pairLiquidityInfo,
+  parseDsListings,
+  parseDsPairs,
+} from '../src/sources/dexscreener.js';
 import { parseGtPools, parseGtTokenInfo, parseGtTokenPools } from '../src/sources/geckoterminal.js';
-import { emptySnapshot, mergeSnapshots, toEpochMs, toNum } from '../src/sources/merge.js';
+import { emptySnapshot, mergeAcrossPools, mergeSnapshots, toEpochMs, toNum } from '../src/sources/merge.js';
 import { parsePumpCoins } from '../src/sources/pumpfun.js';
 
 vi.mock('../src/net/http.js', async (importOriginal) => ({
@@ -229,6 +237,23 @@ describe('DexScreener parsers', () => {
     expect(pairLiquidity(launchPool(0.6))).toBeCloseTo(2 * 0.6 * (0.0000672 / 0.0000000171), 1); // 14x → $4.7K
     expect(pairLiquidity({ liquidity: { usd: 5_000 } })).toBe(5_000); // no reserves → as reported
     expect(pairLiquidity({})).toBeNull();
+    // the two series are flagged so growth is never measured across the switch
+    expect(pairLiquidityInfo(launchPool(1.25)).adjusted).toBe(false);
+    expect(pairLiquidityInfo(launchPool(0.6)).adjusted).toBe(true);
+    const capped = parseDsPairs(fixture('ds_search_pepe.json'), null, TS).find(
+      (s) => s.address === 'A1DBHWmtuYZMpLNXE9xr4B7crD8FAxwHSDnqnk8NwAKS',
+    );
+    expect(capped).toMatchObject({ liquiditySource: 'dexscreener', liquidityAdjusted: true });
+  });
+
+  it('records the creation time of the pool the windows come from', () => {
+    const snaps = parseDsPairs(fixture('ds_search_pepe.json'), null, TS);
+    for (const s of snaps) {
+      expect(s.pairCreatedAt === null || typeof s.pairCreatedAt === 'number').toBe(true);
+      if (s.pairCreatedAt != null && s.createdAt != null) expect(s.pairCreatedAt).toBeGreaterThanOrEqual(s.createdAt);
+    }
+    const gt = parseGtPools(fixture('gt_new_pools_base.json'), 'base', TS);
+    expect(gt.every((s) => s.pairCreatedAt === s.createdAt && s.liquiditySource === 'geckoterminal')).toBe(true);
   });
 
   it('marks pairs with active boosts', () => {
@@ -495,6 +520,40 @@ describe('mergeSnapshots', () => {
     expect(one).toEqual(two);
     expect(a).toEqual(snapshotOfA);
     expect(one.txns.m5).toEqual({ buys: 9, sells: 2, buyers: 1, sellers: 2 });
+  });
+
+  it('keeps provenance with the figure it describes', () => {
+    const a = { ...base(), pairAddress: 'PoolA', pairCreatedAt: 1, liquidityUsd: 10, liquiditySource: 'geckoterminal' };
+    const b = { pairAddress: 'PoolA', pairCreatedAt: 2, liquidityUsd: 20, liquiditySource: 'dexscreener', liquidityAdjusted: true };
+    const merged = mergeSnapshots(a, b);
+    expect(merged).toMatchObject({ liquidityUsd: 20, liquiditySource: 'dexscreener', liquidityAdjusted: true, pairCreatedAt: 2 });
+    expect(mergeSnapshots(a, { holders: 5 })).toMatchObject({ liquiditySource: 'geckoterminal', pairCreatedAt: 1 });
+    expect(mergeSnapshots(base(), {})).not.toHaveProperty('pairCreatedAt');
+  });
+
+  it('mergeAcrossPools keeps one pool whole when two observations describe different pools', () => {
+    const poolA = {
+      ...base(),
+      pairAddress: 'PoolA',
+      liquidityUsd: 5_000,
+      txns: { m5: { buys: 1, sells: 1, buyers: 9, sellers: 9 }, m15: { buys: 3, sells: 3, buyers: 2, sellers: 2 } },
+      holders: 120,
+    };
+    const poolB = {
+      ...emptySnapshot('solana', poolA.address, 2000),
+      pairAddress: 'PoolB',
+      liquidityUsd: 50_000,
+      txns: { m5: { buys: 40, sells: 10, buyers: null, sellers: null } },
+    };
+    const deeper = mergeAcrossPools(poolA, poolB, 'deeper');
+    expect(deeper.pairAddress).toBe('PoolB');
+    expect(deeper.txns).toEqual({ m5: { buys: 40, sells: 10, buyers: null, sellers: null } });
+    expect(deeper.holders).toBe(120); // token-level fact carried over
+    expect(deeper.ts).toBe(2000);
+    // same pool: plain field-by-field merge
+    expect(mergeAcrossPools(poolA, { ...poolB, pairAddress: 'PoolA' }).txns.m5).toEqual({ buys: 40, sells: 10, buyers: 9, sellers: 9 });
+    // 'extra' keeps the refresh's pool even when it is thinner
+    expect(mergeAcrossPools({ ...poolA, liquidityUsd: 90_000 }, poolB, 'extra').pairAddress).toBe('PoolB');
   });
 
   it('emptySnapshot has no invented values', () => {

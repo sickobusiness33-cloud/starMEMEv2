@@ -101,6 +101,12 @@ export interface TokenSnapshot {
 /** Features derived from the latest snapshot + recent history. Null = not computable from available data. */
 export interface DerivedMetrics {
   ageMinutes: number | null;
+  /**
+   * Age of the pool the per-window figures were measured on (it can be younger than
+   * the token, e.g. after a launchpad graduation); the 5m-vs-1h ratios and launch
+   * rates are computed over it. Null when it cannot be established.
+   */
+  windowAgeMinutes?: number | null;
   /** (buys+sells) per minute over the last 5 minutes */
   txPerMin: number | null;
   /** tx rate in m5 divided by average tx rate over h1 (1 = steady, 3 = 3x faster) */

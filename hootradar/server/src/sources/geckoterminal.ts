@@ -5,7 +5,7 @@
  */
 import type { ChainId, TokenLink, TokenSecurity, TokenSnapshot, TxCounts } from '../../../shared/types.js';
 import type { TokenEnrichment } from '../chains/types.js';
-import { fetchJson, HttpError } from '../net/http.js';
+import { fetchJson, HttpError, laneLimiter, type CallOpts } from '../net/http.js';
 import {
   addressKey,
   asArray,
@@ -22,10 +22,12 @@ import {
 
 const GT_API = 'https://api.geckoterminal.com/api/v2';
 const GT_HEADERS = { accept: 'application/json;version=20230203' };
-const LIMITER = 'geckoterminal';
+const PROVIDER = 'geckoterminal';
 const INCLUDE = 'include=base_token,quote_token,dex';
 const TOKEN_INFO_TTL_MS = 3 * 60_000;
 const TOKEN_POOLS_TTL_MS = 30_000;
+/** GeckoTerminal does not know the address: asked again only after this (Radar queries can be random) */
+const NOT_FOUND_TTL_MS = 5 * 60_000;
 
 /**
  * Well-known quote assets. A pool against one of these is a market for the
@@ -61,29 +63,43 @@ const QUOTE_SYMBOLS = new Set(['SOL', 'WSOL', 'ETH', 'WETH', 'BNB', 'WBNB', 'USD
 /* ───────────────────────────── fetchers ───────────────────────────── */
 
 /** Newest pools on a network, one snapshot per new token (its most liquid new pool). */
-export async function gtNewPools(network: string, chain: ChainId): Promise<TokenSnapshot[]> {
+export async function gtNewPools(network: string, chain: ChainId, o: CallOpts = {}): Promise<TokenSnapshot[]> {
   const url = `${GT_API}/networks/${enc(network)}/new_pools?${INCLUDE}&page=1`;
-  const json = await fetchJson(url, { limiter: LIMITER, headers: GT_HEADERS });
+  const json = await fetchJson(url, { ...requestOpts(o), headers: GT_HEADERS });
   return parseGtPools(json, chain);
 }
 
 /** Holders, top-10 concentration, security flags and socials. Null when GeckoTerminal does not know the token. */
-export async function gtTokenInfo(network: string, address: string): Promise<TokenEnrichment | null> {
+export async function gtTokenInfo(network: string, address: string, o: CallOpts = {}): Promise<TokenEnrichment | null> {
   const url = `${GT_API}/networks/${enc(network)}/tokens/${enc(address)}/info`;
-  const json = await fetchOrNullOn404(url, TOKEN_INFO_TTL_MS);
+  const json = await fetchOrNullOn404(url, TOKEN_INFO_TTL_MS, o);
   return json === null ? null : parseGtTokenInfo(json);
 }
 
 /** The token's most liquid pool as a snapshot (GeckoTerminal adds unique buyers/sellers and m15/m30 windows). */
-export async function gtTokenTopPool(network: string, chain: ChainId, address: string): Promise<TokenSnapshot | null> {
+export async function gtTokenTopPool(
+  network: string,
+  chain: ChainId,
+  address: string,
+  o: CallOpts = {},
+): Promise<TokenSnapshot | null> {
   const url = `${GT_API}/networks/${enc(network)}/tokens/${enc(address)}/pools?${INCLUDE}&page=1`;
-  const json = await fetchOrNullOn404(url, TOKEN_POOLS_TTL_MS);
+  const json = await fetchOrNullOn404(url, TOKEN_POOLS_TTL_MS, o);
   return json === null ? null : parseGtTokenPools(json, chain, address);
 }
 
-async function fetchOrNullOn404(url: string, cacheTtlMs: number): Promise<unknown> {
+function requestOpts(o: CallOpts) {
+  return {
+    limiter: laneLimiter(PROVIDER, o.lane),
+    signal: o.signal,
+    maxQueueMs: o.maxQueueMs,
+    maxPauseWaitMs: o.maxPauseWaitMs,
+  };
+}
+
+async function fetchOrNullOn404(url: string, cacheTtlMs: number, o: CallOpts): Promise<unknown> {
   try {
-    return await fetchJson(url, { limiter: LIMITER, headers: GT_HEADERS, cacheTtlMs });
+    return await fetchJson(url, { ...requestOpts(o), headers: GT_HEADERS, cacheTtlMs, notFoundTtlMs: NOT_FOUND_TTL_MS });
   } catch (e) {
     if (e instanceof HttpError && e.status === 404) return null;
     throw e;
@@ -282,20 +298,24 @@ function poolSnapshot(sides: PoolSides, side: 'base' | 'quote', chain: ChainId, 
   const { attrs } = sides;
   const inverted = side === 'quote';
   const token = inverted ? sides.quote : sides.base;
+  const liquidityUsd = toNum(attrs.reserve_in_usd);
+  const poolCreatedAt = toEpochMs(attrs.pool_created_at);
   return {
     ...emptySnapshot(chain, token.address, ts),
     symbol: token.symbol,
     name: token.name,
     pairAddress: toStr(attrs.address),
     dex: sides.dex,
+    pairCreatedAt: poolCreatedAt,
+    liquiditySource: liquidityUsd !== null ? PROVIDER : null,
     priceUsd: toNum(inverted ? attrs.quote_token_price_usd : attrs.base_token_price_usd),
     marketCapUsd: inverted ? null : toNum(attrs.market_cap_usd),
     fdvUsd: inverted ? null : toNum(attrs.fdv_usd),
-    liquidityUsd: toNum(attrs.reserve_in_usd),
+    liquidityUsd,
     volumeUsd: mapWindows(attrs.volume_usd, toNum),
     priceChangePct: inverted ? {} : mapWindows(attrs.price_change_percentage, toNum),
     txns: mapWindows(attrs.transactions, (v) => readTxCounts(v, inverted)),
-    createdAt: toEpochMs(attrs.pool_created_at),
+    createdAt: poolCreatedAt,
     imageUrl: token.imageUrl,
     sources: ['geckoterminal'],
   };

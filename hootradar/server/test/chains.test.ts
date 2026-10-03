@@ -137,8 +137,8 @@ describe('adapter.discover', () => {
   it('merges GeckoTerminal, pump.fun and DexScreener listings, then refreshes market data', async () => {
     const tokens = await createAdapter(CHAIN_CONFIGS.solana).discover();
 
-    expect(gtNewPoolsMock).toHaveBeenCalledWith('solana', 'solana');
-    expect(pumpNewestMock).toHaveBeenCalledWith(40);
+    expect(gtNewPoolsMock).toHaveBeenCalledWith('solana', 'solana', expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(pumpNewestMock).toHaveBeenCalledWith(40, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(dsTokensMock).toHaveBeenCalledTimes(1);
     const [dsChain, chain, refreshed] = dsTokensMock.mock.calls[0]!;
     expect([dsChain, chain]).toEqual(['solana', 'solana']);
@@ -243,7 +243,7 @@ describe('adapter.discover', () => {
     dsTokensMock.mockResolvedValue([]);
     const tokens = await createAdapter(CHAIN_CONFIGS.base).discover();
     expect(pumpNewestMock).not.toHaveBeenCalled();
-    expect(gtNewPoolsMock).toHaveBeenCalledWith('base', 'base');
+    expect(gtNewPoolsMock).toHaveBeenCalledWith('base', 'base', expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(dsTokensMock.mock.calls[0]?.[0]).toBe('base');
     // only pools from the last 24h, and no Solana listings leak in
     expect(tokens.map((t) => t.address).sort()).toEqual(pools.map((p) => p.address).sort());
@@ -271,13 +271,13 @@ describe('adapter.refresh / enrich', () => {
     expect(dsTokensMock).not.toHaveBeenCalled();
     dsTokensMock.mockResolvedValue([]);
     await adapter.refresh(['0x2B449C94A9164979e2FEa22E789c437102569303']);
-    expect(dsTokensMock).toHaveBeenCalledWith('bsc', 'bsc', ['0x2B449C94A9164979e2FEa22E789c437102569303']);
+    expect(dsTokensMock).toHaveBeenCalledWith('bsc', 'bsc', ['0x2B449C94A9164979e2FEa22E789c437102569303'], {});
   });
 
   it('enrich reads GeckoTerminal token info', async () => {
     gtTokenInfoMock.mockResolvedValue(parseGtTokenInfo(fixture('gt_token_info_bonk.json')));
     const info = await createAdapter(CHAIN_CONFIGS.solana).enrich(BONK);
-    expect(gtTokenInfoMock).toHaveBeenCalledWith('solana', BONK);
+    expect(gtTokenInfoMock).toHaveBeenCalledWith('solana', BONK, {});
     expect(info?.holders).toBe(1024516);
   });
 
@@ -287,7 +287,7 @@ describe('adapter.refresh / enrich', () => {
     gtTokenTopPoolMock.mockResolvedValue(pool);
     const adapter = createAdapter(CHAIN_CONFIGS.solana);
     const info = await adapter.enrich(BONK);
-    expect(gtTokenTopPoolMock).toHaveBeenCalledWith('solana', 'solana', BONK);
+    expect(gtTokenTopPoolMock).toHaveBeenCalledWith('solana', 'solana', BONK, {});
     expect(info?.wallets).toEqual({ pairAddress: pool.pairAddress, txns: pool.txns });
     expect(info?.wallets?.txns.m5?.buyers).toBe(8);
 
@@ -309,7 +309,7 @@ describe('adapter.lookup', () => {
 
   it('combines DexScreener market data, GeckoTerminal wallets/windows and token info', async () => {
     const snap = await createAdapter(CHAIN_CONFIGS.solana).lookup(BONK);
-    expect(gtTokenTopPoolMock).toHaveBeenCalledWith('solana', 'solana', BONK);
+    expect(gtTokenTopPoolMock).toHaveBeenCalledWith('solana', 'solana', BONK, {});
     expect(snap).toMatchObject({
       chain: 'solana',
       address: BONK,
@@ -363,5 +363,57 @@ describe('adapter.lookup', () => {
     gtTokenTopPoolMock.mockRejectedValue(new Error('b'));
     gtTokenInfoMock.mockRejectedValue(new Error('c'));
     await expect(createAdapter(CHAIN_CONFIGS.solana).lookup(BONK)).rejects.toThrow('lookup failed');
+  });
+});
+
+describe('adapter.discover — pools and deadlines', () => {
+  it("never pairs one pool's trade counts with another pool's wallets (DexScreener's main pool replaces the new pool whole)", async () => {
+    const gt = gtSolana().find((s) => s.address === FIRED)!;
+    expect(gt.txns.m5?.buyers).not.toBeNull(); // GeckoTerminal's new pool A has wallet counts
+    dsTokensMock.mockImplementation(async (_ds, _chain, addrs) =>
+      addrs
+        .filter((a) => a === FIRED)
+        .map((a) => ({
+          ...emptySnapshot('solana', a, NOW),
+          symbol: 'FIRED',
+          name: 'FIRED',
+          pairAddress: 'PoolB111111111111111111111111111111111111111',
+          pairCreatedAt: NOW - 2 * HOUR,
+          dex: 'raydium',
+          liquidityUsd: 40_000,
+          liquiditySource: 'dexscreener',
+          volumeUsd: { m5: 500, h1: 9_000 },
+          txns: { m5: { buys: 30, sells: 10, buyers: null, sellers: null } },
+          sources: ['dexscreener'],
+        })),
+    );
+    const tokens = await createAdapter(CHAIN_CONFIGS.solana).discover();
+    const fired = tokens.find((t) => t.address === FIRED)!;
+    expect(fired.pairAddress).toBe('PoolB111111111111111111111111111111111111111');
+    expect(fired.dex).toBe('raydium');
+    expect(fired.pairCreatedAt).toBe(NOW - 2 * HOUR);
+    expect(fired.txns).toEqual({ m5: { buys: 30, sells: 10, buyers: null, sellers: null } }); // no m15/m30 or wallets from pool A
+    expect(fired.volumeUsd).toEqual({ m5: 500, h1: 9_000 });
+    expect(fired.liquidityUsd).toBe(40_000);
+    // token-level facts still come from discovery
+    expect(fired.createdAt).toBe(gt.createdAt);
+    expect(fired.sources).toEqual(expect.arrayContaining(['geckoterminal', 'dexscreener']));
+  });
+
+  it('a stalled GeckoTerminal never holds back the sources that already answered', async () => {
+    vi.useRealTimers();
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    let gtSignal: AbortSignal | undefined;
+    gtNewPoolsMock.mockImplementation((_n, _c, o) => {
+      gtSignal = o?.signal;
+      return new Promise(() => {}); // e.g. queued behind a paused limiter
+    });
+    const p = createAdapter(CHAIN_CONFIGS.solana).discover();
+    await vi.advanceTimersByTimeAsync(12_001);
+    const tokens = await p;
+    expect(tokens.length).toBeGreaterThan(0);
+    expect(tokens.some((t) => t.sources.includes('pumpfun'))).toBe(true);
+    expect(gtSignal?.aborted).toBe(true); // its queued request was cancelled, not left in the limiter
   });
 });

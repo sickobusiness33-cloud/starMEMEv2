@@ -4,7 +4,7 @@
  */
 import type { ChainId, TokenLink, TokenSnapshot, TxCounts } from '../../../shared/types.js';
 import { errMsg, logger } from '../log.js';
-import { fetchJson } from '../net/http.js';
+import { fetchJson, laneLimiter, type CallOpts } from '../net/http.js';
 import {
   addressKey,
   asArray,
@@ -45,7 +45,12 @@ export interface DsListing {
  * token that DexScreener lists as the BASE token of at least one pair (its most
  * liquid pair). Throws only when every batch failed.
  */
-export async function dsTokens(dsChainId: string, chain: ChainId, addresses: string[]): Promise<TokenSnapshot[]> {
+export async function dsTokens(
+  dsChainId: string,
+  chain: ChainId,
+  addresses: string[],
+  o: CallOpts = {},
+): Promise<TokenSnapshot[]> {
   const wanted = new Map<string, string>();
   for (const a of addresses) {
     const trimmed = a.trim();
@@ -55,7 +60,7 @@ export async function dsTokens(dsChainId: string, chain: ChainId, addresses: str
   const results = await Promise.allSettled(
     batches.map((batch) =>
       fetchJson(`${DS_API}/tokens/v1/${encodeURIComponent(dsChainId)}/${batch.map(encodeURIComponent).join(',')}`, {
-        limiter: 'dexscreener',
+        ...requestOpts(o),
       }),
     ),
   );
@@ -82,19 +87,28 @@ export async function dsTokens(dsChainId: string, chain: ChainId, addresses: str
 }
 
 /** Free-text search across every chain DexScreener covers; callers filter by chain. */
-export async function dsSearch(query: string): Promise<TokenSnapshot[]> {
+export async function dsSearch(query: string, o: CallOpts = {}): Promise<TokenSnapshot[]> {
   const q = query.trim();
   if (!q) return [];
   const json = await fetchJson(`${DS_API}/latest/dex/search?q=${encodeURIComponent(q)}`, {
-    limiter: 'dexscreener',
+    ...requestOpts(o),
     cacheTtlMs: SEARCH_TTL_MS,
   });
   return parseDsPairs(json, null);
 }
 
+function requestOpts(o: CallOpts) {
+  return {
+    limiter: laneLimiter('dexscreener', o.lane),
+    signal: o.signal,
+    maxQueueMs: o.maxQueueMs,
+    maxPauseWaitMs: o.maxPauseWaitMs,
+  };
+}
+
 /** Latest token profiles and boosts, merged per token. Boosts are paid promotion → `boosted: true`. */
-export async function dsLatestListings(): Promise<DsListing[]> {
-  const opts = { limiter: 'dexscreener-meta', cacheTtlMs: LISTINGS_TTL_MS };
+export async function dsLatestListings(o: Pick<CallOpts, 'signal' | 'maxQueueMs'> = {}): Promise<DsListing[]> {
+  const opts = { limiter: 'dexscreener-meta', cacheTtlMs: LISTINGS_TTL_MS, signal: o.signal, maxQueueMs: o.maxQueueMs };
   const [profiles, boosts] = await Promise.allSettled([
     fetchJson(`${DS_API}/token-profiles/latest/v1`, opts),
     fetchJson(`${DS_API}/token-boosts/latest/v1`, opts),
@@ -139,16 +153,20 @@ function tokenFromPairs(pairs: Array<Record<string, unknown>>, chain: ChainId | 
   const address = toStr(base.address) ?? '';
   const symbol = toStr(base.symbol) ?? '';
   const info = asRecord(best.info ?? pairs.find((p) => p.info)?.info);
+  const liquidity = pairLiquidityInfo(best);
   return {
     ...emptySnapshot(chain ?? (toStr(best.chainId) as ChainId), address, ts),
     symbol,
     name: toStr(base.name) ?? symbol,
     pairAddress: toStr(best.pairAddress),
     dex: toStr(best.dexId),
+    pairCreatedAt: toEpochMs(best.pairCreatedAt),
+    liquiditySource: liquidity.usd !== null ? 'dexscreener' : null,
+    liquidityAdjusted: liquidity.adjusted,
     priceUsd: toNum(best.priceUsd),
     marketCapUsd: toNum(best.marketCap),
     fdvUsd: toNum(best.fdv),
-    liquidityUsd: pairLiquidity(best),
+    liquidityUsd: liquidity.usd,
     volumeUsd: mapWindows(best.volume, toNum),
     priceChangePct: mapWindows(best.priceChange, toNum),
     txns: mapWindows(best.txns, readTxCounts),
@@ -171,16 +189,27 @@ function tokenFromPairs(pairs: Array<Record<string, unknown>>, chain: ChainId | 
 const MAX_LIQUIDITY_TO_QUOTE_BACKING = 10;
 
 export function pairLiquidity(pair: Record<string, unknown>): number | null {
+  return pairLiquidityInfo(pair).usd;
+}
+
+/**
+ * The liquidity figure and whether it is the quote-backed replacement. The two
+ * series are not comparable: growth across a switch (a 4% change in reserves that
+ * crosses the 10x line reads as +920%) is never measured.
+ */
+export function pairLiquidityInfo(pair: Record<string, unknown>): { usd: number | null; adjusted: boolean } {
   const liquidity = asRecord(pair.liquidity);
   const reported = toNum(liquidity.usd);
-  if (reported === null) return null;
+  if (reported === null) return { usd: null, adjusted: false };
   const quoteReserve = toNum(liquidity.quote);
   const priceUsd = toNum(pair.priceUsd);
   const priceNative = toNum(pair.priceNative);
-  if (quoteReserve === null || priceUsd === null || priceNative === null || priceNative <= 0) return reported;
+  if (quoteReserve === null || priceUsd === null || priceNative === null || priceNative <= 0) {
+    return { usd: reported, adjusted: false };
+  }
   const backed = 2 * quoteReserve * (priceUsd / priceNative);
-  if (!Number.isFinite(backed) || reported <= MAX_LIQUIDITY_TO_QUOTE_BACKING * backed) return reported;
-  return Math.round(backed * 100) / 100;
+  if (!Number.isFinite(backed) || reported <= MAX_LIQUIDITY_TO_QUOTE_BACKING * backed) return { usd: reported, adjusted: false };
+  return { usd: Math.round(backed * 100) / 100, adjusted: true };
 }
 
 /** DexScreener has no unique-wallet counts. */
