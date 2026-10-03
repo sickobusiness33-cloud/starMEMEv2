@@ -212,6 +212,17 @@ describe('methodology library', () => {
     }
   });
 
+  it('links every paper its own description names (author and year)', () => {
+    // live: Faber (2007), Gervais et al. (2001), Da et al. (2011)… were named without a link
+    const cited = /([A-Z][\p{L}-]+)(?:,\s[A-Z][\p{L}-]+)*(?:\s&\s[A-Z][\p{L}-]+)?\s\((\d{4})\)/gu;
+    for (const m of METHODOLOGIES) {
+      for (const [, author, year] of m.howItWorks.join(' ').matchAll(cited)) {
+        const linked = m.references.some((r) => r.kind === 'paper' && r.label.includes(author!) && r.label.includes(year!));
+        expect(linked, `${m.id}: ${author} (${year})`).toBe(true);
+      }
+    }
+  });
+
   it('states the source policy and exposes the built-in library as a QuantSource', async () => {
     expect(SOURCE_POLICY).toMatch(/Quantpedia/);
     expect(SOURCE_POLICY).toMatch(/scrape/);
@@ -371,6 +382,25 @@ describe('matchQuant', () => {
     expect(matchQuant(snap({ security: { ...CLEAN_SECURITY, honeypot: 'yes' } }), metrics(), UNKNOWN_REGIME).riskFlags).toEqual([
       'Honeypot detected',
     ]);
+  });
+
+  it('never counts an unknown honeypot status as a security red flag', () => {
+    const factorOf = (security: TokenSnapshot['security']) =>
+      matchQuant(snap({ security, priceChangePct: { m5: -30, h1: -82, h6: -82 } }), metrics({ ageMinutes: 300, sellPct: 80, buyPct: 20 }), UNKNOWN_REGIME)
+        .matches.concat()
+        .find((m) => m.methodologyId === 'risk-overlay')
+        ?.factors.find((f) => f.feature === 'securityRedFlags')?.value;
+    const r = matchQuant(
+      snap({ priceChangePct: { m5: -30, h1: -82, h6: -82 }, security: { ...CLEAN_SECURITY, honeypot: 'unknown' } }),
+      metrics({ ageMinutes: 300, sellPct: 80, buyPct: 20 }),
+      UNKNOWN_REGIME,
+    );
+    expect(r.matches.find((m) => m.methodologyId === 'risk-overlay')?.rationale).not.toMatch(/security red flag/);
+    expect(r.riskFlags).toContain('Honeypot status unknown'); // reported honestly as unknown instead
+    // nothing known at all: missing data, not zero flags
+    expect(factorOf({ mintAuthority: null, freezeAuthority: null, honeypot: 'unknown', devHoldingPct: null }) ?? null).toBeNull();
+    expect(factorOf({ ...CLEAN_SECURITY, honeypot: 'unknown' })).toBe(0);
+    expect(factorOf({ ...CLEAN_SECURITY, honeypot: 'yes' })).toBe(1);
   });
 
   it('never produces NaN or out-of-range scores, even from hostile numbers', () => {

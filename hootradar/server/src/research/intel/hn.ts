@@ -21,6 +21,8 @@ const TITLE_MAX = 160;
 export interface HnSearchOpts {
   /** also search the contract address (default true); the detection pipeline skips it to save requests */
   includeAddress?: boolean;
+  /** the caller gave up: queued requests leave the limiter, requests in flight are aborted */
+  signal?: AbortSignal;
 }
 
 /** Throws only when every query failed. */
@@ -28,7 +30,7 @@ export async function search(t: IntelQuery, opts: HnSearchOpts = {}): Promise<In
   const terms = intelTerms(t);
   const queries = hnQueries(terms, opts.includeAddress ?? true);
   const results = await Promise.allSettled(
-    queries.map((q) => fetchJson(hnSearchUrl(q.text), { limiter: 'hn', cacheTtlMs: CACHE_TTL_MS })),
+    queries.map((q) => fetchJson(hnSearchUrl(q.text), { limiter: 'hn', cacheTtlMs: CACHE_TTL_MS, signal: opts.signal })),
   );
   const now = Date.now();
   const items = new Map<string, IntelItem>();

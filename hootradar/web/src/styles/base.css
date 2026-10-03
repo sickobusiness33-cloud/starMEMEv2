@@ -567,6 +567,12 @@ button,
   color: var(--text-2);
 }
 
+.state__alert {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+}
+
 .state__title {
   font-family: var(--font-mono);
   font-size: 12px;

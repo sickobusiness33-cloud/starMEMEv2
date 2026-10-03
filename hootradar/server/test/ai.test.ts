@@ -15,13 +15,24 @@ import { CallLimiter, engineState, initClaude, QueueFullError, setEngineStatus }
 import { fmtAge, fmtDuration, fmtMult, fmtNum, fmtPct, fmtRate, fmtShare, fmtUsd } from '../src/ai/format.js';
 import {
   NEWS_SYSTEM_PROMPT,
+  assertPublishable,
+  tokenFacts,
   unsupportedFigures,
   writeArticle,
   type ArticleDraft,
   type NewsInput,
 } from '../src/ai/newswriter.js';
 import { ARTICLE_LIMITS, writeArticleRules } from '../src/ai/rules-writer.js';
-import { collectSources, inferSourceType, parsePageAge, researchWeb, toIntelItems } from '../src/ai/web-research.js';
+import {
+  collectSources,
+  inferSourceType,
+  parsePageAge,
+  parsePageAgeDetailed,
+  researchWeb,
+  resetWebResearchCache,
+  toIntelItems,
+  WebResearchError,
+} from '../src/ai/web-research.js';
 import { loadConfig } from '../src/config.js';
 import { parseGtPools, parseGtTokenInfo } from '../src/sources/geckoterminal.js';
 import { emptySnapshot } from '../src/sources/merge.js';
@@ -526,6 +537,54 @@ describe('figure guard', () => {
     expect(unsupportedFigures('Volumen de $1,4M, 4.2x y 1284 holders en 3 escenarios', facts)).toEqual([]);
     expect(unsupportedFigures('El precio sube un 250%', facts)).toEqual(['250']);
   });
+
+  it('catches "100x" and predictions even though every score is "/100"', () => {
+    // live: the "/100" of anomalyScore made "100" an allowed figure, so "100x" and "100%" passed
+    const facts = '{"anomalyScore":"72/100","momentumScore":"64/100","accel":"4,2x"}';
+    expect(unsupportedFigures('$OWL podría hacer un 100x y subir un 100%', facts)).toEqual(['100', '100']);
+    expect(() => assertPublishable(['El precio subirá, garantizado, rocket explosivo 100x'], facts)).toThrow();
+    expect(() => assertPublishable(['$OWL could 10x from here.'], facts)).toThrow(/hype multiple not in facts: 10x/);
+    expect(() => assertPublishable(['El precio va a subir.'], facts)).toThrow(/prediction/);
+    expect(() => assertPublishable(['This token will pump.'], facts)).toThrow(/prediction/);
+    expect(() => assertPublishable(['Retorno garantizado.'], facts)).toThrow(/hype|prediction/);
+    // the facts' own figures still read naturally
+    expect(() =>
+      assertPublishable(['Puntuación de anomalía de 72/100; el volumen corre a 4,2x la media y podría subir si sigue la demanda.'], facts),
+    ).not.toThrow();
+  });
+});
+
+describe('since-launch windows', () => {
+  it('writes a young token\'s 1h price move as a move since launch', () => {
+    const input = richInput('es'); // 24 minutes old
+    const launch: NewsInput = {
+      ...input,
+      snapshot: { ...input.snapshot, priceChangePct: { ...input.snapshot.priceChangePct, h1: 450 } },
+      metrics: { ...RICH_METRICS, momentumScore: 90 },
+      detection: { ...RICH_DETECTION, signals: [{ code: 'momentum', label: 'Momentum 90/100', value: 90, weight: 16 }] },
+    };
+    const es = writeArticleRules(launch);
+    expect(allText(es)).not.toMatch(/450[^.]*(?:en la última hora|en 1 h)/);
+    expect(es.headline).toContain('desde su lanzamiento');
+    const en = writeArticleRules({ ...launch, lang: 'en' });
+    expect(allText(en)).not.toMatch(/450[^.]*(?:in the past hour|over the past hour|in 1h)/);
+    expect(en.headline).toContain('since launch');
+    // an older token keeps "in the past hour"
+    const older = writeArticleRules({ ...launch, lang: 'en', metrics: { ...launch.metrics, ageMinutes: 300 } });
+    expect(older.headline).toMatch(/in the past hour|in 1h/);
+    expect(older.headline).not.toContain('since launch');
+  });
+
+  it('tells Claude which windows cover the whole life of the token', () => {
+    const facts = (age: number) => tokenFacts({ ...richInput('en'), metrics: { ...RICH_METRICS, ageMinutes: age } }) as {
+      token: { windowsSinceLaunch?: string[]; windowsCoverWholeLife?: string };
+    };
+    expect(facts(24).token).toMatchObject({ windowsSinceLaunch: ['1h', '6h', '24h'], windowsCoverWholeLife: 'yes' });
+    expect(facts(180).token.windowsSinceLaunch).toEqual(['6h', '24h']);
+    expect(facts(180).token.windowsCoverWholeLife).toBeUndefined();
+    expect(facts(3000).token.windowsSinceLaunch).toBeUndefined();
+    expect(NEWS_SYSTEM_PROMPT).toContain('windowsSinceLaunch');
+  });
 });
 
 /* ───────────── Radar brief ───────────── */
@@ -605,6 +664,38 @@ describe('Radar brief', () => {
     const onlyOfficial = await writeRadarBrief({ ...input, intel: [official('site', 'Project website')] });
     expect(onlyOfficial.summary).toContain('No encontramos menciones públicas del token; sí 1 canal oficial del proyecto.');
     expect(onlyOfficial.bullets.join(' ')).not.toContain('Mención más reciente');
+
+    // a source that failed means "none in the sources that answered", never "none at all"
+    const providers = [
+      { provider: 'gdelt', ok: false, count: 0, error: 'HTTP 503' },
+      { provider: 'hn', ok: true, count: 0, error: null },
+      { provider: 'official', ok: true, count: 1, error: null },
+    ];
+    const partial = await writeRadarBrief({ ...input, intel: [official('site', 'Project website')], providers });
+    expect(partial.summary).toContain(
+      'No encontramos menciones públicas del token en las fuentes consultadas (no disponibles: GDELT); sí 1 canal oficial del proyecto.',
+    );
+    const partialEn = await writeRadarBrief({ ...input, lang: 'en', intel: [], providers });
+    expect(partialEn.summary).toContain('We found no public mentions of the token in the sources we could query (unavailable: GDELT).');
+    const found = await writeRadarBrief({ ...input, intel: intel(), providers });
+    expect(found.summary).toMatch(/\(no disponibles: GDELT\)\.$/);
+  });
+
+  it('explains a pulled-liquidity rejection in the reader\'s language', async () => {
+    initClaude(loadConfig({}));
+    const pulled = { ...RICH_DETECTION, severity: null, rejected: ['Liquidity pulled (-62% within 1h)'] };
+    const es = await writeRadarBrief({ ...richInput('es'), detection: pulled, intel: [] });
+    expect(es.summary).toContain('liquidez retirada (-62% en 1 h)');
+    const en = await writeRadarBrief({ ...richInput('en'), detection: pulled, intel: [] });
+    expect(en.summary).toContain('liquidity pulled (-62% within 1h)');
+  });
+
+  it('writes with the rules engine when Claude is not allowed (AI budget spent)', async () => {
+    initClaude(config());
+    const b = await writeRadarBrief({ ...richInput('es'), intel: intel() }, { claude: false });
+    expect(b.engine).toBe('rules');
+    expect(sdk.create).not.toHaveBeenCalled();
+    expect(b.writtenAt).toEqual(expect.any(Number));
   });
 
   it('uses Claude structured output when configured', async () => {
@@ -685,6 +776,8 @@ function pausedThenDone(): [Anthropic.Message, Anthropic.Message] {
 }
 
 describe('web research', () => {
+  beforeEach(() => resetWebResearchCache());
+
   it('returns [] without an API key', async () => {
     initClaude(loadConfig({}));
     expect(await researchWeb(TARGET)).toEqual([]);
@@ -722,13 +815,13 @@ describe('web research', () => {
       `https://dexscreener.com/solana/${TARGET.address}`,
     ]);
     const byHost = Object.fromEntries(items.map((i) => [i.sourceName, i]));
-    expect(byHost['x.com']).toMatchObject({ sourceType: 'social', freshness: 'LIVE', provider: 'claude-web', publishedAt: T0 - 20 * MIN, matchedOn: 'name' });
+    expect(byHost['x.com']).toMatchObject({ sourceType: 'social', freshness: 'LIVE', provider: 'claude-web', publishedAt: T0 - 20 * MIN, matchedOn: 'symbol' });
     expect(byHost['coindesk.com']).toMatchObject({
       sourceType: 'news',
       freshness: 'RECENT',
       snippet: 'Traders piled into WIRED, a token launched on Meteora.',
     });
-    expect(byHost['medium.com']).toMatchObject({ sourceType: 'blog', freshness: 'OLD', publishedAt: Date.UTC(2026, 8, 1) });
+    expect(byHost['medium.com']).toMatchObject({ sourceType: 'blog', freshness: 'OLD', publishedAt: Date.UTC(2026, 8, 1), publishedPrecision: 'day' });
     expect(byHost['bitcointalk.org']).toMatchObject({ sourceType: 'forum', freshness: 'OLD' });
     expect(byHost['dexscreener.com']).toMatchObject({ sourceType: 'specialized', freshness: 'UNKNOWN', publishedAt: null, matchedOn: 'contract' });
     expect(byHost['randomblog.io']).toMatchObject({ sourceType: 'article', freshness: 'LIVE', matchedOn: 'name' });
@@ -743,13 +836,81 @@ describe('web research', () => {
     expect(sdk.create).toHaveBeenCalledTimes(3);
   });
 
-  it('returns [] and records typed API errors', async () => {
+  it('reports a failure as a failure (never as "found nothing") and records typed API errors', async () => {
+    // live: an invalid or rate-limited key made every Radar report claim "claude-web 0"
     initClaude(config());
     sdk.create.mockRejectedValueOnce(
       new Anthropic.RateLimitError(429, { type: 'error', error: { type: 'rate_limit_error', message: 'slow down' } }, 'slow down', new Headers()),
     );
-    expect(await researchWeb(TARGET)).toEqual([]);
+    const err = await researchWeb(TARGET).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(WebResearchError);
+    expect((err as Error).message).toBe('web research failed: Anthropic API rate limit reached (429)');
     expect(engineState().aiError).toBe('Anthropic API rate limit reached (429)');
+  });
+
+  it('never publishes the provider\'s own error text (it can name billing or organization details)', async () => {
+    initClaude(config());
+    sdk.create.mockRejectedValueOnce(
+      new Anthropic.BadRequestError(400, { type: 'error', error: { type: 'invalid_request_error', message: 'org-123 credit balance too low' } }, 'org-123 credit balance too low', new Headers()),
+    );
+    const err = (await researchWeb(TARGET).catch((e: unknown) => e)) as Error;
+    expect(err.message).not.toContain('org-123');
+    expect(engineState().aiError).toBe('Anthropic API rejected the request (400)');
+  });
+
+  it('a full queue or a cancelled caller is a failure, not a paid search', async () => {
+    initClaude(config());
+    const pending: Array<(m: Anthropic.Message) => void> = [];
+    sdk.create.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
+    const targets = Array.from({ length: 7 }, (_, i) => ({ ...TARGET, address: `${TARGET.address.slice(0, -1)}${i}` }));
+    const controllers = targets.map(() => new AbortController());
+    const runs = targets.map((t, i) => researchWeb(t, { signal: controllers[i]!.signal }).catch((e: unknown) => e));
+    await vi.waitFor(() => expect(sdk.create).toHaveBeenCalledTimes(2)); // 2 in flight, 4 queued, 1 refused
+    expect(await runs[6]).toBeInstanceOf(WebResearchError);
+    // the queued callers give up: they leave the queue and no request is ever sent for them
+    for (const c of controllers.slice(2, 6)) c.abort();
+    for (const r of runs.slice(2, 6)) expect(((await r) as Error).message).toBe('web research cancelled');
+    for (const resolve of pending.splice(0)) resolve(textMessage('nothing'));
+    await Promise.all(runs.slice(0, 2));
+    expect(sdk.create).toHaveBeenCalledTimes(2);
+    // the aborted signal reaches the SDK call too
+    expect(sdk.create.mock.calls[0]?.[1]).toMatchObject({ signal: expect.any(AbortSignal) });
+  });
+
+  it('keeps only results that show the token, never the raw hit list', () => {
+    // live: "CAT token solana" returned other CAT tokens and generic memecoin articles
+    const cat = { chain: 'solana', address: 'CatMint1111111111111111111111111111111111111', symbol: 'CAT', name: 'Cat' };
+    const items = toIntelItems(
+      [
+        { url: 'https://coinmarketcap.com/currencies/cat-token/', title: 'CAT price today', pageAge: null, snippet: null },
+        { url: 'https://news.example/top-memecoins', title: 'Top memecoins to watch this week', pageAge: null, snippet: null },
+        { url: `https://dexscreener.com/solana/${cat.address}`, title: 'Chart', pageAge: null, snippet: null },
+        { url: 'https://x.com/a/status/1', title: '$CAT on Solana is moving', pageAge: '10 minutes ago', snippet: null },
+      ],
+      cat,
+      T0,
+    );
+    expect(items.map((i) => [i.sourceName, i.matchedOn])).toEqual([
+      ['x.com', 'symbol'],
+      ['dexscreener.com', 'contract'],
+    ]);
+    expect(items.every((i) => i.matchedOn !== 'project')).toBe(true);
+  });
+
+  it('never calls a calendar date LIVE and never clamps a future date to now', () => {
+    // live: page_age "October 2, 2026" seen at 2026-10-01 20:00Z became publishedAt = now (LIVE)
+    const now = Date.UTC(2026, 9, 1, 20, 0);
+    expect(parsePageAgeDetailed('October 2, 2026', now)).toBeNull();
+    expect(parsePageAgeDetailed('October 1, 2026', Date.UTC(2026, 9, 1, 0, 30))).toEqual({ ts: Date.UTC(2026, 9, 1), precision: 'day' });
+    expect(parsePageAgeDetailed('2026-10-01', now)?.precision).toBe('day');
+    expect(parsePageAgeDetailed('today', now)?.precision).toBe('day');
+    expect(parsePageAgeDetailed('20 minutes ago', now)).toEqual({ ts: now - 20 * MIN, precision: 'exact' });
+    const [item] = toIntelItems(
+      [{ url: 'https://news.example/wired', title: 'Wired lists on Meteora', pageAge: 'October 1, 2026', snippet: null }],
+      TARGET,
+      Date.UTC(2026, 9, 1, 0, 30),
+    );
+    expect(item).toMatchObject({ freshness: 'RECENT', publishedPrecision: 'day' });
   });
 
   it('parses result blocks and skips search error objects', () => {

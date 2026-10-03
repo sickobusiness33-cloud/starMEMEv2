@@ -155,18 +155,21 @@ describe('deriveMetrics edge cases', () => {
     expect(m.buyPct).toBeNull();
   });
 
-  it('accelerations compare against a full hour when age is unknown and need enough h1 activity', () => {
-    const m = deriveMetrics(
-      snap({ txns: { m5: tx(30, 20, 25), h1: tx(80, 70, 40) }, volumeUsd: { m5: 5000, h1: 15000 } }),
-      [],
-      T0,
-    );
+  it('accelerations compare against a full hour only when the pool covers it, and need enough h1 activity', () => {
+    const counts = { txns: { m5: tx(30, 20, 25), h1: tx(80, 70, 40) }, volumeUsd: { m5: 5000, h1: 15000 } };
+    const m = deriveMetrics(snap({ ...counts, pairCreatedAt: T0 - 3 * HOUR }), [], T0);
     expect(m.txAcceleration).toBeCloseTo(50 / 5 / (150 / 60), 6);
     expect(m.volumeAcceleration).toBeCloseTo(5000 / 5 / (15000 / 60), 6);
     expect(m.buyerAcceleration).toBeCloseTo(25 / 5 / (40 / 60), 6);
 
+    // unknown pool and token age: assuming a full hour would turn a young pool's launch into a "6x" surge
+    const unknown = deriveMetrics(snap(counts), [], T0);
+    expect(unknown.txAcceleration).toBeNull();
+    expect(unknown.volumeAcceleration).toBeNull();
+    expect(unknown.buyerAcceleration).toBeNull();
+
     const thin = deriveMetrics(
-      snap({ txns: { m5: tx(3, 3, 3), h1: tx(5, 4, 4) }, volumeUsd: { m5: 100, h1: 499 } }),
+      snap({ txns: { m5: tx(3, 3, 3), h1: tx(5, 4, 4) }, volumeUsd: { m5: 100, h1: 499 }, pairCreatedAt: T0 - 3 * HOUR }),
       [],
       T0,
     );
@@ -199,19 +202,56 @@ describe('deriveMetrics edge cases', () => {
   });
 
   it('holder and liquidity growth use the oldest qualifying snapshot of the last hour', () => {
+    const pool = { pairAddress: 'PoolA111', liquiditySource: 'dexscreener' };
     const history = [
-      snap({ ts: T0 - 70 * MIN, holders: 50, liquidityUsd: 1000 }), // too old
-      snap({ ts: T0 - 50 * MIN, holders: null, liquidityUsd: 8000 }),
-      snap({ ts: T0 - 40 * MIN, holders: 100, liquidityUsd: 9000 }),
-      snap({ ts: T0 - 20 * MIN, holders: 120, liquidityUsd: 9500 }),
-      snap({ ts: T0 - 2 * MIN, holders: 140, liquidityUsd: 9900 }), // too recent
+      snap({ ...pool, ts: T0 - 70 * MIN, holders: 50, liquidityUsd: 1000 }), // too old
+      snap({ ...pool, ts: T0 - 50 * MIN, holders: null, liquidityUsd: 8000 }),
+      snap({ ...pool, ts: T0 - 40 * MIN, holders: 100, liquidityUsd: 9000 }),
+      snap({ ...pool, ts: T0 - 20 * MIN, holders: 120, liquidityUsd: 9500 }),
+      snap({ ...pool, ts: T0 - 2 * MIN, holders: 140, liquidityUsd: 9900 }), // too recent
     ];
-    const current = snap({ ts: T0, holders: 150, liquidityUsd: 10_000 });
+    const current = snap({ ...pool, ts: T0, holders: 150, liquidityUsd: 10_000 });
     const m = deriveMetrics(current, [...history, current], T0);
 
     expect(m.holdersGrowthPct).toBeCloseTo(50, 6);
     expect(m.holdersGrowthWindowMin).toBeCloseTo(40, 6);
     expect(m.liquidityChangePct).toBeCloseTo(25, 6);
+  });
+
+  it('never measures liquidity growth across a pool switch, a provider switch or a quote-backing cap', () => {
+    // live regression: pool A $12K then pool B $40K read as "+233% liquidity"
+    const a = { pairAddress: 'PoolA111', liquiditySource: 'dexscreener' };
+    const growth = (ref: Partial<TokenSnapshot>, cur: Partial<TokenSnapshot>) => {
+      const current = snap({ ts: T0, ...cur });
+      return deriveMetrics(current, [snap({ ts: T0 - 20 * MIN, ...ref }), current], T0).liquidityChangePct;
+    };
+    expect(growth({ ...a, liquidityUsd: 12_000 }, { ...a, liquidityUsd: 15_000 })).toBeCloseTo(25, 6);
+    expect(growth({ ...a, liquidityUsd: 12_000 }, { ...a, pairAddress: 'PoolB222', liquidityUsd: 40_000 })).toBeNull();
+    expect(growth({ ...a, liquidityUsd: 12_000 }, { ...a, liquiditySource: 'geckoterminal', liquidityUsd: 40_000 })).toBeNull();
+    // quote reserve 4,900 → $9.8K (capped) vs 5,100 → $100K (as reported): a 4% change, not +920%
+    expect(
+      growth({ ...a, liquidityUsd: 9_800, liquidityAdjusted: true }, { ...a, liquidityUsd: 100_000, liquidityAdjusted: false }),
+    ).toBeNull();
+    // snapshots stored before provenance existed are never compared
+    expect(growth({ liquidityUsd: 12_000 }, { liquidityUsd: 40_000 })).toBeNull();
+    // EVM pool addresses compare case-insensitively
+    expect(
+      growth({ ...a, pairAddress: '0xAbC0000000000000000000000000000000000001', liquidityUsd: 10_000 }, { ...a, pairAddress: '0xabc0000000000000000000000000000000000001', liquidityUsd: 12_000 }),
+    ).toBeCloseTo(20, 6);
+  });
+
+  it('5m-vs-1h ratios use the age of the pool the windows were measured on', () => {
+    // live regression: a 40-minute-old pump.fun coin whose PumpSwap pool is 5 minutes old has m5 ≈ h1
+    const counts = { txns: { m5: tx(60, 40), h1: tx(65, 45) }, volumeUsd: { m5: 9_000, h1: 10_000 } };
+    const graduated = deriveMetrics(snap({ ...counts, createdAt: T0 - 40 * MIN, pairCreatedAt: T0 - 5 * MIN }), [], T0);
+    expect(graduated.windowAgeMinutes).toBeCloseTo(5, 6);
+    expect(graduated.txAcceleration).toBeCloseTo(100 / 110, 6); // ≈1: the pool's whole life, not an 8x surge
+    expect(graduated.txPerMin).toBeCloseTo(100 / 5, 6);
+    // the token's age alone (40 min) cannot tell how long the pool has existed
+    const unknownPool = deriveMetrics(snap({ ...counts, createdAt: T0 - 40 * MIN }), [], T0);
+    expect(unknownPool.windowAgeMinutes).toBeNull();
+    expect(unknownPool.txAcceleration).toBeNull();
+    expect(unknownPool.ageMinutes).toBeCloseTo(40, 6);
   });
 
   it('growth is unknown without a usable reference or a current value', () => {

@@ -217,22 +217,36 @@ describe('/biz/ catalog', () => {
   const catalog = fixture('biz_catalog.json');
 
   it('matches the $SYMBOL cashtag but not the bare ticker', () => {
-    const items = biz.parseBizCatalog(catalog, query('QNT', 'Quant'), NOW);
+    const threads = [
+      { no: 1, time: 1790847970, com: 'Loading up on $WOJAKX before the weekend' },
+      { no: 2, time: 1790847971, com: 'wojakx is a meme from 2021' },
+    ];
+    const items = biz.parseBizCatalog([{ page: 1, threads }], query('WOJAKX', 'Wojak Extreme'), NOW);
     expect(items).toEqual([
       {
-        id: 'biz:62743400',
-        title: 'Most millionaires could never own 1 full $QNT at the same time. UBS estimates there are…',
-        url: 'https://boards.4chan.org/biz/thread/62743400',
+        id: 'biz:1',
+        title: 'Loading up on $WOJAKX before the weekend',
+        url: 'https://boards.4chan.org/biz/thread/1',
         sourceName: '/biz/',
         sourceType: 'forum',
         provider: 'biz',
         publishedAt: 1790847970000,
         freshness: 'RECENT',
-        snippet: expect.stringContaining('$QNT'),
+        snippet: 'Loading up on $WOJAKX before the weekend',
         matchedOn: 'symbol',
       },
     ]);
-    expect(items[0]?.title.length).toBeLessThanOrEqual(90);
+  });
+
+  it("never credits a short ticker's cashtag to a token without its name, chain or contract", () => {
+    // live: a 3-letter ticker is shared by many tokens; "$QNT" alone is about the famous one
+    expect(biz.parseBizCatalog(catalog, query('QNT', 'Qnt'), NOW)).toEqual([]);
+    const withName = biz.parseBizCatalog(
+      [{ page: 1, threads: [{ no: 3, time: 1790847970, com: 'Quant ($QNT) is the interoperability play' }] }],
+      query('QNT', 'Quant'),
+      NOW,
+    );
+    expect(withName.map((i) => i.matchedOn)).toEqual(['symbol']);
   });
 
   it('matches the exact name in subject or post, with HTML stripped and entities decoded', () => {
@@ -297,11 +311,9 @@ describe('relevance filter', () => {
     expect(kept.map((i) => [i.url, i.matchedOn])).toEqual([[`https://dexscreener.com/solana/${BONK_ADDRESS}`, 'contract']]);
   });
 
-  it('drops /biz/ "pepe" chatter for a generic PEPE token, keeps cashtags and ticker forms', () => {
+  it('drops "pepe" chatter for a generic PEPE token: a cashtag or ticker form needs the chain or the contract', () => {
     const pepe = query('PEPE', 'Pepe', PEPE_ETH);
-    const fromCatalog = biz.parseBizCatalog(fixture('biz_catalog.json'), pepe, NOW);
-    expect(fromCatalog.map((i) => i.id).sort()).toEqual(['biz:62731170', 'biz:62745329']);
-    expect(filterRelevant(fromCatalog, pepe, NOW)).toEqual([]);
+    expect(biz.parseBizCatalog(fixture('biz_catalog.json'), pepe, NOW)).toEqual([]);
 
     const kept = filterRelevant(
       [
@@ -309,11 +321,26 @@ describe('relevance filter', () => {
         item({ title: 'Pepe (PEPE) price analysis', url: 'https://example.com/b', provider: 'hn' }),
         item({ title: 'Why the PEPE coin keeps running', url: 'https://example.com/c', provider: 'hn' }),
         item({ title: 'Contract check', url: 'https://example.com/d', provider: 'hn', snippet: `ca ${PEPE_ETH.toLowerCase()}` }),
+        item({ title: '$PEPE leads Ethereum memecoins', url: 'https://example.com/e', provider: 'hn' }),
+        item({ title: 'Pepe (PEPE), the ERC-20 frog', url: 'https://example.com/f', provider: 'gdelt' }),
       ],
       pepe,
       NOW,
     );
-    expect(kept.map((i) => i.matchedOn)).toEqual(['symbol', 'symbol', 'symbol', 'contract']);
+    expect(kept.map((i) => [i.url.slice(-1), i.matchedOn])).toEqual([
+      ['d', 'contract'],
+      ['e', 'symbol'],
+      ['f', 'symbol'],
+    ]);
+  });
+
+  it('a copycat launched minutes ago does not inherit the famous ticker\'s chatter', () => {
+    // live: intelTerms({symbol:'CAT'}).match('$CAT is sending, best memecoin on base') was 'symbol' for a Solana CAT
+    const cat = query('CAT', 'Cat');
+    expect(intelTerms(cat).match('$CAT is sending, best memecoin on base')).toBeNull();
+    expect(intelTerms(cat).match('CAT coin pumps')).toBeNull();
+    expect(intelTerms(cat).match('$CAT on Solana is sending')).toBe('symbol');
+    expect(intelTerms({ ...cat, chain: 'base' }).match('$CAT is sending, best memecoin on base')).toBe('symbol');
   });
 
   it('ignores look-alike words that full-text search returns (Solar, Solaar, solancer)', () => {
@@ -348,13 +375,14 @@ describe('relevance filter', () => {
     ]);
   });
 
-  it('trusts full-text providers only for distinctive terms', () => {
+  it('trusts full-text providers only for distinctive terms, and never raw web-search hits', () => {
     const untitled = (provider: string) =>
       item({ title: 'Top memecoins to watch this week', url: `https://news.example/${provider}`, provider, matchedOn: 'name' });
+    // GDELT matched the query in the article's full text; a web-search hit is only the engine's raw result
     const bonk = filterRelevant([untitled('gdelt'), untitled('hn'), untitled('claude-web')], BONK, NOW);
-    expect(bonk.map((i) => i.provider)).toEqual(['gdelt', 'claude-web']);
+    expect(bonk.map((i) => i.provider)).toEqual(['gdelt']);
     const cat = filterRelevant([untitled('gdelt'), untitled('claude-web')], query('CAT', 'Cat'), NOW);
-    expect(cat.map((i) => i.provider)).toEqual(['claude-web']);
+    expect(cat).toEqual([]);
   });
 
   it('keeps official links and recomputes freshness against now', () => {
@@ -459,7 +487,52 @@ describe('gatherIntel', () => {
       ['gdelt', 'name', 'UNKNOWN'],
       ['dexscreener', 'project', 'UNKNOWN'],
     ]);
-    expect(researchWeb).toHaveBeenCalledWith({ chain: 'solana', address: BONK_ADDRESS, symbol: 'BONK', name: 'Bonk' });
+    expect(researchWeb).toHaveBeenCalledWith(
+      { chain: 'solana', address: BONK_ADDRESS, symbol: 'BONK', name: 'Bonk' },
+      { signal: expect.any(AbortSignal) },
+    );
+  });
+
+  it('reports a failed web research as a failure, not as zero mentions', async () => {
+    vi.mocked(gdelt.search).mockResolvedValue([]);
+    vi.mocked(hn.search).mockRejectedValue(new Error('down'));
+    vi.mocked(biz.search).mockRejectedValue(new Error('down'));
+    vi.mocked(researchWeb).mockRejectedValue(new Error('web research failed: Anthropic API rate limit reached (429)'));
+    const { providers } = await gatherIntel(BONK, NOW);
+    expect(providers.find((p) => p.provider === 'claude-web')).toEqual({
+      provider: 'claude-web',
+      ok: false,
+      count: 0,
+      error: 'web research failed: Anthropic API rate limit reached (429)',
+    });
+  });
+
+  it('skips web research with its reason, or leaves it out when turned off', async () => {
+    vi.mocked(gdelt.search).mockResolvedValue([]);
+    vi.mocked(hn.search).mockResolvedValue([]);
+    vi.mocked(biz.search).mockResolvedValue([]);
+    const skipped = await gatherIntel(BONK, NOW, { webResearch: { run: false, reason: 'hourly AI budget reached' } });
+    expect(skipped.providers.at(-1)).toEqual({ provider: 'claude-web', ok: false, count: 0, error: 'not run: hourly AI budget reached' });
+    const off = await gatherIntel(BONK, NOW, { webResearch: { run: false, reason: null } });
+    expect(off.providers.map((p) => p.provider)).not.toContain('claude-web');
+    expect(researchWeb).not.toHaveBeenCalled();
+  });
+
+  it('cancels a timed-out provider instead of letting it run on', async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    vi.mocked(researchWeb).mockImplementation((_t, o) => {
+      signal = o?.signal;
+      return new Promise(() => {});
+    });
+    vi.mocked(gdelt.search).mockResolvedValue([]);
+    vi.mocked(hn.search).mockResolvedValue([]);
+    vi.mocked(biz.search).mockResolvedValue([]);
+    const pending = gatherIntel(BONK, NOW);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const { providers } = await pending;
+    expect(providers.find((p) => p.provider === 'claude-web')?.error).toBe('claude-web timed out after 60s');
+    expect(signal?.aborted).toBe(true);
   });
 
   it('times out a hanging provider without failing the others', async () => {
@@ -505,10 +578,11 @@ describe('quickMentions', () => {
       item({ title: '$BONK general', url: 'https://boards.4chan.org/biz/thread/9', provider: 'biz', publishedAt: now - 90 * MIN }),
       item({ title: '$BONK undated', url: 'https://boards.4chan.org/biz/thread/10', provider: 'biz' }),
     ]);
-    expect(await quickMentions(snapshot)).toBe(2);
-    expect(await quickMentions({ ...snapshot, ts: NOW + 1 })).toBe(2);
+    // only the name mention counts: a cashtag alone may be about another token with the same ticker
+    expect(await quickMentions(snapshot)).toBe(1);
+    expect(await quickMentions({ ...snapshot, ts: NOW + 1 })).toBe(1);
     expect(hn.search).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(hn.search).mock.calls[0]?.[1]).toEqual({ includeAddress: false });
+    expect(vi.mocked(hn.search).mock.calls[0]?.[1]).toEqual({ includeAddress: false, signal: expect.any(AbortSignal) });
     expect(gdelt.search).not.toHaveBeenCalled();
   });
 

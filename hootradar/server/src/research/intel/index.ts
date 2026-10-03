@@ -1,9 +1,11 @@
 /*
  * Radar web intel: every provider in parallel with its own timeout, then a
  * relevance filter (no false positives for generic symbols), URL dedupe and
- * freshness ranking. One provider failing never fails the whole search.
+ * freshness ranking. One provider failing never fails the whole search, and a
+ * provider that timed out is cancelled (its queued requests leave the limiter,
+ * its Claude call is aborted) instead of running on unobserved.
  */
-import type { IntelItem, TokenSnapshot } from '../../../../shared/types.js';
+import type { IntelItem, IntelProviderStatus, TokenSnapshot } from '../../../../shared/types.js';
 import { researchWeb, webResearchEnabled } from '../../ai/web-research.js';
 import { errMsg, logger } from '../../log.js';
 import { addressKey } from '../../sources/merge.js';
@@ -25,53 +27,72 @@ const GDELT_TIMEOUT_MS = 20_000;
 /** Claude web research runs several searches server-side; its own request timeout is config.ai.timeoutMs */
 const WEB_RESEARCH_TIMEOUT_MS = 60_000;
 
-export interface ProviderStatus {
-  provider: string;
-  ok: boolean;
-  count: number;
-  error: string | null;
-}
+export type ProviderStatus = IntelProviderStatus;
 
 interface Provider {
   name: string;
   timeoutMs: number;
   /** a provider that is not configured is left out of the run and of the status list */
   enabled?: () => boolean;
-  search(t: IntelQuery): Promise<IntelItem[]>;
+  /** must give up (reject) when `signal` fires: the run has timed out or was cancelled */
+  search(t: IntelQuery, signal: AbortSignal): Promise<IntelItem[]>;
 }
 
+const CLAUDE_WEB = 'claude-web';
+
 const PROVIDERS: Provider[] = [
-  { name: 'gdelt', timeoutMs: GDELT_TIMEOUT_MS, search: (t) => gdelt.search(t) },
-  { name: 'hn', timeoutMs: DEFAULT_TIMEOUT_MS, search: (t) => hn.search(t) },
-  { name: 'biz', timeoutMs: DEFAULT_TIMEOUT_MS, search: (t) => biz.search(t) },
+  { name: 'gdelt', timeoutMs: GDELT_TIMEOUT_MS, search: (t, signal) => gdelt.search(t, { signal }) },
+  { name: 'hn', timeoutMs: DEFAULT_TIMEOUT_MS, search: (t, signal) => hn.search(t, { signal }) },
+  { name: 'biz', timeoutMs: DEFAULT_TIMEOUT_MS, search: (t, signal) => biz.search(t, { signal }) },
   { name: 'official', timeoutMs: DEFAULT_TIMEOUT_MS, search: (t) => official.search(t) },
   {
-    name: 'claude-web',
+    name: CLAUDE_WEB,
     timeoutMs: WEB_RESEARCH_TIMEOUT_MS,
     enabled: webResearchEnabled,
-    search: (t) => researchWeb({ chain: t.chain, address: t.address, symbol: t.symbol, name: t.name }),
+    search: (t, signal) => researchWeb({ chain: t.chain, address: t.address, symbol: t.symbol, name: t.name }, { signal }),
   },
 ];
 
 /**
  * Providers that matched the token in the full article text, beyond the title
- * and snippet we receive: their hits are kept without textual evidence when
- * the search terms were specific enough to trust that match.
+ * and snippet we receive: their hits are kept without textual evidence when the
+ * search terms were specific enough to trust that match. Claude web search is not
+ * one of them: its result blocks are the search engine's raw hits, so each one
+ * needs the same textual evidence as any other provider's.
  */
-const FULL_TEXT_TRUST: Record<string, 'always' | 'distinctive'> = {
-  'claude-web': 'always',
+const FULL_TEXT_TRUST: Record<string, 'distinctive'> = {
   gdelt: 'distinctive',
 };
 
 /** General-audience sources, where a token name is often just a word (GDELT queries add crypto context themselves). */
 const NEEDS_CRYPTO_CONTEXT = new Set(['hn']);
 
+export interface GatherOpts {
+  /** the caller gave up (e.g. the Radar stage deadline): every provider is cancelled */
+  signal?: AbortSignal;
+  /**
+   * Claude web research (paid per search): run it (default), or skip it with the
+   * reason shown in its status (e.g. the hourly AI budget is spent). A null reason
+   * leaves it out entirely, as when it is not configured (turned off by the operator).
+   */
+  webResearch?: { run: true } | { run: false; reason: string | null };
+}
+
 export async function gatherIntel(
   t: IntelQuery,
   now: number,
+  opts: GatherOpts = {},
 ): Promise<{ items: IntelItem[]; providers: ProviderStatus[] }> {
   const terms = intelTerms(t);
-  const runs = await Promise.all(PROVIDERS.filter((p) => p.enabled?.() ?? true).map((p) => runProvider(p, t)));
+  const web = opts.webResearch ?? { run: true };
+  const active = PROVIDERS.filter((p) => (p.enabled?.() ?? true) && !(p.name === CLAUDE_WEB && !web.run && web.reason === null));
+  const runs = await Promise.all(
+    active.map((p) =>
+      p.name === CLAUDE_WEB && !web.run
+        ? Promise.resolve<ProviderRun>({ name: p.name, items: [], error: `not run: ${web.reason}` })
+        : runProvider(p, t, opts.signal),
+    ),
+  );
   const providers: ProviderStatus[] = [];
   const relevant: IntelItem[] = [];
   for (const run of runs) {
@@ -88,13 +109,22 @@ interface ProviderRun {
   error: string | null;
 }
 
-async function runProvider(p: Provider, t: IntelQuery): Promise<ProviderRun> {
+/** One provider within its time budget; at the deadline (or the caller's cancel) its work is aborted. */
+async function runProvider(p: Provider, t: IntelQuery, parent?: AbortSignal): Promise<ProviderRun> {
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  parent?.addEventListener('abort', cancel, { once: true });
+  if (parent?.aborted) controller.abort();
   try {
-    const items = await withTimeout(Promise.resolve().then(() => p.search(t)), p.timeoutMs, p.name);
+    const work = Promise.resolve().then(() => p.search(t, controller.signal));
+    const items = await withTimeout(work, p.timeoutMs, p.name, controller);
     return { name: p.name, items: items.filter(isWellFormed), error: null };
   } catch (e) {
-    log.warn('intel provider failed', { provider: p.name, symbol: t.symbol, error: errMsg(e) });
-    return { name: p.name, items: [], error: errMsg(e) };
+    const error = parent?.aborted ? `${p.name} cancelled` : errMsg(e);
+    log.warn('intel provider failed', { provider: p.name, symbol: t.symbol, error });
+    return { name: p.name, items: [], error };
+  } finally {
+    parent?.removeEventListener('abort', cancel);
   }
 }
 
@@ -109,18 +139,21 @@ export function filterRelevant(items: IntelItem[], q: IntelQuery | IntelTerms, n
   const terms = 'match' in q ? q : intelTerms(q);
   return items.flatMap((item) => {
     const matchedOn = relevanceOf(item, terms);
-    return matchedOn ? [{ ...item, matchedOn, freshness: classifyFreshness(item.publishedAt, now) }] : [];
+    if (!matchedOn) return [];
+    return [{ ...item, matchedOn, freshness: classifyFreshness(item.publishedAt, now, item.publishedPrecision) }];
   });
 }
 
 function relevanceOf(item: IntelItem, terms: IntelTerms): MatchedOn | null {
-  if (item.sourceType === 'official') return 'project';
+  // the project's own channels come from the market-data providers, never from a search
+  if (item.sourceType === 'official' && item.provider !== CLAUDE_WEB) return 'project';
   const found = terms.match(`${item.title}\n${item.snippet ?? ''}\n${urlText(item.url)}`, {
     needsContext: NEEDS_CRYPTO_CONTEXT.has(item.provider),
   });
   if (found) return found;
   const trust = FULL_TEXT_TRUST[item.provider];
-  return trust === 'always' || (trust === 'distinctive' && terms.distinctive) ? item.matchedOn : null;
+  // a full-text match is about the token, never "the project's own channel"
+  return trust === 'distinctive' && terms.distinctive && item.matchedOn !== 'project' ? item.matchedOn : null;
 }
 
 function isWellFormed(item: IntelItem): boolean {
@@ -142,10 +175,18 @@ export function dedupeByUrl(items: IntelItem[]): IntelItem[] {
       byUrl.set(key, item);
       continue;
     }
+    const datedPrev = prev.publishedAt !== null;
     byUrl.set(key, {
       ...prev,
-      publishedAt: prev.publishedAt ?? item.publishedAt,
-      freshness: prev.publishedAt !== null ? prev.freshness : item.freshness,
+      publishedAt: datedPrev ? prev.publishedAt : item.publishedAt,
+      freshness: datedPrev ? prev.freshness : item.freshness,
+      ...(datedPrev
+        ? prev.publishedPrecision !== undefined
+          ? { publishedPrecision: prev.publishedPrecision }
+          : {}
+        : item.publishedPrecision !== undefined
+          ? { publishedPrecision: item.publishedPrecision }
+          : {}),
       snippet: prev.snippet ?? item.snippet,
       matchedOn: MATCH_STRENGTH[item.matchedOn] > MATCH_STRENGTH[prev.matchedOn] ? item.matchedOn : prev.matchedOn,
     });
@@ -194,6 +235,11 @@ const mentionsCache = new Map<string, { expiresAt: number; value: Promise<number
  * Relevant Hacker News + /biz/ mentions published in the last 2 hours, cached
  * 5 minutes per token. Counts what the providers that answered returned; null
  * when none answered. Never throws.
+ *
+ * Only mentions of the contract address or of a distinctive name count: this
+ * feeds the score of tokens that are often minutes old, and a ticker or cashtag
+ * alone (even a non-generic one) is as likely to be about an older token with the
+ * same ticker as about this one.
  */
 export function quickMentions(s: TokenSnapshot): Promise<number | null> {
   const key = `${s.chain}:${addressKey(s.address)}`;
@@ -218,14 +264,15 @@ export function intelQueryFor(s: TokenSnapshot): IntelQuery {
 
 async function countRecentMentions(t: IntelQuery): Promise<number | null> {
   const sources: Provider[] = [
-    { name: 'hn', timeoutMs: MENTIONS_TIMEOUT_MS, search: (q) => hn.search(q, { includeAddress: false }) },
-    { name: 'biz', timeoutMs: MENTIONS_TIMEOUT_MS, search: (q) => biz.search(q) },
+    { name: 'hn', timeoutMs: MENTIONS_TIMEOUT_MS, search: (q, signal) => hn.search(q, { includeAddress: false, signal }) },
+    { name: 'biz', timeoutMs: MENTIONS_TIMEOUT_MS, search: (q, signal) => biz.search(q, { signal }) },
   ];
   const runs = await Promise.all(sources.map((p) => runProvider(p, t)));
   if (runs.every((r) => r.error !== null)) return null;
   const now = Date.now();
   const terms = intelTerms(t);
   return dedupeByUrl(runs.flatMap((r) => filterRelevant(r.items, terms, now))).filter((i) => {
+    if (i.matchedOn !== 'contract' && i.matchedOn !== 'name') return false;
     if (i.publishedAt === null) return false;
     const age = now - i.publishedAt;
     return age <= MENTIONS_WINDOW_MS && age >= -FUTURE_TOLERANCE_MS;
@@ -250,10 +297,14 @@ export function resetIntelState(): void {
 
 /* ───────────────────────────── helpers ───────────────────────────── */
 
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+/** Rejects at the deadline and aborts the work through `controller`, so it stops instead of running on unobserved. */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string, controller: AbortController): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)), ms);
+    timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`));
+      controller.abort();
+    }, ms);
   });
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }

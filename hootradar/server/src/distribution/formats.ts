@@ -1,11 +1,14 @@
-import type { DistributionChannel, NewsArticle, Severity, TimeWindow } from '../../../shared/types.js';
+import { QUANT_DISCLAIMER, type DistributionChannel, type NewsArticle, type Severity, type TimeWindow } from '../../../shared/types.js';
 import { DASH, fmtNum, fmtRate, fmtShare, fmtUsd, isNum, type Lang } from '../ai/format.js';
 import { chainName, clampText, displaySymbol, methodologyLabel } from '../ai/rules-writer.js';
 
 /**
  * Channel-ready renderings of one article. Articles carry no emojis; a single
  * severity emoji opens the X and Telegram posts. Token names and symbols are
- * provider data, so every format escapes them for its own markup.
+ * provider data, so every format escapes them for its own markup and defuses
+ * anything a client would turn into a link or a mention (a creator can name a
+ * token "claim.to/x"). Every post carries the risk scenario and a not-advice
+ * notice, and the quant figure is labelled as a similarity, never a forecast.
  */
 
 export interface ChannelPayload {
@@ -41,6 +44,10 @@ interface Labels {
   explorer: string;
   disclaimer: string;
   footer: string;
+  risk: string;
+  quant: string;
+  /** appended to the quant figure: it is a similarity, not a probability */
+  notForecast: string;
 }
 
 const LABELS: Record<Lang, Labels> = {
@@ -51,6 +58,9 @@ const LABELS: Record<Lang, Labels> = {
     explorer: 'Explorador',
     disclaimer: 'No es asesoramiento financiero.',
     footer: 'HootRadar · no es asesoramiento financiero',
+    risk: 'Riesgo',
+    quant: 'Similitud cuant',
+    notForecast: 'no es una previsión',
   },
   en: {
     liquidity: 'Liquidity',
@@ -59,6 +69,9 @@ const LABELS: Record<Lang, Labels> = {
     explorer: 'Explorer',
     disclaimer: 'Not financial advice.',
     footer: 'HootRadar · not financial advice',
+    risk: 'Risk',
+    quant: 'Quant similarity',
+    notForecast: 'not a forecast',
   },
 };
 
@@ -90,8 +103,41 @@ function figures(a: NewsArticle): Figures {
     buySell:
       isNum(m.buyPct) && isNum(m.sellPct) ? `${fmtShare(m.buyPct, a.lang)} / ${fmtShare(m.sellPct, a.lang)}` : null,
     holders: known(m.holders, (x) => fmtNum(x, a.lang)),
-    quant: top && top.score > 0 ? `${methodologyLabel(top.name)} · ${Math.round(top.score)}%` : null,
+    // "72/100" with the not-a-forecast note: a bare "72%" reads as a probability
+    quant:
+      top && top.score > 0
+        ? `${methodologyLabel(top.name)} ${Math.round(top.score)}/100 (${LABELS[a.lang].notForecast})`
+        : null,
   };
+}
+
+/* ───────────── link defusing ───────────── */
+
+const ZWSP = '\u200B';
+/** looks like a dot, is not one: no client turns "claim\u2024to" into a link */
+const DOT_LEADER = '\u2024';
+const SCHEME = /\b([a-z][a-z0-9+.-]{1,15}):\/\//gi;
+const DOMAIN = /(?<![\p{L}\p{N}_])(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,62})\.)+\p{L}{2,63}(?![\p{L}\p{N}_-])/gu;
+const MENTION = /(^|[^\p{L}\p{N}_])([@#])(?=[\p{L}\p{N}_]{2,})/gu;
+const COMMAND = /(^|\s)\/(?=[A-Za-z0-9_]{2,})/g;
+
+/**
+ * Text in which no chat client finds a link, a mention, a hashtag or a bot command:
+ * "https://evil.tld/x" → "https:\u200B//evil\u2024tld/x", "@user" → "@\u200Buser". It reads
+ * the same. Applied to article copy (which quotes creator-chosen symbols and names),
+ * never to the links we add ourselves.
+ */
+export function defuseLinks(text: string): string {
+  return text
+    .replace(SCHEME, `$1:${ZWSP}//`)
+    .replace(DOMAIN, (m) => m.replace(/\./g, DOT_LEADER))
+    .replace(MENTION, `$1$2${ZWSP}`)
+    .replace(COMMAND, `$1/${ZWSP}`);
+}
+
+/** A symbol or name that a chat client would render as a link (a phishing vector in auto-posted news). */
+export function looksLikeLink(text: string): boolean {
+  return defuseLinks(text) !== text;
 }
 
 /* ───────────── X ───────────── */
@@ -102,28 +148,43 @@ const X_URL_WEIGHT = 23;
 const X_MIN_LEDE = 40;
 const URL_PATTERN = /https?:\/\/\S+/g;
 
-/** Plain-text post for manual copy-paste (never auto-posted), guaranteed to fit X's weighted 280-character limit. */
+/**
+ * Plain-text post for manual copy-paste (never auto-posted), guaranteed to fit X's
+ * weighted 280-character limit. The risk scenario and the not-advice notice always
+ * make it in; the lede and the figures give way first.
+ */
 export function formatX(a: NewsArticle, link: string | null): string {
+  const L = LABELS[a.lang];
   const url = link ?? safeUrl(a.links.dexscreener);
-  const header = `${SEVERITY_EMOJI[a.severity]} ${a.severity} — ${displaySymbol(a)} (${chainName(a.chain)})`;
+  const header = defuseLinks(`${SEVERITY_EMOJI[a.severity]} ${a.severity} — ${displaySymbol(a)} (${chainName(a.chain)})`);
   const f = figures(a);
   const stats = joinParts([
     f.valuation && `${f.valuationLabel} ${f.valuation}`,
     f.volume && `${f.volumeLabel} ${f.volume}`,
     f.txPerMin && `Tx/min ${f.txPerMin}`,
   ]);
+  const risk = (budget: number) => fitX(defuseLinks(`${L.risk}: ${a.outlook.risk}`), budget);
+  const footer = url ? `${L.disclaimer} ${url}` : L.disclaimer;
 
   for (const statsLine of stats ? [stats, null] : [null]) {
-    const fixed = [header, statsLine, url].filter((x): x is string => !!x);
-    const budget = X_LIMIT - xLength(fixed.join('\n')) - 1; // newline before the lede
-    if (budget < X_MIN_LEDE && statsLine) continue;
-    const lede = fitX(a.lede, budget);
-    const lines = [header, lede, statsLine, url].filter((x): x is string => !!x);
-    const post = lines.join('\n');
-    if (xLength(post) <= X_LIMIT) return post;
+    for (const riskBudget of [X_RISK_BUDGET, X_MIN_RISK]) {
+      const riskLine = risk(riskBudget);
+      const fixed = [header, riskLine, statsLine, footer].filter((x): x is string => !!x);
+      const budget = X_LIMIT - xLength(fixed.join('\n')) - 1; // newline before the lede
+      if (budget < X_MIN_LEDE) continue;
+      const lede = fitX(defuseLinks(a.lede), budget);
+      const post = [header, lede, riskLine, statsLine, footer].filter((x): x is string => !!x).join('\n');
+      if (xLength(post) <= X_LIMIT) return post;
+    }
   }
-  return fitX(header, X_LIMIT) ?? header;
+  // worst case (huge header): header, a short risk line and the notice
+  const fallback = [fitX(header, 120) ?? header, risk(X_MIN_RISK), footer].filter((x): x is string => !!x).join('\n');
+  return xLength(fallback) <= X_LIMIT ? fallback : (fitX(fallback, X_LIMIT) ?? L.disclaimer);
 }
+
+/** weighted characters the risk line may take when the lede has room, and its floor when it does not */
+const X_RISK_BUDGET = 110;
+const X_MIN_RISK = 60;
 
 /**
  * X's weighted length (twitter-text v3): most Latin, Greek, Cyrillic and common
@@ -198,8 +259,9 @@ function telegramMessage(a: NewsArticle, link: string | null, withBullets: boole
       f.buySell && `${L.buySell} ${f.buySell}`,
       f.holders && `Holders ${f.holders}`,
     ]),
-    f.quant ? `Quant: ${f.quant}` : null,
+    f.quant ? `${L.quant}: ${f.quant}` : null,
   ];
+  const text = (s: string) => escapeHtml(defuseLinks(s));
   const links = joinParts([
     link && anchor(link, L.read),
     safeUrl(a.links.dexscreener) && anchor(a.links.dexscreener!, 'DexScreener'),
@@ -208,13 +270,14 @@ function telegramMessage(a: NewsArticle, link: string | null, withBullets: boole
 
   const blocks: Array<Array<string | null>> = [
     [
-      `${SEVERITY_EMOJI[a.severity]} <b>${escapeHtml(`${a.severity} — ${displaySymbol(a)}`)}</b> · ${escapeHtml(chainName(a.chain))}`,
-      `<b>${escapeHtml(a.headline)}</b>`,
+      `${SEVERITY_EMOJI[a.severity]} <b>${text(`${a.severity} — ${displaySymbol(a)}`)}</b> · ${text(chainName(a.chain))}`,
+      `<b>${text(a.headline)}</b>`,
     ],
-    [escapeHtml(lede)],
-    [`<i>${escapeHtml(a.aiLine)}</i>`],
-    withBullets ? a.whyItMatters.map((b) => `• ${escapeHtml(b)}`) : [],
-    statLines.map((x) => (x ? escapeHtml(x) : null)),
+    [text(lede)],
+    [`<i>${text(a.aiLine)}</i>`],
+    withBullets ? a.whyItMatters.map((b) => `• ${text(b)}`) : [],
+    [`<b>${escapeHtml(L.risk)}:</b> ${text(withBullets ? a.outlook.risk : clampText(a.outlook.risk, 300))}`],
+    statLines.map((x) => (x ? text(x) : null)),
     [links, `<i>${escapeHtml(L.disclaimer)}</i>`],
   ];
   return blocks
@@ -238,15 +301,13 @@ function anchor(url: string, text: string): string {
 export function formatDiscord(a: NewsArticle, link: string | null): string {
   const L = LABELS[a.lang];
   const f = figures(a);
-  const field = (name: string, value: string | null) => ({ name, value: value ? escapeMarkdown(value) : DASH, inline: true });
+  const md = (s: string) => escapeMarkdown(defuseLinks(s));
+  const field = (name: string, value: string | null) => ({ name, value: value ? md(value) : DASH, inline: true });
   const url = link ?? safeUrl(a.links.dexscreener);
   const thumbnail = safeUrl(a.imageUrl);
   const embed = {
-    title: clampText(`${a.severity} — ${displaySymbol(a)} · ${chainName(a.chain)}`, 256),
-    description: clip(
-      [`**${escapeMarkdown(a.headline)}**`, escapeMarkdown(a.lede), `*${escapeMarkdown(a.aiLine)}*`].join('\n\n'),
-      4096,
-    ),
+    title: clampText(defuseLinks(`${a.severity} — ${displaySymbol(a)} · ${chainName(a.chain)}`), 256),
+    description: clip([`**${md(a.headline)}**`, md(a.lede), `*${md(a.aiLine)}*`].join('\n\n'), 4096),
     ...(url ? { url } : {}),
     color: SEVERITY_COLOR[a.severity],
     fields: [
@@ -255,7 +316,8 @@ export function formatDiscord(a: NewsArticle, link: string | null): string {
       field('Tx/min', f.txPerMin),
       field('Buy/Sell', f.buySell),
       field('Holders', f.holders),
-      field('Quant', f.quant),
+      field(L.quant, f.quant),
+      { name: L.risk, value: clip(md(a.outlook.risk), 1024), inline: false },
     ],
     footer: { text: L.footer },
     timestamp: new Date(a.createdAt).toISOString(),
@@ -297,7 +359,11 @@ export function formatWebhook(a: NewsArticle, link: string | null): string {
         top: top ? { methodologyId: top.methodologyId, name: top.name, score: top.score } : null,
         regime: a.quant.regime.label,
         riskFlags: a.quant.riskFlags,
+        disclaimer: QUANT_DISCLAIMER,
       },
+      disclaimer: LABELS[a.lang].disclaimer,
+      // the symbol and name are creator-chosen: integrations that post them should not auto-link them
+      identityLooksLikeLink: looksLikeLink(a.symbol) || looksLikeLink(a.name),
       links: a.links,
       engine: a.engine,
       model: a.model,

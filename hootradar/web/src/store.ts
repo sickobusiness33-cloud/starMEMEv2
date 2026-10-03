@@ -113,7 +113,17 @@ export interface State {
   setAnnounce: (text: string) => void;
 }
 
-const byNewest = (a: NewsArticle, b: NewsArticle) => b.createdAt - a.createdAt;
+/** the server's feed order (createdAt DESC, id DESC), so a millisecond tie sorts the same on both sides */
+const byNewest = (a: NewsArticle, b: NewsArticle) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+
+/**
+ * Floor of a range whose oldest loaded story is `oldest`, when older stories may exist: stories
+ * sharing its millisecond can sit just past the page limit, so the range is complete only above
+ * it, and the next page (`before` = this floor, i.e. createdAt < floor) re-reads that millisecond.
+ */
+function floorAbove(oldest: NewsArticle): number {
+  return oldest.createdAt + 1;
+}
 const byNewestEvent = (a: DetectionEvent, b: DetectionEvent) => b.ts - a.ts;
 
 function merge<T extends { id: string }>(list: T[], incoming: T[], cmp: (a: T, b: T) => number, cap = Infinity): T[] {
@@ -234,7 +244,8 @@ function evict(
   const gone = new Set(dropped.map((a) => a.id));
   const cursor = { ...pages.cursor };
   const exhausted = { ...pages.exhausted };
-  for (const key of new Set([ALL_KEY, ...Object.keys(cursor), ...Object.keys(exhausted)])) {
+  const filled = { ...pages.filled };
+  for (const key of new Set([ALL_KEY, ...Object.keys(cursor), ...Object.keys(exhausted), ...Object.keys(filled)])) {
     const f = parseKey(key);
     let newest = -Infinity;
     for (const d of dropped) if (d.createdAt > newest && matchesFilters(d, f)) newest = d.createdAt;
@@ -246,8 +257,10 @@ function evict(
     } else if (cursor[key] === undefined || cursor[key] < raised) {
       cursor[key] = raised;
     }
+    // what the automatic top-up brought in is gone: allow it again when the reader returns
+    delete filled[key];
   }
-  return { articles: articles.filter((a) => !gone.has(a.id)), pages: { ...pages, cursor, exhausted } };
+  return { articles: articles.filter((a) => !gone.has(a.id)), pages: { ...pages, cursor, exhausted, filled } };
 }
 
 /** Stories below `floor` may be missing (missed while disconnected): no view may claim them as contiguous. */
@@ -302,7 +315,7 @@ export const useStore = create<State>()((set, get) => ({
         pages: {
           ...s.pages,
           filled: { [ALL_KEY]: true },
-          cursor: oldest && list.length >= PAGE ? { [ALL_KEY]: oldest.createdAt } : {},
+          cursor: oldest && list.length >= PAGE ? { [ALL_KEY]: floorAbove(oldest) } : {},
           exhausted: list.length < PAGE ? { [ALL_KEY]: true } : {},
         },
       });
@@ -326,7 +339,7 @@ export const useStore = create<State>()((set, get) => ({
       fresh.length === articles.length &&
       articles.length >= PAGE &&
       oldestFresh.createdAt > newestKnown;
-    if (gap) set({ pendingFloor: Math.max(get().pendingFloor ?? -Infinity, oldestFresh.createdAt) });
+    if (gap) set({ pendingFloor: Math.max(get().pendingFloor ?? -Infinity, floorAbove(oldestFresh)) });
     const out: Array<{ article: NewsArticle; result: ArrivalResult }> = [];
     for (const a of [...fresh].reverse()) out.push({ article: a, result: get().ingestArticle(a) });
     for (const e of [...events].sort(byNewestEvent).reverse()) get().ingestDetection(e);
@@ -354,7 +367,8 @@ export const useStore = create<State>()((set, get) => ({
     }
     const buffered = merge(s.buffered, [a], byNewest, BUFFER_CAP);
     // the oldest waiting stories were dropped: what is left no longer connects to the feed
-    const floor = s.buffered.length >= BUFFER_CAP ? (buffered.at(-1)?.createdAt ?? null) : null;
+    const lastKept = buffered.at(-1);
+    const floor = s.buffered.length >= BUFFER_CAP && lastKept ? floorAbove(lastKept) : null;
     set({
       buffered,
       pendingFloor: floor === null ? s.pendingFloor : Math.max(s.pendingFloor ?? -Infinity, floor),
@@ -456,7 +470,10 @@ export const useStore = create<State>()((set, get) => ({
         if (res.nextBefore === null || res.articles.length < PAGE) {
           pages = { ...pages, exhausted: { ...pages.exhausted, [key]: true } };
         } else if (oldest) {
-          pages = { ...pages, cursor: { ...pages.cursor, [key]: Math.min(pages.cursor[key] ?? Infinity, oldest.createdAt) } };
+          // a whole page inside one millisecond would never move past it: then accept its own floor
+          const above = floorAbove(oldest);
+          const next = floor === null || above < floor ? above : oldest.createdAt;
+          pages = { ...pages, cursor: { ...pages.cursor, [key]: Math.min(pages.cursor[key] ?? Infinity, next) } };
         }
       }
       // older pages land below the fold: no enter animation, no buffering

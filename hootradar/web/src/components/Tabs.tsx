@@ -83,9 +83,15 @@ export function Tabs({ active }: { active: Tab }) {
                 <Icon size={16} className="tab__icon" />
                 <span className="tab__label">{LABEL[tab]}</span>
                 {tab === 'live' && !selected && buffered > 0 && (
-                  <span className="tab__badge" aria-label={`${buffered} new`}>
-                    {buffered > 99 ? '99+' : buffered}
-                  </span>
+                  <>
+                    <span className="tab__badge" aria-hidden="true">
+                      {buffered > 99 ? '99+' : buffered}
+                    </span>
+                    {/* aria-label on a generic <span> is ignored; text is read as part of the tab name */}
+                    <span className="sr-only">
+                      , {buffered} new {buffered === 1 ? 'story' : 'stories'}
+                    </span>
+                  </>
                 )}
                 <kbd className="tab__kbd" aria-hidden="true">
                   {i + 1}

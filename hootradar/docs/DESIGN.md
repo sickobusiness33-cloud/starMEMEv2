@@ -21,13 +21,13 @@ Skill files: `$SKILLS/<name>/SKILL.md` (path given in the task prompt). Read the
   --line-2: #26303a;    /* stronger borders, focus base */
   --text: #e8ecef;
   --text-2: #a1abb4;
-  --text-3: #66717b;
+  --text-3: #7a858f;    /* AA (4.5:1+) on every surface; #66717b failed it */
   --green: #3dff8f;     /* neon — live, BREAKING, positive, primary action */
   --green-dim: rgb(61 255 143 / 0.12);
   --cyan: #2fe0ff;      /* AI, ALERT, links, focus */
   --cyan-dim: rgb(47 224 255 / 0.12);
   --red: #ff5a6a;       /* risk only (risk outlook, risk flags, sells) */
-  --amber: #ffc04d;     /* degraded chain status only */
+  --amber: #ffc04d;     /* degraded / held-back states only (chain degraded, AI fallback, severity cap) */
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
   --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;

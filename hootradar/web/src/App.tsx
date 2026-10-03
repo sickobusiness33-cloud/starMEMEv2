@@ -31,8 +31,19 @@ export function App() {
   useScrollMemory(route.tab);
   useDocumentTitle(route.tab);
 
-  // Toasts sit 16px above whatever is pinned to the bottom edge (the tab bar on phones).
+  // Toasts sit 16px above whatever is pinned to the bottom edge (the tab bar on phones), and
+  // clear the notch / home indicator like every other edge-pinned element (landscape phones
+  // are wider than PHONE_QUERY but still have a ~47px side inset).
   const aboveTabBar = `calc(${MOBILE_TABBAR_PX + 16}px + env(safe-area-inset-bottom, 0px))`;
+  const phoneOffset = {
+    bottom: aboveTabBar,
+    right: 'calc(16px + env(safe-area-inset-right, 0px))',
+    left: 'calc(16px + env(safe-area-inset-left, 0px))',
+  };
+  const desktopOffset = {
+    bottom: 'calc(24px + env(safe-area-inset-bottom, 0px))',
+    right: 'calc(24px + env(safe-area-inset-right, 0px))',
+  };
 
   return (
     <div className="app">
@@ -65,8 +76,8 @@ export function App() {
         position="bottom-right"
         gap={8}
         visibleToasts={3}
-        offset={phone ? { bottom: aboveTabBar, right: 16, left: 16 } : 24}
-        mobileOffset={{ bottom: aboveTabBar, right: 16, left: 16 }}
+        offset={phone ? phoneOffset : desktopOffset}
+        mobileOffset={phoneOffset}
         containerAriaLabel="Notifications"
       />
     </div>

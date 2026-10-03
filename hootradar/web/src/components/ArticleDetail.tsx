@@ -5,11 +5,12 @@ import { useStore } from '../store';
 import { navigate } from '../lib/hash-router';
 import { fmtClock, fmtMs, safeUrl } from '../lib/format';
 import { CopyButton } from './CopyButton';
-import { EngineLine, MatchBars, OutlookTrio, RegimeTag, SeverityTag, TimeAgo } from './bits';
+import { bandOf, CapChips, capsOf, DEFAULT_BANDS, EngineLine, MatchBars, OutlookTrio, RegimeTag, SeverityTag, TimeAgo } from './bits';
 import { IconBlocks, IconChart, IconGlobe, IconRadar, IconRefresh, IconTelegram, IconX } from './Icons';
 
 /** The full article, rendered inside an expanded NewsCard. */
 export function ArticleDetail({ article: a }: { article: NewsArticle }) {
+  const caps = capsOf(a);
   return (
     <div className="detail">
       <header className="detail__head">
@@ -49,8 +50,9 @@ export function ArticleDetail({ article: a }: { article: NewsArticle }) {
       <div className="detail__split">
         <section className="detail__sec" aria-labelledby={`${a.id}-signals`}>
           <h4 className="section-title" id={`${a.id}-signals`}>
-            Signals <span className="muted mono">score {a.score}</span>
+            Signals <ScoreNote score={a.score} severity={a.severity} capped={caps.length > 0} />
           </h4>
+          <CapChips caps={caps} severity={a.severity} />
           {a.signals.length === 0 ? (
             <p className="muted">No signal breakdown.</p>
           ) : (
@@ -107,6 +109,26 @@ export function ArticleDetail({ article: a }: { article: NewsArticle }) {
         </span>
       </footer>
     </div>
+  );
+}
+
+/**
+ * The score as a secondary figure next to the band it reached: "score 62 · BREAKING band",
+ * or "score 65 · held at ALERT" when the server reported caps for it. Bands are the
+ * engine's default thresholds (the title says so): when they disagree with the article's
+ * severity and no cap explains it, the deployment's thresholds differ, so no band is named.
+ */
+const RANK: Record<NewsArticle['severity'], number> = { WATCH: 1, ALERT: 2, BREAKING: 3 };
+
+function ScoreNote({ score, severity, capped }: { score: number; severity: NewsArticle['severity']; capped: boolean }) {
+  const band = bandOf(score);
+  const thresholds = DEFAULT_BANDS.map((b) => `${b.severity} ${b.min}+`).join(' · ');
+  const note = band === severity ? ` · ${band} band` : capped && band && RANK[band] > RANK[severity] ? ` · held at ${severity}` : '';
+  return (
+    <span className="muted mono score-note" title={`Default thresholds: ${thresholds}`}>
+      score {Math.round(score)}
+      {note}
+    </span>
   );
 }
 
@@ -282,7 +304,10 @@ function Distribution({ articleId }: { articleId: string }) {
                 <span className="dist__spacer" />
                 <CopyButton text={d.payload} what={`${CHANNEL_LABEL[d.channel] ?? d.channel} payload`} label="Copy" />
               </div>
-              <pre className="dist__payload">{prettyPayload(d)}</pre>
+              {/* focusable: a capped, scrolling region must be reachable from the keyboard */}
+              <pre className="dist__payload" tabIndex={0} aria-label={`${CHANNEL_LABEL[d.channel] ?? d.channel} payload preview`}>
+                {prettyPayload(d)}
+              </pre>
               {(d.sentAt || d.error) && (
                 <div className="dist__foot mono">
                   {d.sentAt && (

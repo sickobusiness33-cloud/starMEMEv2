@@ -142,6 +142,12 @@
   color: var(--text-3);
 }
 
+/* Claude is configured but its last call failed (stories fall back to rules): say it in amber */
+.engine[data-warn] .engine__sub,
+.engine[data-warn] .engine__short {
+  color: var(--amber);
+}
+
 /* stats */
 
 /* Right-aligned against the clock: the engine pill changes width with its state
@@ -224,10 +230,21 @@
   color: var(--text-3);
 }
 
-/* 1024–1199: one row, compact labels, engine detail moves to the tooltip */
+/* ≤ 1199: one row, compact labels. The engine sub-label moves to the tooltip, so the pill
+   switches to its short label, which names the engine on its own (AI ACTIVE / RULES ACTIVE). */
 @media (max-width: 1199.98px) {
-  .engine__sub {
-    display: none;
+  /* hidden visually, still read: the full label + sub-label are the accessible name at every width */
+  .engine__sub,
+  .engine__full {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .engine__short {
+    display: inline;
   }
   .stat {
     padding: 0 12px;
@@ -290,20 +307,6 @@
   .stat__label {
     order: 1;
     font-size: 10px;
-  }
-}
-
-@media (max-width: 719.98px) {
-  .engine__full {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-  }
-  .engine__short {
-    display: inline;
   }
 }
 
@@ -395,7 +398,7 @@
     display: inline-block;
   }
   /* a "new stories" badge next to the "1" hint would read as a doubled 1: the badge wins */
-  .tab__badge + .tab__kbd {
+  .tab__badge ~ .tab__kbd {
     display: none;
   }
 }

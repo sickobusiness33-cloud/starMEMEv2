@@ -11,6 +11,7 @@ import type {
   Severity,
   TokenSnapshot,
 } from '../../../shared/types.js';
+import { mergeAcrossPools } from '../sources/merge.js';
 
 const HOUR_MS = 3_600_000;
 /**
@@ -50,9 +51,33 @@ export interface TrackedPriority {
 
 export interface ArticleQuery {
   limit: number;
-  before?: number;
+  /**
+   * Exclusive cursor: a `createdAt` (legacy: drops articles that share that millisecond
+   * with the previous page's last one), or the composite `{ ts, id }` of the previous
+   * page's last article, which is exact.
+   */
+  before?: number | FeedCursor;
   chain?: ChainId;
   severity?: Severity;
+}
+
+/** Position in the feed: articles strictly after (older than) this one. */
+export interface FeedCursor {
+  ts: number;
+  id: string;
+}
+
+/** "<createdAt>:<id>" — the cursor a client sends back to get the next page. */
+export function feedCursor(a: Pick<NewsArticle, 'createdAt' | 'id'>): string {
+  return `${a.createdAt}:${a.id}`;
+}
+
+/** Parses "<createdAt>:<id>"; null when malformed. */
+export function parseFeedCursor(raw: string): FeedCursor | null {
+  const m = /^(\d{1,16}):([\w-]{1,128})$/.exec(raw.trim());
+  if (!m) return null;
+  const ts = Number(m[1]);
+  return Number.isSafeInteger(ts) ? { ts, id: m[2] as string } : null;
 }
 
 const SCHEMA = `
@@ -176,7 +201,24 @@ export class Db {
     if (!last || s.ts >= last.ts) this.lastStored.set(key, { ts: s.ts, hash });
   }
 
+  /**
+   * Upserts the token row. Its JSON is the token's newest observation merged over
+   * the stored one: a sparse observation (discovery data without liquidity or
+   * volume, a lookup of another pool) fills in what it knows without erasing the
+   * richer market data already stored, and per-pool figures never mix two pools.
+   * An older observation never overwrites a newer one.
+   */
   private writeToken(s: TokenSnapshot, json: string): void {
+    const key = tokenKey(s.chain, s.address);
+    const stored = this.stmt('SELECT json, last_seen FROM tokens WHERE key = ?').get(key);
+    if (stored && Number(stored.last_seen) <= s.ts) {
+      try {
+        const prev = JSON.parse(String(stored.json)) as TokenSnapshot;
+        json = JSON.stringify(mergeAcrossPools(prev, s, 'extra'));
+      } catch {
+        // an unreadable row is simply replaced
+      }
+    }
     this.run(
       `INSERT INTO tokens (key, chain, address, symbol, name, created_at, first_seen, last_seen, json)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -191,7 +233,7 @@ export class Db {
          first_seen = MIN(tokens.first_seen, excluded.first_seen),
          json       = CASE WHEN excluded.last_seen >= tokens.last_seen THEN excluded.json ELSE tokens.json END,
          last_seen  = MAX(tokens.last_seen, excluded.last_seen)`,
-      tokenKey(s.chain, s.address),
+      key,
       s.chain,
       s.address,
       s.symbol,
@@ -230,6 +272,29 @@ export class Db {
       active?.minLiquidityUsd ?? Number.NEGATIVE_INFINITY,
       active?.minVolumeH1Usd ?? Number.NEGATIVE_INFINITY,
       limit ?? -1,
+    );
+  }
+
+  /**
+   * The market-regime universe: the newest observation of every token seen in the
+   * last `maxObservationAgeMs` that is liquid enough (`minLiquidityUsd`), reports a
+   * 1 h price change, and is between `minTokenAgeMs` and `maxTokenAgeMs` old (unknown
+   * age kept). The filters run in SQL, so only eligible rows are parsed.
+   */
+  regimeUniverse(
+    now: number,
+    o: { maxObservationAgeMs: number; minLiquidityUsd: number; minTokenAgeMs: number; maxTokenAgeMs: number },
+  ): TokenSnapshot[] {
+    return this.all<TokenSnapshot>(
+      `SELECT json FROM tokens
+       WHERE last_seen >= ?
+         AND (created_at IS NULL OR (created_at <= ? AND created_at >= ?))
+         AND json_extract(json, '$.liquidityUsd') >= ?
+         AND json_extract(json, '$.priceChangePct.h1') IS NOT NULL`,
+      now - o.maxObservationAgeMs,
+      now - o.minTokenAgeMs,
+      now - o.maxTokenAgeMs,
+      o.minLiquidityUsd,
     );
   }
 
@@ -313,16 +378,21 @@ export class Db {
     return this.one<NewsArticle>('SELECT json FROM articles WHERE id = ?', id);
   }
 
-  /** Newest first; `before` is an exclusive `createdAt` cursor. */
+  /**
+   * Newest first (ties on `createdAt` ordered by id, so the order is total); `before`
+   * is an exclusive cursor, see ArticleQuery.
+   */
   listArticles(q: ArticleQuery): NewsArticle[] {
+    const cursor = typeof q.before === 'number' ? { ts: q.before, id: null } : (q.before ?? { ts: null, id: null });
     return this.all<NewsArticle>(
       `SELECT json FROM articles
-       WHERE (?1 IS NULL OR ts < ?1)
-         AND (?2 IS NULL OR chain = ?2)
-         AND (?3 IS NULL OR severity = ?3)
-       ORDER BY ts DESC, rowid DESC
-       LIMIT ?4`,
-      q.before ?? null,
+       WHERE (?1 IS NULL OR ts < ?1 OR (?2 IS NOT NULL AND ts = ?1 AND id < ?2))
+         AND (?3 IS NULL OR chain = ?3)
+         AND (?4 IS NULL OR severity = ?4)
+       ORDER BY ts DESC, id DESC
+       LIMIT ?5`,
+      cursor.ts,
+      cursor.id,
       q.chain ?? null,
       q.severity ?? null,
       q.limit,

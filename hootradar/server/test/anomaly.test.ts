@@ -12,6 +12,8 @@ const OPTS: DetectOpts = {
   thresholds: { WATCH: 45, ALERT: 62, BREAKING: 78 },
   minLiquidityUsd: 5000,
   minVolumeH1Usd: 5000,
+  breakingMinLiquidityUsd: 25_000,
+  breakingMinVolumeH1Usd: 75_000,
 };
 
 const fixture = (name: string): unknown =>
@@ -126,14 +128,24 @@ describe('gates', () => {
 
   it('does not reject on unknown age or unknown honeypot status', () => {
     const d = detectAnomalies(
-      snap({ security: { mintAuthority: null, freezeAuthority: null, honeypot: 'unknown', devHoldingPct: null } }),
+      snap({ ...HOT_SNAP, security: { mintAuthority: null, freezeAuthority: null, honeypot: 'unknown', devHoldingPct: null } }),
       { ...HOT, ageMinutes: null },
       OPTS,
     );
     expect(d.rejected).toEqual([]);
     expect(d.severity).toBe('BREAKING');
+    expect(d).not.toHaveProperty('caps'); // unknown mint/freeze/holder data never caps
   });
 
+  it('never publishes a pool whose liquidity was pulled (-50% or worse within the hour)', () => {
+    const pulled = detectAnomalies(snap(HOT_SNAP), { ...HOT, liquidityChangePct: -62 }, OPTS);
+    expect(pulled.severity).toBeNull();
+    expect(pulled.rejected).toEqual(['Liquidity pulled (-62% within 1h)']);
+    expect(detectAnomalies(snap(HOT_SNAP), { ...HOT, liquidityChangePct: -49 }, OPTS).severity).toBe('BREAKING');
+    expect(detectAnomalies(snap(HOT_SNAP), { ...HOT, liquidityChangePct: -50 }, OPTS).rejected).toEqual([
+      'Liquidity pulled (-50% within 1h)',
+    ]);
+  });
   it('rejects low-liquidity pools from the real GeckoTerminal feed', () => {
     const pools = parseGtPools(fixture('gt_new_pools_solana.json'), 'solana', T0);
     const fired = pools.find((p) => p.symbol === 'FIRED');
@@ -236,10 +248,10 @@ describe('scoring', () => {
       buyer_surge: 'Unique buyers 2.6x vs 1h avg',
       holder_growth: '+31% holders / 42m',
       liquidity_growth: 'Liquidity +22% within 1h',
-      momentum: 'Momentum 58/100 (1h +34%)',
+      momentum: 'Momentum 58/100', // 25 minutes old: the "1h" change is the move since launch
       buy_pressure: '71% buys (1h)',
       large_wallet_flow: 'Avg trade $2,431 (large)',
-      social_attention: '9 mentions in 2h',
+      social_attention: '9 mentions in 2h (name or contract)',
       fresh_launch: 'Launched 25m ago · $600K volume, 1,240 trades',
     });
     const weights = d.signals.map((s) => s.weight);
@@ -294,6 +306,79 @@ describe('scoring', () => {
     const a = detectAnomalies(snap(), HOT, { ...OPTS, socialMentions: 7 });
     const b = detectAnomalies(snap(), HOT, { ...OPTS, socialMentions: 7 });
     expect(a).toEqual(b);
+  });
+});
+
+describe('BREAKING policy', () => {
+  const breaking = (over: Partial<TokenSnapshot>) => detectAnomalies(snap({ ...HOT_SNAP, liquidityUsd: 400_000, ...over }), HOT, OPTS);
+
+  it('needs real size: liquidity of $25K and 1h volume of $75K, otherwise the story is held at ALERT', () => {
+    // live regression: $12K of 1 h volume and a $31K market cap went out as BREAKING
+    const tiny = breaking({ liquidityUsd: 18_000, volumeUsd: { m5: 4_000, h1: 12_000 }, marketCapUsd: 31_000 });
+    expect(tiny.score).toBe(100);
+    expect(tiny.severity).toBe('ALERT');
+    expect(tiny.caps).toEqual([
+      'Liquidity $18,000 below the $25,000 BREAKING minimum',
+      '1h volume $12,000 below the $75,000 BREAKING minimum',
+    ]);
+    expect(breaking({ liquidityUsd: 25_000, volumeUsd: { h1: 75_000 } }).severity).toBe('BREAKING');
+    expect(breaking({ volumeUsd: { h1: 74_999 } }).severity).toBe('ALERT');
+  });
+
+  it('holds concentrated or mintable tokens at ALERT', () => {
+    const concentrated = breaking({ top10HolderPct: 92 });
+    expect(concentrated.severity).toBe('ALERT');
+    expect(concentrated.caps).toEqual(['Top 10 holders own 92% of supply']);
+    expect(breaking({ top10HolderPct: 79.9 }).severity).toBe('BREAKING');
+    const authority = breaking({ security: { mintAuthority: true, freezeAuthority: true, honeypot: 'no', devHoldingPct: null } });
+    expect(authority.severity).toBe('ALERT');
+    expect(authority.caps).toEqual(['Mint authority enabled', 'Freeze authority enabled']);
+  });
+
+  it('only caps BREAKING: ALERT and WATCH scores are untouched and carry no caps', () => {
+    const m = metrics({ volumeAcceleration: 6, txAcceleration: 6, buyerAcceleration: 6 }); // 30 + 20 + 22 = 72 → ALERT
+    const d = detectAnomalies(snap({ top10HolderPct: 95, liquidityUsd: 6_000 }), m, OPTS);
+    expect(d.severity).toBe('ALERT');
+    expect(d).not.toHaveProperty('caps');
+  });
+});
+
+describe('launch ramp', () => {
+  const launch = (perMinute: number, launchRamp?: DetectOpts['launchRamp']) =>
+    detectAnomalies(
+      snap({ volumeUsd: { h1: 20 * perMinute }, txns: { h1: { buys: 600, sells: 600, buyers: null, sellers: null } } }),
+      metrics({ ageMinutes: 20 }),
+      { ...OPTS, ...(launchRamp ? { launchRamp } : {}) },
+    ).signals.find((s) => s.code === 'fresh_launch')?.weight ?? 0;
+
+  it('scales with the chain baseline it is given', () => {
+    const full = SIGNAL_MAX_WEIGHTS.fresh_launch;
+    // an EVM launch at $6K a minute is nothing on the global ramp ($10K onset)...
+    expect(launch(6_000)).toBe(0);
+    // ...but on a chain whose launches trade $4K / $20K (p50 / p90-based ramp) it is a standout
+    expect(launch(6_000, { onsetPerMin: 4_000, fullPerMin: 8_000 })).toBe(full / 2);
+    expect(launch(8_000, { onsetPerMin: 4_000, fullPerMin: 8_000 })).toBe(full);
+  });
+
+  it("divides by the measured pool's age, not the token's", () => {
+    const at = (windowAgeMinutes: number | null) =>
+      detectAnomalies(
+        snap({ volumeUsd: { h1: 600_000 }, txns: { h1: { buys: 600, sells: 600, buyers: null, sellers: null } } }),
+        metrics({ ageMinutes: 40, windowAgeMinutes }),
+        OPTS,
+      ).signals.find((s) => s.code === 'fresh_launch')?.value;
+    expect(at(null)).toBeCloseTo(600_000 / 40, 6);
+    expect(at(5)).toBeCloseTo(600_000 / 5, 6); // the pool traded all of it in its 5 minutes
+  });
+
+  it("leaves the 1h price change out of the momentum label while it only measures the launch", () => {
+    const label = (m: Partial<DerivedMetrics>) =>
+      detectAnomalies(snap({ priceChangePct: { h1: 450 } }), metrics({ momentumScore: 90, ...m }), OPTS).signals.find(
+        (s) => s.code === 'momentum',
+      )?.label;
+    expect(label({ ageMinutes: 180 })).toBe('Momentum 90/100 (1h +450%)');
+    expect(label({ ageMinutes: 40 })).toBe('Momentum 90/100');
+    expect(label({ ageMinutes: 180, windowAgeMinutes: 30 })).toBe('Momentum 90/100');
   });
 });
 

@@ -63,6 +63,13 @@
   border-color: var(--cyan-line-strong);
 }
 
+/* The input draws no outline of its own (it would sit inside the field's border): the field
+   carries the standard 2px cyan focus ring instead — this is where "/" sends keyboard focus. */
+.rsearch__field:has(.rsearch__input:focus-visible) {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
 .rsearch__icon {
   position: absolute;
   left: 14px;
@@ -221,6 +228,10 @@
   .rsearch__select {
     width: 100%;
   }
+}
+
+.rsearch__limit {
+  color: var(--amber);
 }
 
 /* chip rows: recent searches, tape suggestions, candidates */
@@ -710,6 +721,13 @@
     scrollbar-width: none;
     margin-right: calc(-1 * var(--gutter));
     padding-right: var(--gutter);
+    /* overflow-x also clips vertically: room for the 2px + 2px focus ring, and a focused chip
+       scrolls clear of the faded edge */
+    padding-block: 4px;
+    margin-block: -4px;
+    padding-left: 4px;
+    margin-left: -4px;
+    scroll-padding-inline: 28px;
     -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
     mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
   }
@@ -835,13 +853,21 @@
     overflow-x: auto;
     overscroll-behavior-x: contain;
     scrollbar-width: none;
-    margin: 0 -14px;
-    padding: 0 14px;
+    /* vertical 4px: overflow-x clips vertically too, and the focus ring needs 2px + 2px */
+    margin: -4px -14px;
+    padding: 4px 14px;
+    scroll-padding-inline: 28px;
     -webkit-mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 28px), transparent);
     mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 28px), transparent);
   }
   .thead__links > .btn {
     flex: none;
+  }
+  /* keyboard focus inside a faded row: show it whole */
+  .thead__links:has(:focus-visible),
+  .cands .chips-row__list:has(:focus-visible) {
+    -webkit-mask-image: none;
+    mask-image: none;
   }
   .thead__links::-webkit-scrollbar {
     display: none;
@@ -1013,49 +1039,45 @@
   gap: 12px;
 }
 
-.det__score {
+.det__sev {
   --sev: var(--text-3);
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 4px;
+  gap: 4px 12px;
 }
 
-.det__score[data-sev='BREAKING'] {
+.det__sev[data-sev='BREAKING'] {
   --sev: var(--green);
 }
 
-.det__score[data-sev='ALERT'] {
+.det__sev[data-sev='ALERT'] {
   --sev: var(--cyan);
 }
 
-.det__score[data-sev='WATCH'] {
-  --sev: var(--text-2);
+.det__sev[data-sev='WATCH'] {
+  --sev: var(--text);
 }
 
-.det__num {
-  font-size: 26px;
+.det__level {
+  font-family: var(--font-mono);
+  font-size: 20px;
   font-weight: 600;
-  line-height: 1;
-  color: var(--text);
+  line-height: 1.1;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--sev);
 }
 
-.det__max {
+.det__sev[data-sev='NONE'] .det__level {
+  font-size: 15px;
+  color: var(--text-2);
+}
+
+.det__score {
   font-size: 12px;
-  color: var(--text-3);
-}
-
-.det__bar {
-  flex: 1;
-  align-self: center;
-  margin-left: 10px;
-}
-
-.det__bar .bar__fill {
-  background: var(--sev);
-}
-
-.det__prov {
-  margin-left: 8px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
 }
 
 .sig-chips {

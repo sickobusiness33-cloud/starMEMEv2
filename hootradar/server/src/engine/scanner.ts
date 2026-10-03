@@ -17,8 +17,8 @@ const DEGRADED_WINDOW_MS = 10 * MINUTE_MS;
  * tokens are refreshed first, so busy launchpad chains keep every tradeable token.
  */
 const TRACKED_PER_CHAIN = 240;
-/** snapshots of one cycle processed in parallel; one slow AI write must not stall the chain */
-const PROCESS_CONCURRENCY = 4;
+/** snapshots stored and assessed between two yields to the event loop (HTTP stays responsive) */
+const INGEST_SLICE = 25;
 const COUNTS_TTL_MS = 30_000;
 const FIRST_PRUNE_DELAY_MS = MINUTE_MS;
 const PRUNE_INTERVAL_MS = 60 * MINUTE_MS;
@@ -88,7 +88,10 @@ export class Scanner {
     });
   }
 
-  /** Stops scheduling and waits for the cycles already running (their remaining snapshots are skipped). */
+  /**
+   * Stops scheduling and waits for the cycles already running (their remaining
+   * snapshots are skipped). Background article work is the pipeline's to stop.
+   */
   async stop(): Promise<void> {
     this.active = false;
     for (const c of this.chains) {
@@ -214,17 +217,24 @@ export class Scanner {
     return addresses.length ? c.adapter.refresh(addresses) : null;
   }
 
+  /**
+   * Stores every snapshot and hands it to the pipeline, which decides synchronously
+   * and moves anything that needs the network (mentions, enrichment, the article)
+   * to its background workers: a cycle never waits for an article to be written.
+   */
   private async ingest(snapshots: TokenSnapshot[]): Promise<void> {
-    await forEachLimit(snapshots, PROCESS_CONCURRENCY, async (s) => {
+    for (let i = 0; i < snapshots.length; i++) {
       if (!this.active) return;
+      if (i > 0 && i % INGEST_SLICE === 0) await yieldToEventLoop();
+      const s = snapshots[i] as TokenSnapshot;
       try {
         this.d.db.insertSnapshot(s); // also upserts the token row
       } catch (e) {
         log.error('storing snapshot failed', { chain: s.chain, address: s.address, error: errMsg(e) });
-        return;
+        continue;
       }
-      await this.d.pipeline.process(s, Date.now());
-    });
+      this.d.pipeline.process(s, Date.now());
+    }
   }
 
   private perChainTokens(now: number): Record<string, number> {
@@ -263,13 +273,6 @@ function lastError(c: ChainState): string | null {
   return latest?.error ?? null;
 }
 
-async function forEachLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
-  let next = 0;
-  const worker = async (): Promise<void> => {
-    while (next < items.length) {
-      const item = items[next++] as T;
-      await fn(item);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }

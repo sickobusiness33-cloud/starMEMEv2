@@ -3,12 +3,19 @@
  * stages (resolve → on-chain → holders → quant → web intel → AI brief); every
  * change is persisted (throttled) and pushed to subscribers as a full copy.
  * A failing stage is marked 'error' and the investigation continues where it can.
+ *
+ * Radar is public and interactive, so it must never starve the newsroom or run up
+ * an unbounded bill: its provider calls use their own lane of each provider's
+ * budget (fail fast instead of queueing), every stage has a deadline that cancels
+ * its work, at most a few investigations run at once, and paid Claude calls draw
+ * from an hourly budget and a per-visitor quota (results are reused per token).
  */
 import { randomUUID } from 'node:crypto';
 import type {
   ChainId,
   DerivedMetrics,
   MarketRegime,
+  RadarBrief,
   RadarReport,
   RadarStage,
   RadarStageId,
@@ -17,17 +24,22 @@ import type {
   UnavailableField,
 } from '../../../shared/types.js';
 import { writeRadarBrief } from '../ai/brief.js';
+import { CallBudget, claudeSession } from '../ai/claude.js';
 import { fmtUsd } from '../ai/format.js';
+import { hasCachedResearch, webResearchEnabled } from '../ai/web-research.js';
 import type { ChainAdapter } from '../chains/types.js';
 import type { AppConfig } from '../config.js';
-import type { Db } from '../db/db.js';
+import { tokenKey, type Db } from '../db/db.js';
 import { detectAnomalies } from '../engine/anomaly.js';
+import type { LaunchBaselines } from '../engine/baselines.js';
 import { deriveMetrics } from '../engine/metrics.js';
+import { detectOptions } from '../engine/pipeline.js';
 import { errMsg, logger } from '../log.js';
+import type { CallOpts } from '../net/http.js';
 import { matchQuant } from '../quant/matcher.js';
 import { dsSearch } from '../sources/dexscreener.js';
 import { mergeSnapshots } from '../sources/merge.js';
-import { gatherIntel, intelQueryFor } from './intel/index.js';
+import { gatherIntel, intelQueryFor, type GatherOpts } from './intel/index.js';
 
 const log = logger('radar');
 
@@ -44,20 +56,64 @@ export const MAX_QUERY_CHARS = 120;
 export const SMART_MONEY_REASON =
   'Labelled smart-money wallets require a dedicated on-chain analytics provider (e.g. Nansen/Arkham); HootRadar shows a large-wallet flow proxy instead.';
 
-const HISTORY_MS = 90 * 60_000;
+const MINUTE_MS = 60_000;
+const HISTORY_MS = 90 * MINUTE_MS;
 const SAVE_INTERVAL_MS = 300;
-/** a repeated submit of the same query within this window joins the existing report */
+/** a repeated submit of the same query within this window joins the existing report (unless it failed) */
 const DEDUPE_WINDOW_MS = 20_000;
 const MEMORY_REPORTS = 50;
 const MAX_CANDIDATES = 6;
+/** investigations running at once across all visitors; beyond this a new one is refused (RadarBusyError) */
+export const MAX_ACTIVE_INVESTIGATIONS = 4;
+/**
+ * Each stage's work is cancelled at its deadline (queued provider requests leave
+ * their limiter, Claude calls are aborted). The web stage's providers have their
+ * own, shorter budgets.
+ */
+const STAGE_DEADLINE_MS: Record<RadarStageId, number> = {
+  resolve: 20_000,
+  onchain: 20_000,
+  holders: 20_000,
+  quant: 10_000,
+  web: 75_000,
+  ai: 100_000,
+};
+/**
+ * Radar's provider requests: the interactive lane of each provider's budget, never
+ * waiting long for a slot (a busy lane answers "busy" instead of queueing behind
+ * other visitors), and never waiting out a provider's 429 pause.
+ */
+const PROVIDER_CALL: Omit<CallOpts, 'signal'> = { lane: 'radar', maxQueueMs: 10_000, maxPauseWaitMs: 3_000 };
+/** AI-backed investigations one visitor may start per window; beyond it Radar uses its free providers and the rules brief */
+const CLIENT_AI_INVESTIGATIONS = 4;
+const CLIENT_AI_WINDOW_MS = 10 * MINUTE_MS;
+const CLIENT_LIMIT_ENTRIES = 5_000;
+/** a Claude brief of a token is reused this long for repeated or rotated queries */
+const BRIEF_TTL_MS = 10 * MINUTE_MS;
+const BRIEF_CACHE_LIMIT = 200;
 
 export interface RadarDeps {
   adapters: ChainAdapter[];
   db: Db;
   config: AppConfig;
   regime: () => MarketRegime;
+  /** per-chain launch-traction baselines (the pipeline's), so Radar scores like the scanner */
+  baselines?: LaunchBaselines;
   /** test seam; defaults to Date.now */
   now?: () => number;
+}
+
+export interface StartOpts {
+  /** who asked (e.g. the client IP bucket): the per-visitor AI quota keys on it */
+  client?: string;
+}
+
+/** Too many investigations are running; the caller should retry shortly. */
+export class RadarBusyError extends Error {
+  override name = 'RadarBusyError';
+  constructor(readonly retryAfterSec: number) {
+    super('Radar is busy with other investigations, retry shortly');
+  }
 }
 
 type HolderLookup = { state: 'pending' } | { state: 'ok' } | { state: 'missing' } | { state: 'failed'; error: string };
@@ -65,6 +121,9 @@ type HolderLookup = { state: 'pending' } | { state: 'ok' } | { state: 'missing' 
 /** Mutable working state of one running investigation. */
 interface Investigation {
   report: RadarReport;
+  client: string | null;
+  /** this investigation already counted against its visitor's AI quota */
+  aiCounted: boolean;
   adapter: ChainAdapter | null;
   /** resolved through DexScreener search: the on-chain stage still needs a full lookup */
   needsLookup: boolean;
@@ -93,25 +152,42 @@ export class RadarService {
   private readonly listeners = new Map<string, Set<(r: RadarReport) => void>>();
   private readonly recent = new Map<string, { id: string; at: number }>();
   private readonly clock: () => number;
+  /** paid Claude calls Radar may start per hour, across all visitors */
+  private readonly aiBudget: CallBudget;
+  private readonly clientAi = new Map<string, number[]>();
+  private readonly briefs = new Map<string, { at: number; brief: RadarBrief }>();
 
   constructor(private readonly d: RadarDeps) {
     this.clock = d.now ?? Date.now;
+    this.aiBudget = new CallBudget(d.config.radar.aiCallsPerHour, 60 * MINUTE_MS);
   }
 
-  /** Starts (or joins, for a repeat within 20 s) an investigation. Returns immediately. */
-  start(query: string, chain?: ChainId): RadarReport {
+  /** Investigations running right now. */
+  get running(): number {
+    return this.active.size;
+  }
+
+  /**
+   * Starts (or joins, for a repeat of a running or finished search within 20 s) an
+   * investigation. Returns immediately. Throws RadarBusyError when too many run.
+   */
+  start(query: string, chain?: ChainId, opts: StartOpts = {}): RadarReport {
     const q = normalizeQuery(query);
     const now = this.clock();
-    const key = `${chain ?? '*'}|${q.toLowerCase()}`;
+    const key = `${chain ?? '*'}|${this.dedupeKey(q, chain)}`;
     const recent = this.recent.get(key);
     if (recent && now - recent.at < DEDUPE_WINDOW_MS) {
       const existing = this.get(recent.id);
-      if (existing) return existing;
+      // a failed or empty search is run again: the retry may well succeed
+      if (existing && (existing.status === 'running' || existing.status === 'done')) return existing;
     }
     this.pruneRecent(now);
+    if (this.active.size >= MAX_ACTIVE_INVESTIGATIONS) throw new RadarBusyError(10);
 
     const inv: Investigation = {
       report: newReport(q, now),
+      client: opts.client ?? null,
+      aiCounted: false,
       adapter: null,
       needsLookup: false,
       history: [],
@@ -160,23 +236,35 @@ export class RadarService {
     };
   }
 
+  /**
+   * The dedupe key of a query: an address keeps its case where the chain's
+   * addresses are case-sensitive (two base58 mints that differ only in case are
+   * different tokens); a symbol or name is compared without case.
+   */
+  private dedupeKey(q: string, chain: ChainId | undefined): string {
+    const adapters = chain ? this.d.adapters.filter((a) => a.config.id === chain) : this.d.adapters;
+    const byAddress = adapters.filter((a) => a.isAddress(q));
+    if (byAddress.length === 0) return q.toLowerCase();
+    return byAddress.every((a) => a.normalizeAddress(q) === q.toLowerCase()) ? q.toLowerCase() : q;
+  }
+
   /* ───────────────────────────── flow ───────────────────────────── */
 
   private async run(inv: Investigation, chain: ChainId | undefined): Promise<void> {
     const r = inv.report;
     try {
-      const resolve = await this.stage(inv, 'resolve', () => this.resolve(inv, chain));
+      const resolve = await this.stage(inv, 'resolve', (signal) => this.resolve(inv, chain, signal));
       if (resolve.error) {
         r.status = resolve.error instanceof NotFoundError ? 'not_found' : 'error';
         r.error = errMsg(resolve.error);
         return;
       }
-      await this.stage(inv, 'onchain', () => this.onchain(inv));
-      await this.stage(inv, 'holders', () => this.holders(inv));
+      await this.stage(inv, 'onchain', (signal) => this.onchain(inv, signal));
+      await this.stage(inv, 'holders', (signal) => this.holders(inv, signal));
       this.record(inv);
       await this.stage(inv, 'quant', () => this.quant(inv));
-      await this.stage(inv, 'web', () => this.web(inv));
-      await this.stage(inv, 'ai', () => this.ai(inv));
+      await this.stage(inv, 'web', (signal) => this.web(inv, signal));
+      await this.stage(inv, 'ai', (signal) => this.ai(inv, signal));
       r.status = 'done';
     } catch (e) {
       // stage() contains every stage failure; this is a bug guard
@@ -188,33 +276,49 @@ export class RadarService {
     }
   }
 
+  /** Runs one stage within its deadline; at the deadline its work is cancelled through `signal`. */
   private async stage(
     inv: Investigation,
     id: RadarStageId,
-    work: () => Promise<StageOutcome>,
+    work: (signal: AbortSignal) => Promise<StageOutcome>,
   ): Promise<{ error: unknown }> {
     this.setStage(inv, id, { status: 'running', startedAt: this.clock() });
+    const controller = new AbortController();
+    const deadlineMs = STAGE_DEADLINE_MS[id];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error(`${stageLabel(id)} did not finish within ${Math.round(deadlineMs / 1000)}s`));
+      }, deadlineMs);
+      timer.unref?.();
+    });
     try {
-      const outcome = await work();
+      const outcome = await Promise.race([work(controller.signal), deadline]);
       this.setStage(inv, id, { ...outcome, endedAt: this.clock() });
       return { error: null };
     } catch (e) {
       if (!(e instanceof NotFoundError)) log.warn('radar stage failed', { id: inv.report.id, stage: id, error: errMsg(e) });
       this.setStage(inv, id, { status: 'error', message: errMsg(e), endedAt: this.clock() });
       return { error: e };
+    } finally {
+      clearTimeout(timer);
+      controller.abort(); // anything the stage left running (a losing branch, a late retry) stops here
     }
   }
 
   /* ───────────────────────────── stages ───────────────────────────── */
 
-  private async resolve(inv: Investigation, chain: ChainId | undefined): Promise<StageOutcome> {
+  private async resolve(inv: Investigation, chain: ChainId | undefined, signal: AbortSignal): Promise<StageOutcome> {
     const r = inv.report;
     if (r.query === '') throw new NotFoundError('Empty query');
     const adapters = chain ? this.d.adapters.filter((a) => a.config.id === chain) : this.d.adapters;
     if (adapters.length === 0) throw new NotFoundError(`Chain "${chain}" is not supported`);
 
+    const call: CallOpts = { ...PROVIDER_CALL, signal };
     const byAddress = adapters.filter((a) => a.isAddress(r.query));
-    const found = byAddress.length > 0 ? await lookupAddress(byAddress, r.query) : await searchTokens(adapters, r.query);
+    const found =
+      byAddress.length > 0 ? await lookupAddress(byAddress, r.query, call) : await searchTokens(adapters, r.query, call);
     const [top, ...others] = found;
     if (!top) {
       const where = (byAddress.length > 0 ? byAddress : adapters).map((a) => a.config.name).join(', ');
@@ -233,14 +337,14 @@ export class RadarService {
     return done(`${label(top.snapshot)} on ${top.adapter.config.name} via ${via}${more}`);
   }
 
-  private async onchain(inv: Investigation): Promise<StageOutcome> {
+  private async onchain(inv: Investigation, signal: AbortSignal): Promise<StageOutcome> {
     const { adapter, report: r } = inv;
     if (!adapter || !r.snapshot) return skipped('Token not resolved');
     let snapshot = r.snapshot;
     let note = '';
     if (inv.needsLookup) {
       try {
-        const full = await adapter.lookup(snapshot.address);
+        const full = await adapter.lookup(snapshot.address, { ...PROVIDER_CALL, signal });
         // the lookup's pool is authoritative; search data must not leak another pool's windows into it
         if (full) {
           snapshot = mergeSnapshots(full, {
@@ -262,13 +366,13 @@ export class RadarService {
     return done(`${sources}${liquidity} · ${inv.history.length} earlier snapshots${note}`);
   }
 
-  private async holders(inv: Investigation): Promise<StageOutcome> {
+  private async holders(inv: Investigation, signal: AbortSignal): Promise<StageOutcome> {
     const { adapter, report: r } = inv;
     if (!adapter || !r.snapshot) return skipped('Token not resolved');
     const snapshot = r.snapshot;
     let enrichment;
     try {
-      enrichment = await adapter.enrich(snapshot.address);
+      enrichment = await adapter.enrich(snapshot.address, { ...PROVIDER_CALL, signal });
     } catch (e) {
       inv.holders = { state: 'failed', error: errMsg(e) };
       this.refreshUnavailable(inv);
@@ -291,28 +395,104 @@ export class RadarService {
     return done(top ? `Closest methodology: ${top.name} (${top.score}/100)` : 'No methodology resembles current conditions');
   }
 
-  private async web(inv: Investigation): Promise<StageOutcome> {
+  private async web(inv: Investigation, signal: AbortSignal): Promise<StageOutcome> {
     const r = inv.report;
     if (!r.snapshot) return skipped('Token not resolved');
-    const { items, providers } = await gatherIntel(intelQueryFor(r.snapshot), this.clock());
+    const query = intelQueryFor(r.snapshot);
+    const { items, providers } = await gatherIntel(query, this.clock(), {
+      signal,
+      webResearch: this.webResearchPlan(inv, r.snapshot),
+    });
     r.intel = items;
+    r.providers = providers;
     const summary = providers.map((p) => (p.ok ? `${p.provider} ${p.count}` : `${p.provider} failed`)).join(' · ');
     if (providers.length > 0 && providers.every((p) => !p.ok)) throw new Error(`Every intel provider failed (${summary})`);
     return done(`${items.length} mention${items.length === 1 ? '' : 's'} · ${summary}`);
   }
 
-  private async ai(inv: Investigation): Promise<StageOutcome> {
+  private async ai(inv: Investigation, signal: AbortSignal): Promise<StageOutcome> {
     const r = inv.report;
     if (!r.snapshot || !r.metrics || !r.detection || !r.quant) return skipped('Needs on-chain metrics and quant analysis');
-    r.brief = await writeRadarBrief({
-      snapshot: r.snapshot,
-      metrics: r.metrics,
-      detection: r.detection,
-      quant: r.quant,
-      intel: r.intel,
-      lang: this.d.config.lang,
-    });
-    return done(r.brief.engine === 'claude' ? `Written by Claude (${r.brief.model ?? 'model unknown'})` : 'Written by the rules engine');
+    const now = this.clock();
+    const key = tokenKey(r.snapshot.chain, r.snapshot.address);
+    const reused = this.briefs.get(key);
+    if (reused && now - reused.at < BRIEF_TTL_MS) {
+      r.brief = reused.brief;
+      const minutes = Math.max(1, Math.round((now - reused.at) / MINUTE_MS));
+      return done(`Written by Claude (${reused.brief.model ?? 'model unknown'}) ${minutes} min ago for an earlier search of this token`);
+    }
+    const allowed = this.claudeAllowed(inv, now);
+    r.brief = await writeRadarBrief(
+      {
+        snapshot: r.snapshot,
+        metrics: r.metrics,
+        detection: r.detection,
+        quant: r.quant,
+        intel: r.intel,
+        providers: r.providers,
+        lang: this.d.config.lang,
+      },
+      { claude: allowed === true, signal },
+    );
+    if (r.brief.engine === 'claude') {
+      this.rememberBrief(key, now, r.brief);
+      return done(`Written by Claude (${r.brief.model ?? 'model unknown'})`);
+    }
+    return done(allowed === true || allowed === null ? 'Written by the rules engine' : `Written by the rules engine (${allowed})`);
+  }
+
+  /* ───────────────────────────── AI spend ───────────────────────────── */
+
+  /**
+   * Whether this investigation may start a paid Claude call: true (counted against
+   * the hourly budget and the visitor's quota), null when Claude is not configured,
+   * or the reason it may not.
+   */
+  private claudeAllowed(inv: Investigation, now: number): true | null | string {
+    if (!claudeSession()) return null;
+    if (!this.clientMayUseAi(inv, now)) return 'per-visitor AI quota reached';
+    if (!this.aiBudget.take(now)) return 'hourly AI budget reached';
+    this.countClientAi(inv, now);
+    return true;
+  }
+
+  /** Claude web research for this token: off by configuration, reused from cache, or within budget. */
+  private webResearchPlan(inv: Investigation, s: TokenSnapshot): GatherOpts['webResearch'] {
+    if (!this.d.config.radar.webResearch || !webResearchEnabled()) return { run: false, reason: null };
+    const target = { chain: s.chain, address: s.address, symbol: s.symbol, name: s.name };
+    if (hasCachedResearch(target)) return { run: true }; // no new spend
+    const allowed = this.claudeAllowed(inv, this.clock());
+    return allowed === true ? { run: true } : { run: false, reason: allowed ?? 'Claude not configured' };
+  }
+
+  private clientMayUseAi(inv: Investigation, now: number): boolean {
+    if (inv.client === null || inv.aiCounted) return true;
+    const recent = (this.clientAi.get(inv.client) ?? []).filter((t) => now - t < CLIENT_AI_WINDOW_MS);
+    return recent.length < CLIENT_AI_INVESTIGATIONS;
+  }
+
+  private countClientAi(inv: Investigation, now: number): void {
+    if (inv.client === null || inv.aiCounted) return;
+    inv.aiCounted = true;
+    const recent = (this.clientAi.get(inv.client) ?? []).filter((t) => now - t < CLIENT_AI_WINDOW_MS);
+    recent.push(now);
+    this.clientAi.delete(inv.client);
+    this.clientAi.set(inv.client, recent);
+    while (this.clientAi.size > CLIENT_LIMIT_ENTRIES) {
+      const oldest = this.clientAi.keys().next().value;
+      if (oldest === undefined) break;
+      this.clientAi.delete(oldest);
+    }
+  }
+
+  private rememberBrief(key: string, now: number, brief: RadarBrief): void {
+    this.briefs.delete(key);
+    this.briefs.set(key, { at: now, brief });
+    while (this.briefs.size > BRIEF_CACHE_LIMIT) {
+      const oldest = this.briefs.keys().next().value;
+      if (oldest === undefined) break;
+      this.briefs.delete(oldest);
+    }
   }
 
   /* ───────────────────────────── helpers ───────────────────────────── */
@@ -325,11 +505,8 @@ export class RadarService {
     r.snapshot = snapshot;
     r.token = tokenRef(snapshot);
     r.metrics = deriveMetrics(snapshot, inv.history, now);
-    r.detection = detectAnomalies(snapshot, r.metrics, {
-      thresholds: config.thresholds,
-      minLiquidityUsd: config.scan.minLiquidityUsd,
-      minVolumeH1Usd: config.scan.minVolumeH1Usd,
-    });
+    const launchRamp = this.d.baselines?.rampFor(snapshot.chain, now);
+    r.detection = detectAnomalies(snapshot, r.metrics, detectOptions(config, launchRamp ? { launchRamp } : {}));
     this.refreshUnavailable(inv);
   }
 
@@ -451,13 +628,32 @@ export class RadarService {
 
 /* ───────────────────────────── resolution ───────────────────────────── */
 
-/** `lookup` on every chain whose address format matches; most liquid first. */
-async function lookupAddress(adapters: ChainAdapter[], address: string): Promise<Resolved[]> {
-  const results = await Promise.allSettled(adapters.map((a) => a.lookup(address)));
+/**
+ * `lookup` on every chain whose address format matches; most liquid first. When
+ * several chains share the format (an EVM address), one DexScreener search first
+ * tells which chains list the token, and only those are asked: a random address
+ * costs one request, not two GeckoTerminal calls per EVM chain.
+ */
+async function lookupAddress(adapters: ChainAdapter[], address: string, call: CallOpts): Promise<Resolved[]> {
+  let candidates = adapters;
+  if (adapters.length > 1) {
+    try {
+      const listed = await dsSearch(address, call);
+      candidates = adapters.filter((a) =>
+        listed.some((s) => s.chain === a.config.dexscreenerChainId && a.normalizeAddress(s.address) === a.normalizeAddress(address)),
+      );
+      if (candidates.length === 0) return [];
+    } catch (e) {
+      if (call.signal?.aborted) throw e;
+      // DexScreener unavailable: ask every candidate chain directly
+      log.debug('radar address pre-check failed', { error: errMsg(e) });
+    }
+  }
+  const results = await Promise.allSettled(candidates.map((a) => a.lookup(address, call)));
   const found: Resolved[] = [];
   const failures: string[] = [];
   results.forEach((res, i) => {
-    const adapter = adapters[i];
+    const adapter = candidates[i];
     if (!adapter) return;
     if (res.status === 'rejected') failures.push(`${adapter.config.name}: ${errMsg(res.reason)}`);
     else if (res.value) found.push({ adapter, snapshot: res.value });
@@ -480,14 +676,14 @@ async function lookupAddress(adapters: ChainAdapter[], address: string): Promise
  *   token against 9 USDC can report $59M of "liquidity". Volume costs real money
  *   to produce, so 24 h volume decides first.
  */
-async function searchTokens(adapters: ChainAdapter[], query: string): Promise<Resolved[]> {
+async function searchTokens(adapters: ChainAdapter[], query: string, call: CallOpts): Promise<Resolved[]> {
   const byDsChain = new Map(adapters.map((a) => [a.config.dexscreenerChainId, a] as const));
   const bare = (text: string) => normalizeQuery(text).toLowerCase();
   const wanted = bare(query);
   const isExact = (s: TokenSnapshot) => bare(s.symbol) === wanted || bare(s.name) === wanted;
 
   const queries = TICKER_QUERY.test(query) ? [query, `$${query}`] : [query];
-  const results = await Promise.allSettled(queries.map((q) => dsSearch(q)));
+  const results = await Promise.allSettled(queries.map((q) => dsSearch(q, call)));
   const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
   if (failed.length === results.length) throw failed[0]?.reason;
 
@@ -550,9 +746,14 @@ function newReport(query: string, now: number): RadarReport {
     detection: null,
     quant: null,
     intel: [],
+    providers: [],
     brief: null,
     unavailable: [smartMoney()],
   };
+}
+
+function stageLabel(id: RadarStageId): string {
+  return RADAR_STAGES.find((s) => s.id === id)?.label ?? id;
 }
 
 function tokenRef(s: TokenSnapshot): TokenRef {

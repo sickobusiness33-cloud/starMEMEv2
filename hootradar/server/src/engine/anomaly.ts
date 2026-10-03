@@ -12,9 +12,36 @@ export interface DetectOpts {
   thresholds: Record<Severity, number>;
   minLiquidityUsd: number;
   minVolumeH1Usd: number;
+  /**
+   * BREAKING needs a market of real size: below either minimum the severity is held
+   * at ALERT (live: a $31K-cap token with $12K of 1 h volume went out as BREAKING).
+   */
+  breakingMinLiquidityUsd: number;
+  breakingMinVolumeH1Usd: number;
   /** mentions of the token in the last ~2 h (null/undefined = not measured) */
   socialMentions?: number | null;
+  /**
+   * Launch-traction ramp in USD of volume per minute (onset → full weight), e.g. the
+   * token's chain baseline (see baselines.ts). Default: the global calibration.
+   */
+  launchRamp?: LaunchRamp;
 }
+
+export interface LaunchRamp {
+  onsetPerMin: number;
+  fullPerMin: number;
+}
+
+/**
+ * Global launch-traction calibration (Oct 2026, all four chains): the median young
+ * token that clears the market gates trades ~$10K a minute, the top decile ~$40K.
+ */
+export const DEFAULT_LAUNCH_RAMP: Readonly<LaunchRamp> = { onsetPerMin: 10_000, fullPerMin: 50_000 };
+
+/** Holder concentration at or above this keeps a token out of BREAKING (two such tokens rugged minutes after publication). */
+export const BREAKING_MAX_TOP10_PCT = 80;
+/** Liquidity down this much (or more) against our own history of the same pool: pulled, never published. */
+export const LIQUIDITY_PULLED_PCT = -50;
 
 /**
  * Maximum contribution of each signal to the 0-100 score (the sum exceeds 100 and is capped).
@@ -68,7 +95,7 @@ export function detectAnomalies(s: TokenSnapshot, m: DerivedMetrics, o: DetectOp
     buyPressure(m),
     largeWalletFlow(m),
     socialAttention(o.socialMentions ?? null),
-    freshLaunch(s, m),
+    freshLaunch(s, m, o.launchRamp ?? DEFAULT_LAUNCH_RAMP),
   ].filter((x): x is Scored => x !== null && x.strength > 0);
 
   const total = scored.reduce((sum, x) => sum + SIGNAL_MAX_WEIGHTS[x.code] * x.strength, 0);
@@ -82,7 +109,10 @@ export function detectAnomalies(s: TokenSnapshot, m: DerivedMetrics, o: DetectOp
     }))
     .sort((a, b) => b.weight - a.weight);
 
-  return { score, severity: rejected.length ? null : severityFor(score, o.thresholds), signals, rejected };
+  const byScore = rejected.length ? null : severityFor(score, o.thresholds);
+  const caps = byScore === 'BREAKING' ? breakingCaps(s, o) : [];
+  const severity: Severity | null = caps.length ? 'ALERT' : byScore;
+  return { score, severity, signals, rejected, ...(caps.length ? { caps } : {}) };
 }
 
 export function severityFor(score: number, t: Record<Severity, number>): Severity | null {
@@ -107,7 +137,29 @@ function gateReasons(s: TokenSnapshot, m: DerivedMetrics, o: DetectOpts): string
   if (s.security?.honeypot === 'yes') reasons.push('Flagged as honeypot');
   if (m.ageMinutes != null && m.ageMinutes > MAX_AGE_MINUTES)
     reasons.push(`Older than 7 days (${(m.ageMinutes / 1440).toFixed(1)}d)`);
+  if (m.liquidityChangePct != null && m.liquidityChangePct <= LIQUIDITY_PULLED_PCT)
+    reasons.push(`Liquidity pulled (${signedPct(m.liquidityChangePct)} within 1h)`);
   return reasons;
+}
+
+/**
+ * Why a score in BREAKING range is held at ALERT: the market is too small for the
+ * label (one wallet can move it), or the token carries a structural rug risk.
+ * Unknown values never cap: they are not evidence (the article's risk flags say so).
+ */
+function breakingCaps(s: TokenSnapshot, o: DetectOpts): string[] {
+  const caps: string[] = [];
+  const liquidity = s.liquidityUsd;
+  if (liquidity != null && liquidity < o.breakingMinLiquidityUsd)
+    caps.push(`Liquidity ${usd(liquidity)} below the ${usd(o.breakingMinLiquidityUsd)} BREAKING minimum`);
+  const volumeH1 = s.volumeUsd.h1 ?? null;
+  if (volumeH1 != null && volumeH1 < o.breakingMinVolumeH1Usd)
+    caps.push(`1h volume ${usd(volumeH1)} below the ${usd(o.breakingMinVolumeH1Usd)} BREAKING minimum`);
+  if (s.top10HolderPct != null && s.top10HolderPct >= BREAKING_MAX_TOP10_PCT)
+    caps.push(`Top 10 holders own ${Math.round(s.top10HolderPct)}% of supply`);
+  if (s.security?.mintAuthority === true) caps.push('Mint authority enabled');
+  if (s.security?.freezeAuthority === true) caps.push('Freeze authority enabled');
+  return caps;
 }
 
 /* ───────────── signals ───────────── */
@@ -168,7 +220,8 @@ function momentum(s: TokenSnapshot, m: DerivedMetrics): Scored | null {
   const x = m.momentumScore;
   if (x == null) return null;
   const h1 = s.priceChangePct.h1;
-  const detail = h1 != null ? ` (1h ${signedPct(h1)})` : '';
+  // under an hour of pool history the "1h" change is the move since launch, left out of the score too
+  const detail = h1 != null && coversHour(m) ? ` (1h ${signedPct(h1)})` : '';
   const maturity = m.ageMinutes == null ? 1 : ramp(m.ageMinutes, 10, 60);
   return {
     code: 'momentum',
@@ -196,7 +249,13 @@ function largeWalletFlow(m: DerivedMetrics): Scored | null {
 
 function socialAttention(mentions: number | null): Scored | null {
   if (mentions == null) return null;
-  return { code: 'social_attention', strength: ramp(mentions, 3, 15), value: mentions, label: `${mentions} mentions in 2h` };
+  // only mentions of the contract or the distinctive name are counted (see quickMentions)
+  return {
+    code: 'social_attention',
+    strength: ramp(mentions, 3, 15),
+    value: mentions,
+    label: `${mentions} mentions in 2h (name or contract)`,
+  };
 }
 
 /**
@@ -210,14 +269,14 @@ function socialAttention(mentions: number | null): Scored | null {
  * minutes, when the 1 h baseline no longer contains the launch and the flow
  * signals take over.
  */
-function freshLaunch(s: TokenSnapshot, m: DerivedMetrics): Scored | null {
+function freshLaunch(s: TokenSnapshot, m: DerivedMetrics, r: LaunchRamp): Scored | null {
   const age = m.ageMinutes;
   const volume = s.volumeUsd.h1 ?? null;
   const trades = txTotal(s.txns.h1);
   if (age == null || volume == null || trades == null || age > LAUNCH_FADE_END_MIN) return null;
-  const perMinute = volume / Math.min(60, Math.max(1, age));
+  const perMinute = launchVolumePerMinute(volume, age, m.windowAgeMinutes ?? null);
   const strength =
-    ramp(perMinute, 10_000, 50_000) *
+    ramp(perMinute, r.onsetPerMin, r.fullPerMin) *
     ramp(trades, 30, 150) *
     ramp(age, 2, 10) *
     (1 - ramp(age, LAUNCH_FADE_START_MIN, LAUNCH_FADE_END_MIN));
@@ -231,6 +290,22 @@ function freshLaunch(s: TokenSnapshot, m: DerivedMetrics): Scored | null {
 
 const LAUNCH_FADE_START_MIN = 60;
 const LAUNCH_FADE_END_MIN = 90;
+
+/**
+ * Average 1 h volume per minute over the minutes the window really holds: the pool's
+ * life when it is younger than an hour (a pool younger than its token holds fewer
+ * minutes than the token's age), otherwise the full hour.
+ */
+export function launchVolumePerMinute(volumeH1: number, tokenAgeMinutes: number, windowAgeMinutes: number | null): number {
+  const minutes = Math.min(60, Math.max(1, windowAgeMinutes ?? tokenAgeMinutes));
+  return volumeH1 / minutes;
+}
+
+/** The 1 h window holds a full hour of the measured pool (unknown pool age: the token's age decides). */
+function coversHour(m: DerivedMetrics): boolean {
+  const age = m.windowAgeMinutes ?? m.ageMinutes;
+  return age == null || age >= 60;
+}
 
 function txTotal(t: TokenSnapshot['txns'][TimeWindow]): number | null {
   return t?.buys != null && t.sells != null ? t.buys + t.sells : null;

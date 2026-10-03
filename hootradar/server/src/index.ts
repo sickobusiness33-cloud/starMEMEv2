@@ -8,18 +8,19 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import type { FastifyInstance } from 'fastify';
-import type { EngineState, MarketRegime } from '../../shared/types.js';
+import type { EngineState } from '../../shared/types.js';
 import { engineState, initClaude, setEngineStatus } from './ai/claude.js';
 import { createChainAdapters } from './chains/registry.js';
 import { loadConfig, type AppConfig } from './config.js';
 import { openDb, type Db } from './db/db.js';
 import { DistributionQueue } from './distribution/queue.js';
+import { LaunchBaselines } from './engine/baselines.js';
 import { Bus } from './engine/bus.js';
 import { Pipeline } from './engine/pipeline.js';
 import { Scanner } from './engine/scanner.js';
 import { createServer } from './http/server.js';
 import { errMsg, logger } from './log.js';
-import { computeRegime } from './quant/regime.js';
+import { createRegimeProvider } from './quant/regime.js';
 import { quickMentions } from './research/intel/index.js';
 import { RadarService } from './research/radar.js';
 
@@ -29,16 +30,21 @@ const log = logger('hootradar');
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const DB_FILE = 'hootradar.db';
 const REGIME_TTL_MS = 30_000;
-const REGIME_WINDOW_MS = 2 * 60 * 60_000;
-const SHUTDOWN_TIMEOUT_MS = 10_000;
-/** in-flight scan cycles may be waiting on a slow AI write; shutdown does not wait for them past this */
-const SCANNER_STOP_BUDGET_MS = 7_000;
+const SHUTDOWN_TIMEOUT_MS = 12_000;
+/**
+ * Scan cycles and background article work (a slow AI write) get this long to finish;
+ * a distribution send in flight gets its own send timeout (10 s) so an accepted post
+ * is recorded as sent before the database closes.
+ */
+const WORK_STOP_BUDGET_MS = 7_000;
+const DISTRIBUTION_STOP_BUDGET_MS = 10_500;
 /** in-flight requests get this long to finish before every remaining socket is destroyed */
 const SERVER_CLOSE_GRACE_MS = 3_000;
 
 interface Runtime {
   app: FastifyInstance;
   scanner: Scanner;
+  pipeline: Pipeline;
   distribution: DistributionQueue;
   db: Db;
 }
@@ -50,6 +56,7 @@ async function main(): Promise<void> {
   const startedAt = Date.now();
   const envFiles = loadDotEnv();
   const config = loadConfig();
+  for (const warning of config.warnings) log.warn(warning);
 
   mkdirSync(config.dataDir, { recursive: true });
   const db = openDb(join(config.dataDir, DB_FILE));
@@ -58,10 +65,17 @@ async function main(): Promise<void> {
   const adapters = createChainAdapters(config.chains, { maxTokenAgeHours: config.scan.maxTokenAgeHours });
   const bus = new Bus();
   const distribution = new DistributionQueue({ db, config });
-  const regime = regimeProvider(db);
-  const pipeline = new Pipeline({ db, bus, config, adapters, distribution, regime, mentions: quickMentions });
+  // one regime for articles, Radar and the INTELLIGENCE tab
+  const regime = createRegimeProvider((now, filters) => db.regimeUniverse(now, filters), {
+    maxTokenAgeHours: config.scan.maxTokenAgeHours,
+    ttlMs: REGIME_TTL_MS,
+    onError: (e) => log.warn('regime computation failed', { error: errMsg(e) }),
+  });
+  const gates = { minLiquidityUsd: config.scan.minLiquidityUsd, minVolumeH1Usd: config.scan.minVolumeH1Usd };
+  const baselines = new LaunchBaselines(gates, (since) => db.latestSnapshots(since, undefined, gates));
+  const pipeline = new Pipeline({ db, bus, config, adapters, distribution, regime, baselines, mentions: quickMentions });
   const scanner = new Scanner({ adapters, db, bus, pipeline, config });
-  const radar = new RadarService({ adapters, db, config, regime });
+  const radar = new RadarService({ adapters, db, config, regime, baselines });
   const webDist = locateWebDist();
 
   const app = await createServer({
@@ -73,9 +87,10 @@ async function main(): Promise<void> {
     distribution,
     startedAt,
     webDist,
-    trustProxy: trustProxyFromEnv(process.env.TRUST_PROXY),
+    regime,
+    trustProxy: config.trustProxy,
   });
-  runtime = { app, scanner, distribution, db };
+  runtime = { app, scanner, pipeline, distribution, db };
 
   const address = await app.listen({ port: config.port, host: config.host });
   trackEngineStatus(bus, config.chains);
@@ -107,15 +122,6 @@ function loadDotEnv(): string[] {
   return loaded;
 }
 
-/** TRUST_PROXY: true/1 trusts every hop; any other value is a comma-separated list of proxy addresses/CIDRs. */
-function trustProxyFromEnv(raw: string | undefined): boolean | string {
-  const value = raw?.trim() ?? '';
-  const lower = value.toLowerCase();
-  if (value === '' || ['0', 'false', 'no', 'off'].includes(lower)) return false;
-  if (['1', 'true', 'yes', 'on'].includes(lower)) return true;
-  return value;
-}
-
 /** WEB_DIST when set and built, else <repo>/web/dist when built, else null (API only; Vite serves the UI in dev). */
 function locateWebDist(): string | null {
   const configured = process.env.WEB_DIST?.trim() || null;
@@ -129,22 +135,6 @@ function locateWebDist(): string | null {
 }
 
 /* ───────────── engine ───────────── */
-
-/** Market regime over the tracked universe, recomputed at most every 30 s. Never throws. */
-function regimeProvider(db: Db): () => MarketRegime {
-  let current: MarketRegime | null = null;
-  return () => {
-    const now = Date.now();
-    if (current && now - current.computedAt < REGIME_TTL_MS) return current;
-    try {
-      current = computeRegime(db.latestSnapshots(now - REGIME_WINDOW_MS), now);
-    } catch (e) {
-      log.warn('regime computation failed', { error: errMsg(e) });
-      current = { label: 'unknown', breadthPct: null, medianH1ChangePct: null, sampleSize: 0, computedAt: now };
-    }
-    return current;
-  };
-}
 
 /** 'active' once a chain scans successfully; 'degraded' while the latest cycle of every chain failed. */
 function trackEngineStatus(bus: Bus, chains: readonly string[]): void {
@@ -196,9 +186,11 @@ async function shutdown(reason: string, exitCode: number): Promise<void> {
 
   const rt = runtime;
   if (rt) {
-    rt.distribution.stop();
+    const within = (p: Promise<unknown>, ms: number) => Promise.race([p, sleep(ms, undefined, { ref: false })]);
     await Promise.allSettled([
-      Promise.race([rt.scanner.stop(), sleep(SCANNER_STOP_BUDGET_MS, undefined, { ref: false })]),
+      within(Promise.allSettled([rt.scanner.stop(), rt.pipeline.stop()]), WORK_STOP_BUDGET_MS),
+      // a send in flight completes and is recorded, so a restart does not post it twice
+      within(rt.distribution.stop(), DISTRIBUTION_STOP_BUDGET_MS),
       closeServer(rt.app),
     ]);
     try {

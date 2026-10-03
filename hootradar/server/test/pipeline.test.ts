@@ -59,7 +59,8 @@ type WriterInput = Parameters<NonNullable<PipelineDeps['writer']>>[0];
 /**
  * Market snapshot of a 3-hour-old token in the middle of a pump: volume and
  * trades both run ~3x their 1 h average. Scores come from the real deriveMetrics +
- * detectAnomalies, against the thresholds the harness pins (22 / 42 / 60):
+ * detectAnomalies, against the thresholds the harness pins (22 / 42 / 60, BREAKING
+ * from $50K of 1 h volume):
  *   nearWatch() → 16, or 26 WATCH with ≥15 social mentions
  *   watch()     → 28 WATCH
  *   alert()     → 51 ALERT
@@ -127,8 +128,11 @@ function draftFor(i: WriterInput) {
 
 interface HarnessOpts {
   config?: Partial<AppConfig>;
+  /** environment for loadConfig on top of the pinned thresholds */
+  env?: Record<string, string>;
   enrich?: ChainAdapter['enrich'];
   mentions?: (s: TokenSnapshot) => Promise<number | null>;
+  baselines?: PipelineDeps['baselines'];
 }
 
 const open: Db[] = [];
@@ -148,7 +152,15 @@ function harness(o: HarnessOpts = {}) {
   // The fixture scores above were calibrated against these thresholds; pinning them keeps the
   // pipeline's decision logic under test independent of later retuning of the shipped defaults.
   const config: AppConfig = {
-    ...loadConfig({ CHAINS: 'solana', NEWS_LANG: 'en', THRESHOLD_WATCH: '22', THRESHOLD_ALERT: '42', THRESHOLD_BREAKING: '60' }),
+    ...loadConfig({
+      CHAINS: 'solana',
+      NEWS_LANG: 'en',
+      THRESHOLD_WATCH: '22',
+      THRESHOLD_ALERT: '42',
+      THRESHOLD_BREAKING: '60',
+      BREAKING_MIN_VOLUME_H1_USD: '50000',
+      ...o.env,
+    }),
     ...o.config,
   };
   let t = T0;
@@ -178,17 +190,19 @@ function harness(o: HarnessOpts = {}) {
     distribution: { enqueue } as unknown as PipelineDeps['distribution'],
     regime: () => REGIME,
     mentions,
+    baselines: o.baselines,
     quant,
     writer,
     now: () => t,
   });
 
-  /** Mimics the scanner: store the snapshot observed at T0+offset, then process it. */
+  /** Mimics the scanner: store the snapshot observed at T0+offset, process it, then let the background work finish. */
   async function at(offsetMs: number, s: TokenSnapshot): Promise<void> {
     t = T0 + offsetMs;
     const observed = { ...s, ts: t };
     db.insertSnapshot(observed);
-    await pipeline.process(observed, t);
+    pipeline.process(observed, t);
+    await pipeline.settled();
   }
 
   return { db, articles, detections, enrich, quant, writer, enqueue, mentions, pipeline, at };
@@ -255,7 +269,8 @@ describe('ALERT → article', () => {
     const h = harness();
     await h.at(0, alert());
 
-    expect(h.enrich).toHaveBeenCalledWith(ADDRESS);
+    // enrichment never waits out a long GeckoTerminal pause or queue
+    expect(h.enrich).toHaveBeenCalledWith(ADDRESS, expect.objectContaining({ maxPauseWaitMs: 5_000, maxQueueMs: 20_000 }));
     expect(h.quant).toHaveBeenCalledTimes(1);
     expect(h.writer).toHaveBeenCalledTimes(1);
     const input = h.writer.mock.calls[0]?.[0];
@@ -356,7 +371,8 @@ describe('ALERT → article', () => {
 
   it("never publishes a weeks-old token whose age only the enrichment's pool reveals", async () => {
     // live regression: a 28-day-old Base token found through a dateless listing went out as BREAKING
-    const dateless = alert({ createdAt: null });
+    // (only its pool's age is known, which is enough to measure the 5m-vs-1h ratios)
+    const dateless = alert({ createdAt: null, pairCreatedAt: T0 - 3 * HOUR });
     const old = harness({ enrich: async () => ({ ...ENRICHMENT, poolCreatedAt: T0 - 28 * 24 * HOUR }) });
     await old.at(0, dateless);
     expect(old.enrich).toHaveBeenCalled();
@@ -449,6 +465,84 @@ describe('cooldown and follow-ups', () => {
   });
 });
 
+describe('BREAKING policy', () => {
+  it('holds a BREAKING score at ALERT below $75K of 1h volume (the shipped default)', async () => {
+    const h = harness({ mentions: async () => 15, env: { BREAKING_MIN_VOLUME_H1_USD: '' } });
+    await h.at(0, breaking()); // 68 on score, but only $60K of 1 h volume
+    const a = h.articles[0];
+    expect(a?.score).toBe(68);
+    expect(a?.severity).toBe('ALERT');
+    expect(h.writer.mock.calls[0]?.[0].detection.caps).toEqual(['1h volume $60,000 below the $75,000 BREAKING minimum']);
+    // the published article says why it was held, so the reader sees the cap too
+    expect(a?.caps).toEqual(['1h volume $60,000 below the $75,000 BREAKING minimum']);
+  });
+
+  it('holds a token at ALERT once enrichment reveals concentrated holders', async () => {
+    const h = harness({ mentions: async () => 15, enrich: async () => ({ ...ENRICHMENT, top10HolderPct: 93 }) });
+    await h.at(0, breaking());
+    expect(h.articles[0]?.severity).toBe('ALERT');
+    expect(h.writer.mock.calls[0]?.[0].detection.caps).toEqual(['Top 10 holders own 93% of supply']);
+    expect(h.articles[0]?.caps).toEqual(['Top 10 holders own 93% of supply']);
+  });
+
+  it('never publishes a pool whose liquidity was pulled', async () => {
+    const h = harness();
+    h.db.insertSnapshot({ ...alert(), ts: T0 - 20 * MIN, liquidityUsd: 200_000, liquiditySource: 'dexscreener' });
+    await h.at(0, alert({ liquiditySource: 'dexscreener' })); // $200K → $80K in the same pool
+    expect(h.articles).toEqual([]);
+    expect(h.detections).toEqual([]);
+  });
+});
+
+describe('scan loop', () => {
+  it('never waits for an article: process returns at once and the write happens in the background', async () => {
+    const h = harness();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    h.writer.mockImplementationOnce(async (i) => {
+      await gate;
+      return draftFor(i);
+    });
+    const s = { ...alert(), ts: T0 };
+    h.db.insertSnapshot(s);
+    expect(h.pipeline.process(s, T0)).toBeUndefined(); // synchronous: the scan cycle moves on
+    await vi.waitFor(() => expect(h.writer).toHaveBeenCalledTimes(1));
+    expect(h.articles).toEqual([]);
+    release();
+    await h.pipeline.settled();
+    expect(h.articles).toHaveLength(1);
+  });
+
+  it('uses cached mention counts synchronously once they are known', async () => {
+    const h = harness({ mentions: async () => 15 });
+    await h.at(0, nearWatch()); // looked up in the background
+    expect(h.mentions).toHaveBeenCalledTimes(1);
+    expect(h.detections).toHaveLength(1);
+    const later = { ...nearWatch(), ts: T0 + 4 * MIN, address: ADDRESS };
+    h.db.insertSnapshot(later);
+    h.pipeline.process(later, T0 + 4 * MIN);
+    expect(h.pipeline.backlog).toBe(0); // decided on the spot from the 5-minute cache, nothing queued
+    expect(h.mentions).toHaveBeenCalledTimes(1);
+  });
+
+  it('scores launch traction against the chain baseline it is given', async () => {
+    const observe = vi.fn();
+    const rampFor = vi.fn(() => ({ onsetPerMin: 1_000, fullPerMin: 2_000 }));
+    const launch = alert({
+      createdAt: T0 - 20 * MIN,
+      pairCreatedAt: T0 - 20 * MIN,
+      volumeUsd: { m5: 5_000, h1: 40_000 },
+      txns: { m5: { buys: 30, sells: 20, buyers: 10, sellers: 5 }, h1: { buys: 120, sells: 80, buyers: 40, sellers: 20 } },
+      priceChangePct: {},
+    });
+    const h = harness({ baselines: { observe, rampFor } as unknown as PipelineDeps['baselines'] });
+    await h.at(0, launch); // $2K a minute: nothing on the global ramp, full traction on this chain's
+    expect(observe).toHaveBeenCalled();
+    expect(rampFor).toHaveBeenCalledWith('solana', T0);
+    expect(h.detections[0]?.signals.find((x) => x.code === 'fresh_launch')?.weight).toBe(34);
+  });
+});
+
 describe('safety rails', () => {
   it('never publishes a honeypot revealed by enrichment', async () => {
     const honeypot: TokenEnrichment = { ...ENRICHMENT, security: { ...ENRICHMENT.security!, honeypot: 'yes' } };
@@ -503,12 +597,12 @@ describe('safety rails', () => {
 
     const s = { ...alert(), ts: T0 };
     h.db.insertSnapshot(s);
-    const first = h.pipeline.process(s, T0);
-    const second = h.pipeline.process(s, T0);
-    await second;
+    h.pipeline.process(s, T0);
+    h.pipeline.process(s, T0);
+    await vi.waitFor(() => expect(h.writer).toHaveBeenCalledTimes(1));
     expect(h.articles).toEqual([]);
     release();
-    await first;
+    await h.pipeline.settled();
 
     expect(h.articles).toHaveLength(1);
     expect(h.writer).toHaveBeenCalledTimes(1);

@@ -106,14 +106,19 @@ function txTotal(t: TxCounts | undefined): number | null {
  * How long the pool behind the per-window figures has existed. The windows (txns,
  * volume, price change) come from ONE pool, which can be much younger than the token
  * (a launchpad coin that graduated to its AMM pool minutes ago): its "h1" then holds
- * only the pool's minutes. Uses the pool's creation time; without it, the token's age
- * stands in only once it covers the whole hour (no window can be truncated then, though
- * a younger pool cannot be ruled out). Otherwise null: the window span is unknown.
+ * only the pool's minutes. Uses the pool's creation time. Without it the token's age
+ * stands in only where the answer cannot depend on the pool's real age:
+ *  - the token covers the whole hour (no window is truncated, as far as can be told);
+ *  - the token is at most 5 minutes old: no pool is older than its token, so every
+ *    window holds the pool's whole life and the 5m-vs-1h ratio is exactly 1 whatever
+ *    the pool's age (rates divided by the token's age can only read low).
+ * Otherwise null: the window span is unknown, and so is any ratio built on it.
  */
 export function windowAgeMinutes(s: TokenSnapshot, tokenAgeMinutes: number | null, now: number): number | null {
   const poolAge = s.pairCreatedAt != null ? Math.max(0, (now - s.pairCreatedAt) / MINUTE_MS) : null;
   if (poolAge != null) return tokenAgeMinutes != null ? Math.min(poolAge, tokenAgeMinutes) : poolAge;
-  return tokenAgeMinutes != null && tokenAgeMinutes >= 60 ? tokenAgeMinutes : null;
+  if (tokenAgeMinutes == null) return null;
+  return tokenAgeMinutes >= 60 || tokenAgeMinutes <= 5 ? tokenAgeMinutes : null;
 }
 
 /**

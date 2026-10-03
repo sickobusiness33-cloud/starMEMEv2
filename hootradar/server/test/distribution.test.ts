@@ -5,6 +5,7 @@ import { loadConfig, type AppConfig } from '../src/config.js';
 import type { Db } from '../src/db/db.js';
 import {
   articleUrl,
+  defuseLinks,
   escapeHtml,
   formatDiscord,
   formatForChannels,
@@ -98,13 +99,14 @@ describe('channel formats', () => {
     expect(articleUrl({ id: 'a' }, 'javascript:alert(1)')).toBeNull();
   });
 
-  it('builds an X post with header, lede, figures and link', () => {
+  it('builds an X post with header, lede, risk, figures, notice and link', () => {
     const post = formatX(article(), articleUrl(article(), BASE_URL));
     const lines = post.split('\n');
     expect(lines[0]).toBe('🚨 BREAKING — $Bonk (Solana)');
     expect(lines[1]).toContain('$Bonk (Solana) is seeing');
-    expect(lines[2]).toBe('MC $331M · Vol 1h $15K · Tx/min 4');
-    expect(lines[3]).toBe(`${BASE_URL}/#/live?article=art-1`);
+    expect(lines[2]).toBe('Risk: A liquidity pull could erase the move.');
+    expect(lines[3]).toBe('MC $331M · Vol 1h $15K · Tx/min 4');
+    expect(lines[4]).toBe(`Not financial advice. ${BASE_URL}/#/live?article=art-1`);
     expect(xLength(post)).toBeLessThanOrEqual(X_LIMIT);
     expect(formatX(article({ severity: 'ALERT' }), null).split('\n')[0]).toBe('⚡ ALERT — $Bonk (Solana)');
     // without a public URL the chart link is used
@@ -132,9 +134,12 @@ describe('channel formats', () => {
       for (const symbol of ['B', 'S'.repeat(60), '🐸'.repeat(30), 'トークン'.repeat(10)]) {
         const a = article({ lede, symbol, name: 'N'.repeat(200), chain: 'an-unregistered-chain-with-a-long-name' });
         for (const link of [articleUrl(a, `${BASE_URL}/${'deep/'.repeat(40)}`), null]) {
-          const post = formatX(a, link);
-          expect(xLength(post), post).toBeLessThanOrEqual(X_LIMIT);
-          expect(post.length).toBeGreaterThan(10);
+          for (const risk of ['Short risk.', 'r'.repeat(400), `${'Liquidity is thin and the top 10 hold most of it. '.repeat(6)}`]) {
+            const post = formatX({ ...a, outlook: { ...a.outlook, risk } }, link);
+            expect(xLength(post), post).toBeLessThanOrEqual(X_LIMIT);
+            expect(post).toContain('Risk:'); // the risk scenario always makes it in
+            expect(post).toContain('Not financial advice.');
+          }
         }
       }
     }
@@ -172,6 +177,8 @@ describe('channel formats', () => {
     expect(msg).toContain('$&lt;b&gt;EVIL');
     expect(msg).toContain(`<a href="${BASE_URL}/#/live?article=1&amp;x=&quot;2&quot;">Read on HootRadar</a>`);
     expect(msg).toContain('• Reason one.');
+    expect(msg).toContain('<b>Risk:</b> A liquidity pull could erase the move.');
+    expect(msg).toContain('Quant similarity: Time-series momentum 72/100 (not a forecast)');
     expect(msg).toContain('Buy/Sell 37% / 63%');
     expect(msg).toContain('<i>Not financial advice.</i>');
     // only the tags we emit remain
@@ -184,6 +191,8 @@ describe('channel formats', () => {
     const msg = formatTelegram(article({ lang: 'es' }), null);
     expect(msg).toContain('Compras/Ventas 37% / 63%');
     expect(msg).toContain('<i>No es asesoramiento financiero.</i>');
+    expect(msg).toContain('<b>Riesgo:</b>');
+    expect(msg).toContain('Similitud cuant: Time-series momentum 72/100 (no es una previsión)');
     expect(msg).toContain('Holders 1.024.516');
   });
 
@@ -194,10 +203,13 @@ describe('channel formats', () => {
     expect(embed.title).toBe('BREAKING — $Bonk · Solana');
     expect(embed.color).toBe(0x22c55e);
     expect(embed.url).toBe(`${BASE_URL}/#/live?article=art-1`);
-    expect(embed.description).toContain('\\[here\\]\\(https://evil.example\\) \\*\\*now\\*\\*');
-    expect(embed.fields.map((f: { name: string }) => f.name)).toEqual(['MC', 'Vol 1h', 'Tx/min', 'Buy/Sell', 'Holders', 'Quant']);
+    // markdown is escaped and the URL defused (Discord links any http(s):// in a description)
+    expect(embed.description).toContain('\\[here\\]\\(https:\u200B//evil\u2024example\\) \\*\\*now\\*\\*');
+    expect(embed.description).not.toMatch(/https:\/\//);
+    expect(embed.fields.map((f: { name: string }) => f.name)).toEqual(['MC', 'Vol 1h', 'Tx/min', 'Buy/Sell', 'Holders', 'Quant similarity', 'Risk']);
     expect(embed.fields[0].value).toBe('$331M');
-    expect(embed.fields[5].value).toBe('Time-series momentum · 72%');
+    expect(embed.fields[5].value).toBe('Time-series momentum 72/100 \\(not a forecast\\)');
+    expect(embed.fields[6]).toEqual({ name: 'Risk', value: 'A liquidity pull could erase the move.', inline: false });
     expect(embed.footer.text).toBe('HootRadar · not financial advice');
     expect(embed.timestamp).toBe('2026-10-01T21:11:00.000Z');
     expect(embed.thumbnail.url).toMatch(/^https:\/\/cdn\.dexscreener\.com/);
@@ -209,7 +221,7 @@ describe('channel formats', () => {
   it('shows unknown Discord figures as a dash, never as zero', () => {
     const unknown: CardMetrics = { ...cardMetrics(bonk()), marketCapUsd: null, volumeUsd: null, volumeWindow: null, txPerMin: null, buyPct: null, sellPct: null, holders: null };
     const embed = JSON.parse(formatDiscord(article({ metrics: unknown, quant: { ...article().quant, top: null } }), null)).embeds[0];
-    expect(embed.fields.map((f: { value: string }) => f.value)).toEqual(['—', '—', '—', '—', '—', '—']);
+    expect(embed.fields.slice(0, 6).map((f: { value: string }) => f.value)).toEqual(['—', '—', '—', '—', '—', '—']);
     expect(embed.fields[1].name).toBe('Vol');
   });
 
@@ -218,7 +230,38 @@ describe('channel formats', () => {
     expect(body.event).toBe('article.published');
     expect(body.article).toMatchObject({ id: 'art-1', severity: 'BREAKING', symbol: 'Bonk', url: `${BASE_URL}/#/live?article=art-1` });
     expect(body.article.quant.top).toEqual({ methodologyId: 'tsmom', name: 'Time-series momentum', score: 72.4 });
+    expect(body.article.quant.disclaimer).toMatch(/similarity score, not a forecast/);
+    expect(body.article).toMatchObject({ disclaimer: 'Not financial advice.', identityLooksLikeLink: false });
     expect(body.article).not.toHaveProperty('signals');
+  });
+
+  it('never turns a creator-chosen symbol or name into a link or a mention', () => {
+    const phishing = article({
+      symbol: 'claim.to/x',
+      name: 'https://evil.tld/airdrop',
+      headline: '$claim.to/x volume surges: https://evil.tld/airdrop',
+      lede: 'Visit evil.tld or ping @scamadmin and /start the bot.',
+      aiLine: 'https://evil.tld/airdrop',
+    });
+    const link = articleUrl(phishing, BASE_URL);
+    const tg = formatTelegram(phishing, link);
+    const discord = JSON.parse(formatDiscord(phishing, link)).embeds[0];
+    const x = formatX(phishing, link);
+    const visible = (s: string) => s.replace(/<a href="[^"]*">/g, '').replace(new RegExp(BASE_URL.replace(/[.]/g, '\\.') + '\\S*', 'g'), '');
+    for (const text of [visible(tg), discord.title, discord.description, visible(x)]) {
+      expect(text).not.toMatch(/https?:\/\//);
+      expect(text).not.toMatch(/\bevil\.tld\b/);
+      expect(text).not.toMatch(/\bclaim\.to\b/);
+      expect(text).not.toMatch(/(^|\s)@scamadmin/);
+    }
+    // our own links are untouched
+    expect(tg).toContain(`<a href="${BASE_URL}/#/live?article=art-1">`);
+    expect(x).toContain(`${BASE_URL}/#/live?article=art-1`);
+    // copy without links reads exactly the same
+    expect(defuseLinks('$Bonk volume reached $1.4M, 3.1x the hourly average (e.g. 12.5%).')).toBe(
+      '$Bonk volume reached $1.4M, 3.1x the hourly average (e.g. 12.5%).',
+    );
+    expect(JSON.parse(formatWebhook(phishing, link)).article.identityLooksLikeLink).toBe(true);
   });
 });
 
@@ -305,6 +348,13 @@ describe('DistributionQueue', () => {
     expect(h.queue.enabledChannels()).toEqual(['telegram', 'discord', 'webhook']);
   });
 
+  it('holds a token whose symbol or name looks like a link for manual review instead of auto-posting it', () => {
+    const h = harness(SECRETS, ok);
+    const items = h.queue.enqueue(article({ symbol: 'claim.to', name: 'Airdrop' }));
+    expect(items.map((i) => i.status)).toEqual(['ready', 'ready', 'ready', 'ready']);
+    expect(items.find((i) => i.channel === 'telegram')?.error).toBe('held for review: the token symbol or name looks like a link');
+  });
+
   it('leaves items ready below the minimum severity or without configuration', () => {
     const below = harness(SECRETS, ok); // default minimum is BREAKING
     expect(below.queue.enqueue(article({ severity: 'ALERT' })).map((i) => i.status)).toEqual(['ready', 'ready', 'ready', 'ready']);
@@ -353,7 +403,7 @@ describe('DistributionQueue', () => {
     h.queue.enqueue(article());
 
     await h.queue.flush();
-    expect(h.db.byChannel('discord')).toMatchObject({ status: 'queued', error: 'HTTP 502: upstream down' });
+    expect(h.db.byChannel('discord')).toMatchObject({ status: 'queued', error: 'HTTP 502' });
 
     h.clock.now += 4_999; // first backoff is 5 s
     await h.queue.flush();
@@ -371,7 +421,7 @@ describe('DistributionQueue', () => {
     h.clock.now += 1;
     await h.queue.flush();
     expect(h.fetch).toHaveBeenCalledTimes(3);
-    expect(h.db.byChannel('discord')).toMatchObject({ status: 'failed', sentAt: null, error: 'HTTP 502: upstream down' });
+    expect(h.db.byChannel('discord')).toMatchObject({ status: 'failed', sentAt: null, error: 'HTTP 502' });
 
     h.clock.now += 60_000;
     await h.queue.flush();
@@ -383,7 +433,8 @@ describe('DistributionQueue', () => {
     h.queue.enqueue(article());
     await h.queue.flush();
     expect(h.fetch).toHaveBeenCalledTimes(1);
-    expect(h.db.byChannel('discord')).toMatchObject({ status: 'failed', error: 'HTTP 404: {"message":"Unknown Webhook"}' });
+    expect(h.db.byChannel('discord')).toMatchObject({ status: 'failed', error: 'HTTP 404' });
+    expect(logs.join('\n')).toContain('Unknown Webhook'); // the target's answer stays in the server log
   });
 
   it('honours Retry-After on rate limits', async () => {
@@ -415,7 +466,7 @@ describe('DistributionQueue', () => {
       h.clock.now += 60_000;
     }
     const errors = [...h.db.items.values()].map((i) => i.error ?? '').join('\n');
-    expect(errors).toContain('[redacted]');
+    expect(logs.join('\n')).toContain('[redacted]');
     for (const text of [errors, logs.join('\n')]) {
       expect(text).not.toContain('telegramSecret');
       expect(text).not.toContain('discordSecretToken');
@@ -431,7 +482,43 @@ describe('DistributionQueue', () => {
     );
     h.queue.enqueue(article());
     await h.queue.flush();
-    expect(h.db.byChannel('telegram')).toMatchObject({ status: 'failed', error: 'Telegram: Bad Request: chat not found' });
+    expect(h.db.byChannel('telegram')).toMatchObject({ status: 'failed', error: 'rejected by Telegram' });
+    expect(logs.join('\n')).toContain('chat not found');
+  });
+
+  it('never publishes a receiver error that echoes part of a secret URL', async () => {
+    // n8n answers 404 'The requested webhook "POST <secret-path-uuid>" is not registered'
+    const secretPath = '6f1e2d3c-aaaa-4bbb-8ccc-1234567890ab';
+    const hook = `https://n8n.example.com/webhook/${secretPath}`;
+    const h = harness({ DISTRIBUTION_WEBHOOK_URL: hook }, () =>
+      new Response(`{"message":"The requested webhook \\"POST ${secretPath}\\" is not registered."}`, { status: 404 }),
+    );
+    h.queue.enqueue(article());
+    await h.queue.flush();
+    expect(h.db.byChannel('webhook')).toMatchObject({ status: 'failed', error: 'HTTP 404' });
+    expect(logs.join('\n')).not.toContain(secretPath);
+    expect(logs.join('\n')).toContain('[redacted]');
+  });
+
+  it('stop() waits for the send in progress so an accepted post is marked sent before shutdown', async () => {
+    let accept: () => void = () => {};
+    const h = harness({ DISCORD_WEBHOOK_URL: SECRETS.DISCORD_WEBHOOK_URL }, () =>
+      new Promise<Response>((resolve) => (accept = () => resolve(new Response(null, { status: 204 })))),
+    );
+    h.queue.enqueue(article());
+    h.queue.enqueue(article({ id: 'art-2' }));
+    const pass = h.queue.flush();
+    await vi.waitFor(() => expect(h.fetch).toHaveBeenCalledTimes(1));
+    let stopped = false;
+    const stopping = h.queue.stop().then(() => (stopped = true));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stopped).toBe(false); // the POST is still in flight
+    accept();
+    await stopping;
+    await pass;
+    const discord = [...h.db.items.values()].filter((i) => i.channel === 'discord');
+    expect(discord.map((i) => i.status).sort()).toEqual(['queued', 'sent']); // no new send started after stop()
+    expect(h.fetch).toHaveBeenCalledTimes(1);
   });
 
   it('releases items whose channel is no longer configured', async () => {

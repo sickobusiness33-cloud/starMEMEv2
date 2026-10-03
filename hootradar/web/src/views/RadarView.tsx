@@ -6,7 +6,7 @@ import { useRoute } from '../lib/hash-router';
 import { validChainId } from '../lib/chains';
 import { useClock } from '../lib/time';
 import { fmtMs } from '../lib/format';
-import { RadarSearch, RecentSearches, startInvestigation, TapeSuggestions } from '../components/RadarSearch';
+import { RadarSearch, RecentSearches, startInvestigation, TapeSuggestions, useRateLimitLeft } from '../components/RadarSearch';
 import { STAGE_PLACEHOLDERS, StageStepper } from '../components/StageStepper';
 import { Candidates, TokenHeader } from '../components/TokenHeader';
 import { MetricsGrid } from '../components/MetricsGrid';
@@ -32,7 +32,9 @@ export function RadarView() {
 
 /**
  * #/radar?q=…&chain=… runs the investigation it describes, unless it is the one
- * already on screen (switching tabs back to RADAR must not re-run it).
+ * already on screen (switching tabs back to RADAR must not re-run it) or one this
+ * session already ran (browser back / forward shows it from memory instead of
+ * POSTing again: only an explicit search or Re-run starts a new investigation).
  */
 function useDeepLink(): void {
   const route = useRoute();
@@ -44,6 +46,7 @@ function useDeepLink(): void {
     const st = useRadar.getState();
     const same = st.query !== null && st.query.toLowerCase() === q.toLowerCase() && st.chain === chain;
     if (same && st.phase !== 'idle') return;
+    if (st.resume(q, chain)) return;
     st.run(q, chain);
   }, [route]);
 }
@@ -101,18 +104,7 @@ function Investigation() {
   };
 
   if (!report) {
-    if (phase === 'error') {
-      return (
-        <div className="state" role="alert">
-          <span className="state__title">Investigation could not start</span>
-          <p className="state__text">{error ?? 'Unknown error.'}</p>
-          <button type="button" className="btn btn--sm" onClick={rerun}>
-            <IconRefresh size={12} />
-            Retry
-          </button>
-        </div>
-      );
-    }
+    if (phase === 'error') return <StartError error={error} onRetry={rerun} />;
     return (
       <div className="inv" aria-busy="true">
         <StatusLine report={null} phase={phase} query={query} skewMs={null} onRerun={rerun} />
@@ -162,7 +154,7 @@ function Investigation() {
                 <BriefPanel report={report} />
               </div>
               <div className="inv__intel">
-                <IntelPanel key={report.id} intel={report.intel} stage={webStage} />
+                <IntelPanel key={report.id} intel={report.intel} stage={webStage} providers={report.providers} />
               </div>
             </div>
             <div className="inv__side">
@@ -176,6 +168,33 @@ function Investigation() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * The investigation could not start. A 429 says when the reader may try again and keeps
+ * Retry disabled until then (another POST would only earn another 429).
+ */
+function StartError({ error, onRetry }: { error: string | null; onRetry: () => void }) {
+  const limited = useRadar((s) => s.retryUntil !== null);
+  const left = useRateLimitLeft();
+  return (
+    <div className="state">
+      {/* the alert holds the static message only; the countdown below ticks silently */}
+      <div className="state__alert" role="alert">
+        <span className="state__title">{limited ? 'Too many radar searches' : 'Investigation could not start'}</span>
+        <p className="state__text">
+          {limited ? 'The server limits how many investigations can start per minute.' : (error ?? 'Unknown error.')}
+        </p>
+      </div>
+      {limited && (
+        <p className="state__text mono">{left > 0 ? `You can search again in ${left} s.` : 'You can search again now.'}</p>
+      )}
+      <button type="button" className="btn btn--sm" onClick={onRetry} disabled={left > 0}>
+        <IconRefresh size={12} />
+        {left > 0 ? `Retry in ${left} s` : 'Retry'}
+      </button>
     </div>
   );
 }
@@ -200,7 +219,9 @@ function StatusLine(props: {
   const final = report !== null && status !== 'running';
   return (
     <div className="inv__status" data-status={status}>
-      <span className="inv__state">
+      {/* a status region: screen readers hear Investigating → Complete / Failed once each,
+          not the ticking elapsed time beside it */}
+      <span className="inv__state" role="status">
         <span className="inv__dot" aria-hidden="true" />
         {report ? STATUS_LABEL[status] : phase === 'starting' ? 'Starting' : 'Investigating'}
       </span>

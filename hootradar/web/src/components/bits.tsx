@@ -5,7 +5,7 @@ import { QUANT_DISCLAIMER } from '@shared/types';
 import { useStore } from '../store';
 import { fallbackMeta, type ChainMeta } from '../lib/chains';
 import { useNow } from '../lib/time';
-import { fmtDateTime, fmtPct, timeAgo } from '../lib/format';
+import { fmtDateTime, fmtPct, timeAgo, timeAgoShort } from '../lib/format';
 
 /** Chain metadata for one chain, selected as primitives so 5 s stats pushes do not re-render cards. */
 export function useChainMeta(id: ChainId): ChainMeta {
@@ -32,13 +32,117 @@ export function SeverityTag({ severity }: { severity: Severity }) {
   return <span className={clsx('tag', `tag--${severity.toLowerCase()}`)}>{severity}</span>;
 }
 
-/** Relative time on the shared 15 s ticker. */
-export const TimeAgo = memo(function TimeAgo({ ts, className }: { ts: number | null; className?: string }) {
+/**
+ * Severity bands at the engine's DEFAULT thresholds (server THRESHOLD_WATCH / _ALERT /
+ * _BREAKING). A deployment can tune them, so the UI always labels these as defaults.
+ * Scores are calibrated so ALERT is roughly 42–59 and BREAKING 60+: a bar out of 100
+ * would make a BREAKING 62 look "two-thirds empty", so the band is the headline and the
+ * number is secondary.
+ */
+export const DEFAULT_BANDS: ReadonlyArray<{ severity: Severity; min: number }> = [
+  { severity: 'WATCH', min: 22 },
+  { severity: 'ALERT', min: 42 },
+  { severity: 'BREAKING', min: 60 },
+];
+
+/** The band a score reaches at the default thresholds (null: below WATCH). */
+export function bandOf(score: number): Severity | null {
+  let out: Severity | null = null;
+  for (const b of DEFAULT_BANDS) if (score >= b.min) out = b.severity;
+  return out;
+}
+
+const BAND_RANK: Record<Severity, number> = { WATCH: 1, ALERT: 2, BREAKING: 3 };
+
+/**
+ * WATCH | ALERT | BREAKING meter. Bands up to the severity are filled; a band the score
+ * reaches but the severity was held below (a cap) is outlined in amber; a tick marks where
+ * the score sits inside the band it reaches.
+ */
+export function SeverityBands({ score, severity, capped = false }: { score: number; severity: Severity | null; capped?: boolean }) {
+  const rank = severity ? BAND_RANK[severity] : 0;
+  const reached = bandOf(score);
+  const reachedRank = reached ? BAND_RANK[reached] : 0;
+  const thresholds = DEFAULT_BANDS.map((b) => b.min).join(' / ');
+  const summary = severity
+    ? `${severity}${capped && reachedRank > rank ? `, held below ${reached}` : ''}: score ${Math.round(score)} on the default thresholds ${thresholds}.`
+    : `Below WATCH: score ${Math.round(score)} on the default thresholds ${thresholds}.`;
+  return (
+    <div className="sevbands">
+      <p className="sr-only">{summary}</p>
+      <ol className="sevbands__track" aria-hidden="true">
+        {DEFAULT_BANDS.map((b, i) => {
+          const next = DEFAULT_BANDS[i + 1]?.min ?? 100;
+          const here = reached === b.severity;
+          const pos = here ? Math.max(0, Math.min(1, (score - b.min) / Math.max(1, next - b.min))) : null;
+          return (
+            <li
+              key={b.severity}
+              className="sevband"
+              data-sev={b.severity}
+              data-on={i < rank ? '' : undefined}
+              data-current={i === rank - 1 ? '' : undefined}
+              data-capped={capped && i >= rank && i < reachedRank ? '' : undefined}
+            >
+              <span className="sevband__bar">
+                {pos !== null && <i className="sevband__tick" style={{ left: `${pos * 100}%` }} />}
+              </span>
+              <span className="sevband__label">{b.severity}</span>
+              <span className="sevband__min">{b.min}+</span>
+            </li>
+          );
+        })}
+      </ol>
+      <span className="sevbands__note" aria-hidden="true">
+        Default thresholds
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Severity caps, when the server reports them (Detection.caps, and `caps` on an article if
+ * present): reasons a score that reached a higher band was held at `severity`. Read
+ * defensively so a payload without the field (older server, older stored row) shows nothing.
+ */
+export function capsOf(x: object | null | undefined): string[] {
+  if (!x || !('caps' in x) || !Array.isArray(x.caps)) return [];
+  return x.caps.filter((c): c is string => typeof c === 'string' && c.trim().length > 0);
+}
+
+export function CapChips({ caps, severity }: { caps: string[]; severity: Severity | null }) {
+  if (caps.length === 0) return null;
+  return (
+    <ul className="cap-chips" aria-label="Severity caps">
+      {caps.map((c) => (
+        <li key={c} className="cap-chip">
+          {severity ? `Capped at ${severity}: ` : 'Capped: '}
+          {c}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * Relative time on the shared 15 s ticker. `compact` also renders the short form ("4m");
+ * CSS shows it on phones (.ago__short) while screen readers keep the full words.
+ */
+export const TimeAgo = memo(function TimeAgo({ ts, className, compact = false }: { ts: number | null; className?: string; compact?: boolean }) {
   const now = useNow();
   if (ts === null) return <span className={className}>—</span>;
   return (
-    <time className={className} dateTime={new Date(ts).toISOString()} title={fmtDateTime(ts)}>
-      {timeAgo(ts, now)}
+    <time className={clsx(className, compact && 'ago')} dateTime={new Date(ts).toISOString()} title={fmtDateTime(ts)}>
+      {compact ? (
+        <>
+          <span className="ago__long">{timeAgo(ts, now)}</span>
+          <span className="ago__short" aria-hidden="true">
+            {timeAgoShort(ts, now)}
+          </span>
+        </>
+      ) : (
+        timeAgo(ts, now)
+      )}
     </time>
   );
 });

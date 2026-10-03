@@ -26,7 +26,7 @@
   --cyan-dim: rgb(47 224 255 / 0.12);
   --red: #ff5a6a; /* risk only (risk outlook, risk flags, sells) */
   --red-dim: rgb(255 90 106 / 0.12);
-  --amber: #ffc04d; /* degraded chain status only */
+  --amber: #ffc04d; /* degraded status and held-back states only (chain degraded, AI fallback, severity cap) */
   --amber-dim: rgb(255 192 77 / 0.12);
 
   /* derived tints — always mixed from the tokens above, so changing a token carries through */

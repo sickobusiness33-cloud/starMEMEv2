@@ -1,7 +1,7 @@
 import type { RadarReport, RadarStage, RadarStageId } from '@shared/types';
 import { QUANT_DISCLAIMER } from '@shared/types';
 import { useStore } from '../store';
-import { EngineBadge, EngineLine, MatchBars, OutlookTrio, RegimeTag, SeverityTag } from './bits';
+import { CapChips, capsOf, EngineBadge, EngineLine, MatchBars, OutlookTrio, RegimeTag, SeverityBands } from './bits';
 
 function stageOf(r: RadarReport, id: RadarStageId): RadarStage | undefined {
   return r.stages.find((s) => s.id === id);
@@ -32,6 +32,9 @@ export function DetectionPanel({ report }: { report: RadarReport }) {
   const d = report.detection;
   const busy = isBusy(stageOf(report, 'onchain')) || isBusy(stageOf(report, 'holders'));
   const signals = d ? [...d.signals].sort((a, b) => b.weight - a.weight) : [];
+  const caps = capsOf(d);
+  // a rejected token has no severity whatever its score (e.g. 67 but older than 7 days): say why, not "below watch"
+  const level = d ? (d.severity ?? (d.rejected.length > 0 ? 'Not eligible' : 'Below watch')) : null;
 
   return (
     <section className="panel rpanel" aria-labelledby="radar-detection">
@@ -39,14 +42,7 @@ export function DetectionPanel({ report }: { report: RadarReport }) {
         <h3 className="section-title" id="radar-detection">
           Detection
         </h3>
-        {d?.severity ? (
-          <SeverityTag severity={d.severity} />
-        ) : d ? (
-          // a rejected token has no severity whatever its score (e.g. 67 but older than 7 days): say why, not "below watch"
-          <span className="label" title={d.rejected.join(' · ') || undefined}>
-            {d.rejected.length > 0 ? 'Not eligible' : 'Below watch'}
-          </span>
-        ) : null}
+        {d && busy && <span className="label">Provisional</span>}
       </div>
       <div className="panel__body det">
         {!d ? (
@@ -57,14 +53,12 @@ export function DetectionPanel({ report }: { report: RadarReport }) {
           )
         ) : (
           <>
-            <div className="det__score" data-sev={d.severity ?? 'NONE'}>
-              <span className="det__num mono">{Math.round(d.score)}</span>
-              <span className="det__max mono">/100</span>
-              <span className="bar det__bar" aria-hidden="true">
-                <i className="bar__fill" style={{ transform: `scaleX(${Math.max(0, Math.min(1, d.score / 100))})` }} />
-              </span>
-              {busy && <span className="label det__prov">Provisional</span>}
+            <div className="det__sev" data-sev={d.severity ?? 'NONE'} title={d.severity === null ? d.rejected.join(' · ') || undefined : undefined}>
+              <span className="det__level">{level}</span>
+              <span className="det__score mono">score {Math.round(d.score)}</span>
             </div>
+            <SeverityBands score={d.score} severity={d.severity} capped={caps.length > 0} />
+            <CapChips caps={caps} severity={d.severity} />
             {signals.length > 0 ? (
               <ul className="sig-chips" aria-label="Anomaly signals">
                 {signals.map((s) => (

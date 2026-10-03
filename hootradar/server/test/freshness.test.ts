@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyFreshness, parsePublishedDate } from '../src/research/freshness.js';
+import { classifyFreshness, isDateOnly, parsePublishedDate } from '../src/research/freshness.js';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -18,6 +18,22 @@ describe('classifyFreshness', () => {
     [Number.NaN, 'UNKNOWN'],
   ] as const)('%s → %s', (publishedAt, expected) => {
     expect(classifyFreshness(publishedAt, NOW)).toBe(expected);
+  });
+});
+
+describe('day-precision dates', () => {
+  it('never call a calendar date LIVE, and a day that has not begun is UNKNOWN', () => {
+    const today = Date.UTC(2026, 9, 1);
+    expect(classifyFreshness(today, Date.UTC(2026, 9, 1, 0, 30), 'day')).toBe('RECENT');
+    expect(classifyFreshness(today, NOW, 'day')).toBe('RECENT');
+    expect(classifyFreshness(Date.UTC(2026, 8, 29), NOW, 'day')).toBe('OLD');
+    expect(classifyFreshness(Date.UTC(2026, 9, 2), NOW, 'day')).toBe('UNKNOWN');
+    expect(classifyFreshness(today, Date.UTC(2026, 9, 1, 0, 30))).toBe('LIVE'); // what an exact timestamp would say
+  });
+
+  it('recognizes date-only forms', () => {
+    for (const raw of ['2026-10-01', '20261001', 'Oct 1, 2026', '1 October 2026']) expect(isDateOnly(raw), raw).toBe(true);
+    for (const raw of ['2026-10-01T14:30:00Z', '3 hours ago', '1790709704', null]) expect(isDateOnly(raw), String(raw)).toBe(false);
   });
 });
 

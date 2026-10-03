@@ -14,13 +14,34 @@ export const FUTURE_TOLERANCE_MS = 10 * MINUTE_MS;
 /** Nothing we index was published before this; earlier values are parse artefacts (e.g. epoch 0). */
 const EARLIEST_PLAUSIBLE_MS = Date.UTC(2000, 0, 1);
 
-export function classifyFreshness(publishedAt: number | null, now: number): Freshness {
+/**
+ * LIVE ≤ 60 min, RECENT ≤ 24 h, OLD beyond. A date with only day precision (the
+ * source gave a calendar date, read as that day's 00:00 UTC) can never support
+ * the one-hour LIVE claim, so it is at most RECENT; a calendar day that has not
+ * begun yet in UTC is UNKNOWN rather than "now".
+ */
+export function classifyFreshness(
+  publishedAt: number | null,
+  now: number,
+  precision: 'exact' | 'day' = 'exact',
+): Freshness {
   if (publishedAt === null || !Number.isFinite(publishedAt)) return 'UNKNOWN';
   const age = now - publishedAt;
+  if (precision === 'day') {
+    if (age < 0) return 'UNKNOWN';
+    return age <= FRESHNESS_RECENT_MS ? 'RECENT' : 'OLD';
+  }
   if (age < -FUTURE_TOLERANCE_MS) return 'UNKNOWN';
   if (age <= FRESHNESS_LIVE_MS) return 'LIVE';
   if (age <= FRESHNESS_RECENT_MS) return 'RECENT';
   return 'OLD';
+}
+
+/** True for the calendar-date-only forms `parsePublishedDate` accepts ("2026-10-01", "20261001", "Oct 1, 2026"). */
+export function isDateOnly(raw: string | null | undefined): boolean {
+  const s = raw?.trim().replace(/\s+/g, ' ') ?? '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s) || /^\d{8}$/.test(s)) return true;
+  return parseMonthNameDate(s) !== null;
 }
 
 /**

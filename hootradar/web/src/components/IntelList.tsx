@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { Freshness, IntelItem, RadarStage } from '@shared/types';
+import type { Freshness, IntelItem, IntelProviderStatus, RadarStage } from '@shared/types';
 import { useStore } from '../store';
 import { safeUrl } from '../lib/format';
 import { FreshnessTag, TimeAgo } from './bits';
@@ -24,10 +24,13 @@ interface ProviderResult {
   provider: string;
   ok: boolean;
   count: number | null;
+  /** why it failed (or was not run), when the server said */
+  error: string | null;
 }
 
 /**
- * The web stage reports its providers in its message:
+ * Fallback for reports without `providers` (older server / stored reports): the web stage
+ * also reports its providers in its message:
  * "12 mentions · gdelt 3 · hn 0 · biz failed · official 1 · claude-web 0"
  * (or, when all fail, "Every intel provider failed (gdelt failed · …)").
  */
@@ -37,13 +40,30 @@ export function parseProviders(message: string | null): ProviderResult[] {
   for (const part of message.replace(/[()]/g, ' · ').split('·')) {
     const m = /^([a-z][a-z0-9-]*) (failed|\d+)$/i.exec(part.trim());
     if (!m || !m[1] || !m[2]) continue;
-    out.push({ provider: m[1], ok: m[2] !== 'failed', count: m[2] === 'failed' ? null : Number(m[2]) });
+    out.push({ provider: m[1], ok: m[2] !== 'failed', count: m[2] === 'failed' ? null : Number(m[2]), error: null });
   }
   return out;
 }
 
+/** The report's structured per-provider outcome when it has one, else what the stage message says. */
+function providerResults(providers: IntelProviderStatus[] | undefined, stage: RadarStage | undefined): ProviderResult[] {
+  if (providers && providers.length > 0) {
+    return providers.map((p) => ({ provider: p.provider, ok: p.ok, count: p.ok ? p.count : null, error: p.error }));
+  }
+  return parseProviders(stage?.message ?? null);
+}
+
 /** Internet intel: freshness filter with counts, dated rows, and which sources answered. */
-export function IntelPanel({ intel, stage }: { intel: IntelItem[]; stage: RadarStage | undefined }) {
+export function IntelPanel({
+  intel,
+  stage,
+  providers,
+}: {
+  intel: IntelItem[];
+  stage: RadarStage | undefined;
+  /** RadarReport.providers (structured); absent or empty → parsed from the web stage message */
+  providers?: IntelProviderStatus[];
+}) {
   const [filter, setFilter] = useState<Filter>('ALL');
   const [limit, setLimit] = useState(PAGE);
   const busy = !stage || stage.status === 'pending' || stage.status === 'running';
@@ -123,7 +143,7 @@ export function IntelPanel({ intel, stage }: { intel: IntelItem[]; stage: RadarS
         </div>
       )}
 
-      <ProviderStatus stage={stage} />
+      <ProviderStatus stage={stage} providers={providers} />
     </section>
   );
 }
@@ -158,28 +178,31 @@ function IntelRow({ item: it }: { item: IntelItem }) {
 }
 
 /** Which sources answered and which failed — so an empty list is never mistaken for "no news". */
-function ProviderStatus({ stage }: { stage: RadarStage | undefined }) {
+function ProviderStatus({ stage, providers }: { stage: RadarStage | undefined; providers: IntelProviderStatus[] | undefined }) {
   const ai = useStore((s) => s.stats?.engine.ai ?? null);
   const busy = !stage || stage.status === 'pending' || stage.status === 'running';
-  const providers = parseProviders(stage?.message ?? null);
+  const results = providerResults(providers, stage);
 
   return (
     <div className="providers" role="group" aria-label="Intel sources">
       <span className="label">Sources</span>
       {busy ? (
         <span className="providers__note">{stage?.status === 'running' ? 'Querying sources…' : 'Waiting for the web stage'}</span>
-      ) : providers.length === 0 ? (
+      ) : results.length === 0 ? (
         <span className="providers__note">{stage?.message ?? 'No source report'}</span>
       ) : (
         <ul className="providers__list">
-          {providers.map((p) => {
-            const off = p.provider === 'claude-web' && ai === 'rules';
+          {results.map((p) => {
+            // Claude web search only runs with an AI key: under the rules engine it is "off", not "failed"
+            const off = p.provider === 'claude-web' && ai === 'rules' && (!p.ok || p.count === 0);
             const state = off ? 'off' : !p.ok ? 'failed' : p.count ? 'hit' : 'empty';
+            const note = off ? 'off · no API key' : p.ok ? String(p.count ?? 0) : 'failed';
             return (
-              <li key={p.provider} className="provider" data-state={state}>
+              <li key={p.provider} className="provider" data-state={state} title={p.error ?? undefined}>
                 <span className="dot" aria-hidden="true" />
                 {providerName(p.provider)}
-                <span className="provider__n">{off ? 'off · no API key' : p.ok ? p.count : 'failed'}</span>
+                <span className="provider__n">{note}</span>
+                {!off && !p.ok && p.error && <span className="sr-only">: {p.error}</span>}
               </li>
             );
           })}

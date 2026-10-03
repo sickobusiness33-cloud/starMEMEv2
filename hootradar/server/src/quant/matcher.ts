@@ -145,14 +145,21 @@ const aboveTrend = (c: Ctx): number => ramp(trendReference(c) ?? 0, 0, 10);
 /** Regime statistics are meaningless when the regime itself is unknown. */
 const regimeValue = (c: Ctx, v: number | null): number | null => (c.regime.label === 'unknown' ? null : finite(v));
 
-/** Structural red flags visible in the security data; null when security data is missing. */
+/**
+ * Structural red flags visible in the security data: only facts count. An unknown
+ * honeypot status (or authority) is missing data, never a red flag; null when no
+ * security fact is known at all (the feature then lowers coverage instead).
+ */
 function securityRedFlags(c: Ctx): number | null {
   const sec = c.s.security;
   if (!sec) return null;
+  const known =
+    sec.mintAuthority !== null || sec.freezeAuthority !== null || sec.honeypot !== 'unknown' || sec.devHoldingPct != null;
+  if (!known) return null;
   let n = 0;
   if (sec.mintAuthority === true) n++;
   if (sec.freezeAuthority === true) n++;
-  if (sec.honeypot !== 'no') n++;
+  if (sec.honeypot === 'yes') n++;
   if (sec.devHoldingPct != null && sec.devHoldingPct > MAX_DEV_PCT) n++;
   return n;
 }

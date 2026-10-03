@@ -10,7 +10,7 @@ import type {
   RadarReport,
   TokenSnapshot,
 } from '../../shared/types.js';
-import { openDb, tokenKey, type Db } from '../src/db/db.js';
+import { feedCursor, openDb, parseFeedCursor, tokenKey, type Db } from '../src/db/db.js';
 import { parseGtPools } from '../src/sources/geckoterminal.js';
 
 const MIN = 60_000;
@@ -239,6 +239,48 @@ describe('tokens and snapshots', () => {
     expect(db.trackedAddresses('solana', 4, 10, T0)).toEqual([SOL_A, SOL_B]);
   });
 
+  it('a sparse observation never erases the richer market data of the token row', () => {
+    // live regression: a pump.fun listing (price and market cap only) replaced a $20K-liquidity row
+    const rich = snap({
+      ts: T0,
+      pairAddress: 'PoolB',
+      liquidityUsd: 20_000,
+      liquiditySource: 'dexscreener',
+      volumeUsd: { h1: 30_000 },
+      marketCapUsd: 90_000,
+      createdAt: T0 - HOUR,
+    });
+    db.insertSnapshot(rich);
+    db.insertSnapshot(snap({ ts: T0 + MIN, pairAddress: 'CurveA', marketCapUsd: 95_000, priceUsd: 0.0001, sources: ['pumpfun'] }));
+    const [row] = db.latestSnapshots(T0 - HOUR);
+    expect(row).toMatchObject({ pairAddress: 'PoolB', liquidityUsd: 20_000, volumeUsd: { h1: 30_000 }, ts: T0 + MIN });
+    expect(row?.sources).toEqual(expect.arrayContaining(['geckoterminal', 'pumpfun'])); // token-level facts still merge
+    // still ranked as an active token
+    db.upsertToken(snap({ address: SOL_B, ts: T0 + 2 * MIN, createdAt: T0 - HOUR }));
+    expect(db.trackedAddresses('solana', 24, 1, T0 + 3 * MIN, { minLiquidityUsd: 10_000, minVolumeH1Usd: 10_000 })).toEqual([SOL_A]);
+    // a newer reading of the same pool still updates the figures
+    db.insertSnapshot({ ...rich, ts: T0 + 3 * MIN, liquidityUsd: 25_000 });
+    expect(db.latestSnapshots(T0 - HOUR).find((x) => x.address === SOL_A)?.liquidityUsd).toBe(25_000);
+  });
+
+  it('regimeUniverse filters liquidity, ages and freshness in SQL', () => {
+    const base = { priceChangePct: { h1: 5 }, liquidityUsd: 20_000 };
+    db.insertSnapshot(snap({ ...base, address: 'A1111111111111111111111111111111', createdAt: T0 - 2 * HOUR, ts: T0 }));
+    db.insertSnapshot(snap({ ...base, address: 'B1111111111111111111111111111111', createdAt: T0 - 10 * MIN, ts: T0 })); // too young
+    db.insertSnapshot(snap({ ...base, address: 'C1111111111111111111111111111111', createdAt: T0 - 400 * 24 * HOUR, ts: T0 })); // not a young token (Radar lookup of a major)
+    db.insertSnapshot(snap({ ...base, address: 'D1111111111111111111111111111111', createdAt: null, ts: T0 })); // unknown age kept
+    db.insertSnapshot(snap({ ...base, address: 'E1111111111111111111111111111111', liquidityUsd: 1_000, ts: T0 }));
+    db.insertSnapshot(snap({ ...base, address: 'F1111111111111111111111111111111', ts: T0 - 2 * HOUR })); // stale
+    db.insertSnapshot(snap({ address: 'G1111111111111111111111111111111', liquidityUsd: 20_000, ts: T0 })); // no 1h change
+    const universe = db.regimeUniverse(T0, {
+      maxObservationAgeMs: HOUR,
+      minLiquidityUsd: 5_000,
+      minTokenAgeMs: 45 * MIN,
+      maxTokenAgeMs: 24 * HOUR,
+    });
+    expect(universe.map((s) => s.address).sort()).toEqual(['A1111111111111111111111111111111', 'D1111111111111111111111111111111']);
+  });
+
   it('trackedAddresses filters by age (first sighting when creation is unknown) and orders by activity', () => {
     db.upsertToken(snap({ address: 'A1111111111111111111111111111111', createdAt: T0 - 2 * HOUR, ts: T0 - 5 * MIN }));
     db.upsertToken(snap({ address: 'B1111111111111111111111111111111', createdAt: T0 - 30 * HOUR, ts: T0 }));
@@ -335,6 +377,34 @@ describe('articles', () => {
     expect(db.listArticles({ limit: 10, chain: 'base' }).map((a) => a.id)).toEqual([a2.id]);
     expect(db.listArticles({ limit: 10, severity: 'BREAKING' }).map((a) => a.id)).toEqual([a3.id, a2.id]);
     expect(db.listArticles({ limit: 10, chain: 'solana', severity: 'ALERT' }).map((a) => a.id)).toEqual([a1.id]);
+  });
+
+  it('pages exactly with a composite cursor, even when articles share a millisecond', () => {
+    // live regression: [2000,2000,2000,1000,1000] with limit 2 lost the third 2000 article
+    const all = [2000, 2000, 2000, 1000, 1000].map((ts) => article({ createdAt: ts }));
+    all.forEach((a) => db.insertArticle(a));
+    const seen: string[] = [];
+    let before: ReturnType<typeof parseFeedCursor> | undefined;
+    for (let page = 0; page < 5; page++) {
+      const rows = db.listArticles({ limit: 2, before: before ?? undefined });
+      if (rows.length === 0) break;
+      seen.push(...rows.map((a) => a.id));
+      before = parseFeedCursor(feedCursor(rows.at(-1)!));
+    }
+    expect(seen).toHaveLength(5);
+    expect(new Set(seen)).toEqual(new Set(all.map((a) => a.id)));
+    // newest first, ties in a stable order
+    expect(db.listArticles({ limit: 5 }).map((a) => a.createdAt)).toEqual([2000, 2000, 2000, 1000, 1000]);
+  });
+
+  it('parses feed cursors strictly', () => {
+    expect(parseFeedCursor('1700000000000:3f1c2e4a-0000-4000-8000-000000000000')).toEqual({
+      ts: 1700000000000,
+      id: '3f1c2e4a-0000-4000-8000-000000000000',
+    });
+    expect(parseFeedCursor('1700000000000')).toBeNull();
+    expect(parseFeedCursor('abc:def')).toBeNull();
+    expect(parseFeedCursor("1:x' OR 1=1")).toBeNull();
   });
 
   it('finds the last article per token and counts recent ones', () => {

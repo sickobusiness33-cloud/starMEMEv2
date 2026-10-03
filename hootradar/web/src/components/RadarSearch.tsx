@@ -1,6 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import type { ChainId, DetectionEvent } from '@shared/types';
-import { useRadar, type RecentSearch } from '../lib/radar';
+import { rateLimitLeft, useRadar, type RecentSearch } from '../lib/radar';
+import { notifyError } from '../lib/notify';
+import { useClockWhile } from '../lib/time';
 import { navigate } from '../lib/hash-router';
 import { useChainOptions, validChainId } from '../lib/chains';
 import { fmtTicker, shortAddr } from '../lib/format';
@@ -11,12 +13,28 @@ import { IconChevron, IconClose, IconSearch } from './Icons';
 
 const QUERY_MAX = 120;
 
-/** Run an investigation and reflect it in the URL (#/radar?q=…&chain=…) so it can be shared. */
+/**
+ * Run an investigation and reflect it in the URL (#/radar?q=…&chain=…) so it can be shared.
+ * While the server's rate limit is in force nothing is sent (it would only earn another 429):
+ * the reader is told when they can search again and the screen keeps what it shows.
+ */
 export function startInvestigation(raw: string, chain: ChainId | null): void {
   const q = raw.trim().slice(0, QUERY_MAX);
   if (!q) return;
-  useRadar.getState().run(q, chain);
+  const st = useRadar.getState();
+  if (!st.run(q, chain)) {
+    const left = rateLimitLeft(st.retryUntil, Date.now());
+    if (left > 0) notifyError(`Too many radar searches — you can search again in ${left} s.`);
+    return;
+  }
   navigate('radar', { q, chain });
+}
+
+/** Seconds left on the radar rate limit (0 when free); re-renders each second only while a limit is in force. */
+export function useRateLimitLeft(): number {
+  const retryUntil = useRadar((s) => s.retryUntil);
+  const now = useClockWhile(retryUntil !== null && retryUntil > Date.now());
+  return rateLimitLeft(retryUntil, Math.max(now, Date.now()));
 }
 
 /** "/" from anywhere focuses the input; remembered across mounts so a remount does not re-steal focus. */
@@ -34,6 +52,7 @@ export function RadarSearch() {
   const hintId = useId();
   // the full placeholder needs ~310px of a 306px phone field at 16px (the iOS no-zoom minimum)
   const phone = useMediaQuery(PHONE_QUERY);
+  const limitLeft = useRateLimitLeft();
 
   // follow investigations started elsewhere (deep link, candidate chip, recent search, leader click)
   useEffect(() => setValue(query ?? ''), [query]);
@@ -116,17 +135,28 @@ export function RadarSearch() {
           </select>
           <IconChevron size={12} className="rsearch__chev" />
         </label>
-        <button type="submit" className="btn btn--primary rsearch__submit" disabled={phase === 'starting'}>
+        <button
+          type="submit"
+          className="btn btn--primary rsearch__submit"
+          disabled={phase === 'starting' || limitLeft > 0}
+          title={limitLeft > 0 ? `Rate-limited: search again in ${limitLeft} s` : undefined}
+        >
           <IconSearch size={14} />
           Search
         </button>
       </div>
       <p id={hintId} className="rsearch__hint">
-        Symbol, name or contract address on {options.map((o) => o.short).join(' · ')}
-        <span className="rsearch__kbd">
-          {' '}
-          · press <kbd>/</kbd> to search from anywhere
-        </span>
+        {limitLeft > 0 ? (
+          <span className="rsearch__limit">Too many searches — you can search again in {limitLeft} s</span>
+        ) : (
+          <>
+            Symbol, name or contract address on {options.map((o) => o.short).join(' · ')}
+            <span className="rsearch__kbd">
+              {' '}
+              · press <kbd>/</kbd> to search from anywhere
+            </span>
+          </>
+        )}
       </p>
     </form>
   );

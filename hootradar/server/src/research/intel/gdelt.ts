@@ -7,7 +7,7 @@ import type { IntelItem, IntelSourceType } from '../../../../shared/types.js';
 import { errMsg } from '../../log.js';
 import { fetchText, HttpError } from '../../net/http.js';
 import { asArray, asRecord, toHttpUrl, toStr } from '../../sources/merge.js';
-import { classifyFreshness, parsePublishedDate } from '../freshness.js';
+import { classifyFreshness, isDateOnly, parsePublishedDate } from '../freshness.js';
 import { cleanTerm, intelTerms, stableId, type IntelQuery, type IntelTerms, type MatchedOn } from './match.js';
 
 const GDELT_API = 'https://api.gdeltproject.org/api/v2/doc/doc';
@@ -39,7 +39,7 @@ function isThrottled(e: unknown): boolean {
   return e instanceof HttpError && (e.status === 0 || e.status === 429 || e.status >= 500);
 }
 
-export async function search(t: IntelQuery): Promise<IntelItem[]> {
+export async function search(t: IntelQuery, opts: { signal?: AbortSignal } = {}): Promise<IntelItem[]> {
   const terms = intelTerms(t);
   const query = buildGdeltQuery(terms);
   if (query === null) return [];
@@ -66,6 +66,7 @@ export async function search(t: IntelQuery): Promise<IntelItem[]> {
       retries: 0,
       // and while it is refusing us, report that at once instead of waiting out the pause into a timeout
       maxPauseWaitMs: 0,
+      signal: opts.signal,
     });
   } catch (e) {
     if (isThrottled(e)) {
@@ -168,7 +169,10 @@ export function parseGdeltArticles(json: unknown, now: number, matchedOn: Matche
     if (!url || !title || seen.has(url)) continue;
     seen.add(url);
     const domain = (toStr(a.domain) ?? hostOf(url)).toLowerCase();
-    const publishedAt = parsePublishedDate(toStr(a.seendate), now);
+    const seenDate = toStr(a.seendate);
+    const publishedAt = parsePublishedDate(seenDate, now);
+    // a bare calendar date cannot support a LIVE (last hour) claim
+    const precision = isDateOnly(seenDate) ? 'day' : 'exact';
     out.push({
       id: stableId('gdelt', url),
       title,
@@ -177,7 +181,8 @@ export function parseGdeltArticles(json: unknown, now: number, matchedOn: Matche
       sourceType: sourceTypeFor(domain),
       provider: 'gdelt',
       publishedAt,
-      freshness: classifyFreshness(publishedAt, now),
+      freshness: classifyFreshness(publishedAt, now, precision),
+      ...(precision === 'day' ? { publishedPrecision: 'day' as const } : {}),
       snippet: null,
       matchedOn,
     });

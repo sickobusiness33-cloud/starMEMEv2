@@ -114,6 +114,17 @@ export function timeAgo(ts: number | null | undefined, now: number): string {
   return `${Math.floor(h / 24)} d ago`;
 }
 
+/** Compact form of timeAgo for tight rows (phone card meta): 'now' · '4m' · '2h' · '3d'. */
+export function timeAgoShort(ts: number | null | undefined, now: number): string {
+  if (!isNum(ts)) return DASH;
+  const m = Math.floor(Math.max(0, now - ts) / 60_000);
+  if (m < 1) return 'now';
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+
 /** Seconds-resolution age for the 1 s clock (chain chips): 12s · 4m · 2h */
 export function shortSince(ts: number | null | undefined, now: number): string {
   if (!isNum(ts)) return DASH;

@@ -16,16 +16,16 @@ import {
   type Severity,
   type TokenSnapshot,
 } from '../../shared/types.js';
-import { loadConfig, type AppConfig } from '../src/config.js';
+import { loadConfig, parseTrustProxy, type AppConfig } from '../src/config.js';
 import { openDb, type Db } from '../src/db/db.js';
 import { DistributionQueue } from '../src/distribution/queue.js';
 import { Bus } from '../src/engine/bus.js';
 import { deriveMetrics, toCardMetrics } from '../src/engine/metrics.js';
 import type { Scanner } from '../src/engine/scanner.js';
-import { createServer, type ServerDeps } from '../src/http/server.js';
+import { clientKey, createServer, type ServerDeps } from '../src/http/server.js';
 import { openSse } from '../src/http/sse.js';
 import { METHODOLOGIES, SOURCE_POLICY } from '../src/quant/library.js';
-import type { RadarService } from '../src/research/radar.js';
+import { RadarBusyError, type RadarService } from '../src/research/radar.js';
 import { parseGtPools } from '../src/sources/geckoterminal.js';
 
 /** When the GeckoTerminal fixtures were captured. */
@@ -126,11 +126,15 @@ function radarReport(id: string, query: string, status: RadarReport['status'], u
 /** Records calls and lets a test drive report updates like the real service does. */
 class FakeRadar {
   readonly started: Array<{ query: string; chain: ChainId | undefined }> = [];
+  readonly clients: Array<string | undefined> = [];
+  busy = false;
   private readonly reports = new Map<string, RadarReport>();
   private readonly listeners = new Map<string, Set<(r: RadarReport) => void>>();
 
-  start(query: string, chain?: ChainId): RadarReport {
+  start(query: string, chain?: ChainId, opts: { client?: string } = {}): RadarReport {
+    if (this.busy) throw new RadarBusyError(10);
     this.started.push({ query, chain });
+    this.clients.push(opts.client);
     const r = radarReport(`radar-${this.started.length}`, query, 'running');
     this.reports.set(r.id, r);
     return r;
@@ -337,7 +341,24 @@ describe('GET /api/feed', () => {
     const full = await feed('?limit=5');
     expect(full.nextBefore).toBe(seeded[4]?.createdAt);
     const rest = await feed(`?limit=5&before=${full.nextBefore}`);
-    expect(rest).toEqual({ articles: [], nextBefore: null });
+    expect(rest).toEqual({ articles: [], nextBefore: null, nextCursor: null });
+  });
+
+  it('pages exactly with nextCursor when articles share a millisecond', async () => {
+    // live regression: articles at [2000,2000,2000,1000,1000] with limit 2 lost the third 2000 one
+    const tied = [2000, 2000, 2000, 1000, 1000].map((ts, i) => ({ ...article(token(SOLANA_TOKENS, i), T0 + ts, 'ALERT'), id: `tie-${i}` }));
+    for (const a of tied) h.db.insertArticle(a);
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let pages = 0; pages < 10; pages++) {
+      const res = await h.app.inject({ method: 'GET', url: `/api/feed?limit=2${cursor ? `&before=${encodeURIComponent(cursor)}` : ''}` });
+      const page = res.json() as { articles: NewsArticle[]; nextCursor: string | null };
+      seen.push(...page.articles.map((a) => a.id));
+      cursor = page.nextCursor;
+      if (!cursor) break;
+    }
+    expect(seen.sort()).toEqual(tied.map((a) => a.id).sort());
+    expect((await h.app.inject({ method: 'GET', url: '/api/feed?before=abc' })).statusCode).toBe(400);
   });
 
   it('filters by chain and severity', async () => {
@@ -471,6 +492,14 @@ describe('quant endpoints', () => {
     expect(fresh.computedAt).toBe(T0 + 76 * SEC);
   });
 
+  it('cites the newsroom\'s shared regime, the same one articles cite', async () => {
+    // live: leaders recomputed the regime from a chain-biased 400-row sample and disagreed with articles
+    const shared: MarketRegime = { label: 'risk-on', breadthPct: 64, medianH1ChangePct: 3.2, sampleSize: 120, computedAt: T0 };
+    await rebuild({ regime: () => shared });
+    const body = (await h.app.inject({ method: 'GET', url: '/api/quant/leaders' })).json();
+    expect(body.regime).toEqual(shared);
+  });
+
   it('returns empty leaderboards when nothing was observed recently', async () => {
     const body = (await h.app.inject({ method: 'GET', url: '/api/quant/leaders' })).json();
     expect(body.regime).toMatchObject({ label: 'unknown', sampleSize: 0, breadthPct: null });
@@ -527,6 +556,59 @@ describe('POST /api/radar', () => {
     expect(h.radar.started).toHaveLength(10);
     // another client is unaffected
     expect((await radarPost({ query: 'PEPE' }, '198.51.100.9')).statusCode).toBe(202);
+    expect(h.radar.clients.at(-1)).toBe('198.51.100.9');
+  });
+
+  it('buckets IPv6 clients by /64, so rotating addresses in a prefix buys no fresh limit', async () => {
+    for (let i = 0; i < 10; i++) expect((await radarPost({ query: `T${i}` }, `2001:db8:1:2::${(i + 1).toString(16)}`)).statusCode).toBe(202);
+    expect((await radarPost({ query: 'X' }, '2001:db8:1:2:ffff:ffff:ffff:fffe')).statusCode).toBe(429);
+    expect((await radarPost({ query: 'Y' }, '2001:db8:1:3::1')).statusCode).toBe(202);
+    expect(clientKey('::ffff:203.0.113.7')).toBe('203.0.113.7');
+    expect(clientKey('::ffff:cb00:7107')).toBe('203.0.113.7');
+    expect(clientKey('2001:DB8:1:2:3:4:5:6')).toBe('2001:0db8:0001:0002::/64');
+    expect(clientKey('::1')).toBe('0000:0000:0000:0000::/64');
+  });
+
+  it('caps radar searches across all clients at 60 a minute', async () => {
+    for (let i = 0; i < 60; i++) expect((await radarPost({ query: `T${i}` }, `198.51.100.${i + 1}`)).statusCode).toBe(202);
+    const res = await radarPost({ query: 'more' }, '192.0.2.200');
+    expect(res.statusCode).toBe(429);
+    expect(h.radar.started).toHaveLength(60);
+  });
+
+  it('answers 503 with Retry-After while too many investigations run, without spending the client limit', async () => {
+    h.radar.busy = true;
+    const res = await radarPost({ query: 'PEPE' });
+    expect(res.statusCode).toBe(503);
+    expect(res.headers['retry-after']).toBe('10');
+    h.radar.busy = false;
+    for (let i = 0; i < 10; i++) expect((await radarPost({ query: `T${i}` })).statusCode).toBe(202);
+  });
+
+  it('never lets a spoofed X-Forwarded-For pick request.ip behind a trusted proxy', async () => {
+    // live: TRUST_PROXY=true made the leftmost (client-written) X-Forwarded-For entry the client
+    for (const setting of ['true', '1', '10.0.0.1']) {
+      await rebuild({ trustProxy: parseTrustProxy(setting).value });
+      for (let i = 0; i < 10; i++) {
+        const res = await h.app.inject({
+          method: 'POST',
+          url: '/api/radar',
+          payload: { query: `T${i}` },
+          remoteAddress: '10.0.0.1',
+          headers: { 'x-forwarded-for': `6.6.6.${i}, 203.0.113.9` },
+        });
+        expect(res.statusCode, setting).toBe(202);
+      }
+      expect(h.radar.clients.every((c) => c === '203.0.113.9'), setting).toBe(true);
+      const spoofed = await h.app.inject({
+        method: 'POST',
+        url: '/api/radar',
+        payload: { query: 'again' },
+        remoteAddress: '10.0.0.1',
+        headers: { 'x-forwarded-for': '7.7.7.7, 203.0.113.9' },
+      });
+      expect(spoofed.statusCode, setting).toBe(429);
+    }
   });
 });
 
@@ -688,6 +770,33 @@ describe('GET /api/stream', () => {
     }
   });
 
+  it('caps open streams per client', async () => {
+    const base = await listen();
+    const clients: SseClient[] = [];
+    try {
+      for (let i = 0; i < 6; i++) {
+        const c = await connect(`${base}/api/stream`);
+        expect(c.status).toBe(200);
+        clients.push(c);
+      }
+      const extra = await connect(`${base}/api/stream`);
+      expect(extra.status).toBe(429);
+      expect(extra.header('retry-after')).toBe('10');
+      extra.close();
+      clients.pop()?.close();
+      await vi.waitFor(async () => {
+        const again = await connect(`${base}/api/stream`);
+        try {
+          expect(again.status).toBe(200);
+        } finally {
+          again.close();
+        }
+      });
+    } finally {
+      for (const c of clients) c.close();
+    }
+  });
+
   it('closes open streams when the server shuts down', async () => {
     const base = await listen();
     const client = await connect(`${base}/api/stream`);
@@ -810,13 +919,13 @@ describe('SSE stream backpressure', () => {
     expect(stream.send('stats', {}, { droppable: true })).toBe(true);
   });
 
-  it('cuts off a client that falls more than 1 MiB behind', () => {
+  it('cuts off a client that falls more than 256 KiB behind', () => {
     const { res, stream } = fakeStream();
     const closed = vi.fn();
     stream.onClose(closed);
     res.accept = false;
     stream.send('article', { n: 0 });
-    const big = 'x'.repeat(200 * 1024);
+    const big = 'x'.repeat(50 * 1024);
     for (let i = 0; i < 5; i++) expect(stream.send('article', { big })).toBe(true);
     expect(stream.send('article', { big })).toBe(false);
     expect(res.destroyed).toBe(true);

@@ -26,7 +26,8 @@ interface RadarState {
   phase: RadarPhase;
   report: RadarReport | null;
   error: string | null;
-  retryAfterSec: number | null;
+  /** rate-limited (429) until this time (client clock, ms); new investigations wait for it */
+  retryUntil: number | null;
   /**
    * Client clock minus server clock (ms), estimated from report frames
    * (smallest observed `Date.now() - report.updatedAt`). Lets the UI time a
@@ -34,7 +35,13 @@ interface RadarState {
    */
   skewMs: number | null;
   recent: RecentSearch[];
-  run: (query: string, chain: ChainId | null) => void;
+  /** POST a new investigation; false (and nothing changes) while rate-limited */
+  run: (query: string, chain: ChainId | null) => boolean;
+  /**
+   * Show an investigation already run in this session (history back/forward to its hash):
+   * the finished report from memory, or re-attach to a running one. False if none is known.
+   */
+  resume: (query: string, chain: ChainId | null) => boolean;
   reset: () => void;
   removeRecent: (r: RecentSearch) => void;
   clearRecent: () => void;
@@ -76,6 +83,34 @@ function saveRecent(list: RecentSearch[]): void {
 const sameSearch = (a: { q: string; chain: ChainId | null }, b: { q: string; chain: ChainId | null }) =>
   a.q.toLowerCase() === b.q.toLowerCase() && a.chain === b.chain;
 
+/**
+ * Investigations run in this session, by query + chain: browser history between radar hashes
+ * shows these instead of POSTing again (each POST costs one of the rate limit's few tokens
+ * and would throw away a finished report). Only an explicit search or Re-run starts a new one.
+ */
+const CACHE_MAX = 12;
+const cache = new Map<string, { id: string; report: RadarReport | null }>();
+const cacheKey = (q: string, chain: ChainId | null) => `${q.toLowerCase()}|${chain ?? '*'}`;
+
+function remember(q: string, chain: ChainId | null, id: string, report: RadarReport | null): void {
+  const k = cacheKey(q, chain);
+  cache.delete(k); // re-insert: most recent last
+  cache.set(k, { id, report });
+  while (cache.size > CACHE_MAX) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
+/** Without a Retry-After header the limiter's window (1 min) is the honest upper bound. */
+const DEFAULT_RETRY_SEC = 60;
+
+/** Seconds left on a radar rate limit, or 0. */
+export function rateLimitLeft(retryUntil: number | null, now: number): number {
+  return retryUntil === null ? 0 : Math.max(0, Math.ceil((retryUntil - now) / 1000));
+}
+
 let source: EventSource | null = null;
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let abort: AbortController | null = null;
@@ -102,6 +137,7 @@ export const useRadar = create<RadarState>()((set, get) => {
     const prevSkew = get().skewMs;
     set({ report, skewMs: prevSkew === null ? observed : Math.min(prevSkew, observed) });
     const { query, chain } = get();
+    if (query) remember(query, chain, report.id, report);
     if (report.token && query) {
       const label = fmtTicker(report.token.symbol);
       const recent = get().recent.map((r) => (sameSearch(r, { q: query, chain }) && r.label !== label ? { ...r, label } : r));
@@ -166,13 +202,14 @@ export const useRadar = create<RadarState>()((set, get) => {
     phase: 'idle',
     report: null,
     error: null,
-    retryAfterSec: null,
+    retryUntil: null,
     skewMs: null,
     recent: loadRecent(),
 
     run: (query, chain) => {
       const q = query.trim().slice(0, 120);
-      if (!q) return;
+      if (!q) return false;
+      if (rateLimitLeft(get().retryUntil, Date.now()) > 0) return false;
       stopActive();
       const seq = ++runSeq;
       const prior = get().recent.find((r) => sameSearch(r, { q, chain }));
@@ -181,27 +218,47 @@ export const useRadar = create<RadarState>()((set, get) => {
         RECENT_MAX,
       );
       saveRecent(recent);
-      set({ query: q, chain, phase: 'starting', report: null, error: null, retryAfterSec: null, skewMs: null, recent });
+      set({ query: q, chain, phase: 'starting', report: null, error: null, retryUntil: null, skewMs: null, recent });
       abort = new AbortController();
       api
         .startRadar(q, chain, abort.signal)
         .then(({ id }) => {
-          if (isCurrent(seq)) follow(seq, id);
+          if (!isCurrent(seq)) return;
+          remember(q, chain, id, null);
+          follow(seq, id);
         })
         .catch((e: unknown) => {
           if (!isCurrent(seq) || isAbortError(e)) return;
+          const limited = e instanceof ApiError && e.status === 429;
           set({
             phase: 'error',
             error: errorMessage(e),
-            retryAfterSec: e instanceof ApiError ? e.retryAfterSec : null,
+            retryUntil: limited ? Date.now() + (e.retryAfterSec ?? DEFAULT_RETRY_SEC) * 1000 : null,
           });
         });
+      return true;
+    },
+
+    resume: (query, chain) => {
+      const q = query.trim().slice(0, 120);
+      const hit = q ? cache.get(cacheKey(q, chain)) : undefined;
+      if (!hit) return false;
+      stopActive();
+      const seq = ++runSeq;
+      const final = hit.report !== null && hit.report.status !== 'running';
+      set({ query: q, chain, phase: final ? 'done' : 'starting', report: hit.report, error: null, skewMs: null });
+      // still running when we left it: follow it again by id (GET + stream), no new POST
+      if (!final) {
+        abort = new AbortController();
+        follow(seq, hit.id);
+      }
+      return true;
     },
 
     reset: () => {
       stopActive();
       runSeq++;
-      set({ query: null, chain: null, phase: 'idle', report: null, error: null, retryAfterSec: null, skewMs: null });
+      set({ query: null, chain: null, phase: 'idle', report: null, error: null, retryUntil: null, skewMs: null });
     },
 
     removeRecent: (r) => {

@@ -20,7 +20,8 @@ import { tokenKey, type Db } from '../db/db.js';
 import type { DistributionQueue } from '../distribution/queue.js';
 import { errMsg, logger } from '../log.js';
 import { matchQuant } from '../quant/matcher.js';
-import { detectAnomalies, SIGNAL_MAX_WEIGHTS } from './anomaly.js';
+import { detectAnomalies, SIGNAL_MAX_WEIGHTS, type DetectOpts } from './anomaly.js';
+import type { LaunchBaselines } from './baselines.js';
 import type { Bus } from './bus.js';
 import { deriveMetrics, toCardMetrics } from './metrics.js';
 
@@ -37,6 +38,22 @@ const DETECTION_DEDUPE_SCORE_JUMP = 10;
 /** Inside the article cooldown a follow-up needs an escalation or this much extra score. */
 const FOLLOW_UP_SCORE_JUMP = 15;
 const CAP_WARN_INTERVAL_MS = 5 * MINUTE_MS;
+/**
+ * Decisions that need the network (social mentions, enrichment, the AI write) run
+ * here, off the scan loop: at most this many at once across all chains...
+ */
+const BACKGROUND_CONCURRENCY = 4;
+/** ...with at most this many tokens waiting (one entry per token; the newest snapshot wins) */
+const BACKGROUND_MAX_PENDING = 300;
+/** a waiting decision older than this is stale for a real-time newsroom and is dropped */
+const BACKGROUND_MAX_WAIT_MS = 3 * MINUTE_MS;
+/** enrichment shares GeckoTerminal's budget with discovery: never wait out a long 429 pause for it */
+const ENRICH_MAX_PAUSE_WAIT_MS = 5_000;
+const ENRICH_MAX_QUEUE_MS = 20_000;
+/** social mention counts are cached per token for the scan loop's synchronous decisions */
+const MENTIONS_TTL_MS = 5 * MINUTE_MS;
+const MENTIONS_FAILURE_TTL_MS = MINUTE_MS;
+const MENTIONS_CACHE_LIMIT = 2_000;
 
 const SEVERITY_RANK: Record<Severity, number> = { WATCH: 1, ALERT: 2, BREAKING: 3 };
 
@@ -48,6 +65,8 @@ export interface PipelineDeps {
   distribution: DistributionQueue;
   regime: () => MarketRegime;
   mentions?: (s: TokenSnapshot) => Promise<number | null>;
+  /** per-chain launch-traction baselines (default: the global calibration) */
+  baselines?: LaunchBaselines;
   /** test seams; default to the real implementations */
   quant?: typeof matchQuant;
   writer?: typeof writeArticle;
@@ -62,9 +81,36 @@ interface Assessment {
   mentions: number | null;
 }
 
+/** A decision handed to the background workers (one per token). */
+interface Pending {
+  snapshot: TokenSnapshot;
+  now: number;
+  detectedAt: number;
+  enqueuedAt: number;
+  /** ALERT/BREAKING on market data alone: decided before social-only candidates */
+  urgent: boolean;
+}
+
+/** Detection options shared by the pipeline and Radar: the configured gates, thresholds and BREAKING policy. */
+export function detectOptions(config: AppConfig, extra: Partial<DetectOpts> = {}): DetectOpts {
+  return {
+    thresholds: config.thresholds,
+    minLiquidityUsd: config.scan.minLiquidityUsd,
+    minVolumeH1Usd: config.scan.minVolumeH1Usd,
+    breakingMinLiquidityUsd: config.breaking.minLiquidityUsd,
+    breakingMinVolumeH1Usd: config.breaking.minVolumeH1Usd,
+    ...extra,
+  };
+}
+
 /**
  * Decides what each refreshed snapshot deserves: nothing, a WATCH detection, or a
  * full article (enrich → quant → AI write → publish → distribution queue).
+ *
+ * `process` is synchronous and never touches the network, so a scan cycle never
+ * waits for an article: what needs the network (a social-mention lookup that could
+ * change the outcome, the ALERT/BREAKING path) is handed to a small bounded pool
+ * of background workers, one entry per token.
  */
 export class Pipeline {
   private readonly quant: typeof matchQuant;
@@ -72,8 +118,16 @@ export class Pipeline {
   private readonly clock: () => number;
   private readonly adapters: Map<ChainId, ChainAdapter>;
   private readonly enrichCache = new Map<string, { at: number; data: TokenEnrichment | null }>();
+  private readonly mentionsCache = new Map<string, { expiresAt: number; value: number | null }>();
   /** tokens whose article is being prepared right now */
   private readonly inFlight = new Set<string>();
+  /** background decisions waiting for a worker, by token key (insertion order = arrival) */
+  private readonly pending = new Map<string, Pending>();
+  /** token keys a background worker is deciding right now */
+  private readonly running = new Set<string>();
+  private readonly tasks = new Set<Promise<void>>();
+  private idleWaiters: Array<() => void> = [];
+  private stopped = false;
   private lastCapWarnAt = 0;
 
   constructor(private readonly d: PipelineDeps) {
@@ -83,18 +137,153 @@ export class Pipeline {
     this.adapters = new Map(d.adapters.map((a) => [a.config.id, a]));
   }
 
-  /** Called by the scanner for every refreshed snapshot. Never throws. */
-  async process(s: TokenSnapshot, now: number): Promise<void> {
+  /**
+   * Called by the scanner for every stored snapshot. Decides at once what market
+   * data and cached mentions allow, and hands the rest to the background workers.
+   * Never throws and never waits for the network.
+   */
+  process(s: TokenSnapshot, now: number): void {
+    if (this.stopped) return;
     try {
+      this.d.baselines?.observe(s);
       const detectedAt = this.clock();
-      const first = await this.assess(s, now);
+      const cached = this.cachedMentions(s, now);
+      const first = this.assess(s, now, cached ?? null);
       const severity = first.detection.severity;
+      // mentions not known yet but able to change the outcome: decide once they are
+      if (cached === undefined && this.socialCouldMatter(first.detection)) {
+        this.enqueue({ snapshot: s, now, detectedAt, enqueuedAt: this.clock(), urgent: severity === 'ALERT' || severity === 'BREAKING' });
+        return;
+      }
       if (!severity) return;
       if (severity === 'WATCH') {
         this.recordDetection(first, now, null);
         return;
       }
-      await this.escalate(first, now, detectedAt);
+      // a story that cannot be published (cooldown, cap, autopublish off) is settled here, without a worker
+      const key = tokenKey(s.chain, s.address);
+      if (!this.running.has(key) && !this.pending.has(key)) {
+        const blocked = this.publishBlocker(first, this.d.db.lastArticleFor(s.chain, s.address), now);
+        if (blocked) {
+          this.recordDetection(first, now, null);
+          return;
+        }
+      }
+      this.enqueue({ snapshot: s, now, detectedAt, enqueuedAt: this.clock(), urgent: true });
+    } catch (e) {
+      log.error('process failed', { chain: s.chain, address: s.address, error: errMsg(e) });
+    }
+  }
+
+  /** Resolves once no background decision is waiting or running (tests, shutdown). */
+  settled(): Promise<void> {
+    if (this.pending.size === 0 && this.running.size === 0) return Promise.resolve();
+    return new Promise((resolve) => this.idleWaiters.push(resolve));
+  }
+
+  /** Stops accepting snapshots, drops waiting decisions and waits for the running ones. */
+  async stop(): Promise<void> {
+    this.stopped = true;
+    this.pending.clear();
+    await Promise.allSettled([...this.tasks]);
+  }
+
+  /** Background decisions waiting or running (diagnostics). */
+  get backlog(): number {
+    return this.pending.size + this.running.size;
+  }
+
+  /* ───────────── background decisions ───────────── */
+
+  private enqueue(p: Pending): void {
+    const key = tokenKey(p.snapshot.chain, p.snapshot.address);
+    const prev = this.pending.get(key);
+    // one entry per token: the newest snapshot replaces a waiting one (and keeps its urgency)
+    if (prev) {
+      this.pending.delete(key);
+      p = { ...p, urgent: p.urgent || prev.urgent, detectedAt: prev.detectedAt };
+    } else if (this.pending.size >= BACKGROUND_MAX_PENDING) {
+      this.dropOne();
+    }
+    this.pending.set(key, p);
+    this.pump();
+  }
+
+  /** Full queue: the oldest social-only candidate goes first, else the oldest entry. */
+  private dropOne(): void {
+    let victim: string | undefined;
+    for (const [key, p] of this.pending) {
+      if (!p.urgent) {
+        victim = key;
+        break;
+      }
+    }
+    victim ??= this.pending.keys().next().value;
+    if (victim !== undefined) {
+      this.pending.delete(victim);
+      log.debug('background queue full, decision dropped', { key: victim });
+    }
+  }
+
+  private pump(): void {
+    while (!this.stopped && this.running.size < BACKGROUND_CONCURRENCY) {
+      const next = this.nextPending();
+      if (!next) break;
+      const [key, p] = next;
+      this.pending.delete(key);
+      this.running.add(key);
+      const task = this.decide(p)
+        .catch((e: unknown) => log.error('background decision failed', { key, error: errMsg(e) }))
+        .finally(() => {
+          this.running.delete(key);
+          this.tasks.delete(task);
+          this.pump();
+          this.notifyIdle();
+        });
+      this.tasks.add(task);
+    }
+    this.notifyIdle();
+  }
+
+  /** Urgent entries first, oldest first; a token already being decided waits for its turn. */
+  private nextPending(): [string, Pending] | null {
+    let fallback: [string, Pending] | null = null;
+    const now = this.clock();
+    for (const [key, p] of this.pending) {
+      if (now - p.enqueuedAt > BACKGROUND_MAX_WAIT_MS) {
+        this.pending.delete(key);
+        continue;
+      }
+      if (this.running.has(key)) continue;
+      if (p.urgent) return [key, p];
+      fallback ??= [key, p];
+    }
+    return fallback;
+  }
+
+  private notifyIdle(): void {
+    if (this.pending.size > 0 || this.running.size > 0) return;
+    for (const resolve of this.idleWaiters.splice(0)) resolve();
+  }
+
+  /** The full decision for one token, with every lookup it needs. Never throws. */
+  private async decide(p: Pending): Promise<void> {
+    const s = p.snapshot;
+    try {
+      let mentions = this.cachedMentions(s, p.now);
+      let a = this.assess(s, p.now, mentions ?? null);
+      if (mentions === undefined && this.socialCouldMatter(a.detection)) {
+        mentions = await this.lookupMentions(s);
+        if (mentions != null) a = this.assess(s, p.now, mentions);
+      }
+      if (this.stopped) return;
+      const severity = a.detection.severity;
+      if (!severity) return;
+      if (severity === 'WATCH') {
+        this.recordDetection(a, p.now, null);
+        return;
+      }
+      await this.escalate(a, p.now, p.detectedAt);
     } catch (e) {
       log.error('process failed', { chain: s.chain, address: s.address, error: errMsg(e) });
     }
@@ -102,26 +291,21 @@ export class Pipeline {
 
   /* ───────────── decision ───────────── */
 
-  private async assess(s: TokenSnapshot, now: number, knownMentions?: number | null): Promise<Assessment> {
+  private assess(s: TokenSnapshot, now: number, mentions: number | null): Assessment {
     const history = this.d.db.history(s.chain, s.address, now - HISTORY_MS);
     const metrics = deriveMetrics(s, history, now);
-    let detection = this.detect(s, metrics, knownMentions ?? null);
-    let mentions = knownMentions ?? null;
-    if (knownMentions === undefined && this.socialCouldMatter(detection)) {
-      mentions = await this.socialMentions(s);
-      if (mentions != null) detection = this.detect(s, metrics, mentions);
-    }
-    return { snapshot: s, metrics, detection, mentions };
+    return { snapshot: s, metrics, detection: this.detect(s, metrics, mentions, now), mentions };
   }
 
-  private detect(s: TokenSnapshot, m: DerivedMetrics, socialMentions: number | null): Detection {
-    const { thresholds, scan } = this.d.config;
-    return detectAnomalies(s, m, {
-      thresholds,
-      minLiquidityUsd: scan.minLiquidityUsd,
-      minVolumeH1Usd: scan.minVolumeH1Usd,
-      socialMentions,
-    });
+  private detect(s: TokenSnapshot, m: DerivedMetrics, socialMentions: number | null, now: number): Detection {
+    return detectAnomalies(
+      s,
+      m,
+      detectOptions(this.d.config, {
+        socialMentions,
+        ...(this.d.baselines ? { launchRamp: this.d.baselines.rampFor(s.chain, now) } : {}),
+      }),
+    );
   }
 
   /** Mentions are looked up only when they could lift the token to WATCH or beyond. */
@@ -130,13 +314,33 @@ export class Pipeline {
     return d.score + SIGNAL_MAX_WEIGHTS.social_attention >= this.d.config.thresholds.WATCH;
   }
 
-  private async socialMentions(s: TokenSnapshot): Promise<number | null> {
+  /** A known mention count (null = the lookup failed), or undefined when none is cached. */
+  private cachedMentions(s: TokenSnapshot, now: number): number | null | undefined {
+    if (!this.d.mentions) return null;
+    const hit = this.mentionsCache.get(tokenKey(s.chain, s.address));
+    return hit && hit.expiresAt > now ? hit.value : undefined;
+  }
+
+  private async lookupMentions(s: TokenSnapshot): Promise<number | null> {
+    let value: number | null = null;
     try {
-      return (await this.d.mentions?.(s)) ?? null;
+      value = (await this.d.mentions?.(s)) ?? null;
     } catch (e) {
       log.debug('mentions lookup failed', { chain: s.chain, symbol: s.symbol, error: errMsg(e) });
-      return null;
     }
+    const now = this.clock();
+    if (this.mentionsCache.size >= MENTIONS_CACHE_LIMIT) {
+      for (const [k, v] of this.mentionsCache) if (v.expiresAt <= now) this.mentionsCache.delete(k);
+      if (this.mentionsCache.size >= MENTIONS_CACHE_LIMIT) {
+        const oldest = this.mentionsCache.keys().next().value;
+        if (oldest !== undefined) this.mentionsCache.delete(oldest);
+      }
+    }
+    this.mentionsCache.set(tokenKey(s.chain, s.address), {
+      value,
+      expiresAt: now + (value === null ? MENTIONS_FAILURE_TTL_MS : MENTIONS_TTL_MS),
+    });
+    return value;
   }
 
   /** ALERT/BREAKING path. Enrichment only happens when an article is actually on the table. */
@@ -156,7 +360,8 @@ export class Pipeline {
     this.inFlight.add(key);
     try {
       const enriched = await this.enrich(s, now);
-      const final = enriched === s ? first : await this.assess(enriched, now, first.mentions);
+      if (this.stopped) return;
+      const final = enriched === s ? first : this.assess(enriched, now, first.mentions);
       const analyzedAt = this.clock();
       if (!final.detection.severity) return; // e.g. enrichment revealed a honeypot
       const blockedNow = this.publishBlocker(final, previous, now);
@@ -220,7 +425,7 @@ export class Pipeline {
 
     let data: TokenEnrichment | null = null;
     try {
-      data = await adapter.enrich(s.address);
+      data = await adapter.enrich(s.address, { maxPauseWaitMs: ENRICH_MAX_PAUSE_WAIT_MS, maxQueueMs: ENRICH_MAX_QUEUE_MS });
     } catch (e) {
       log.warn('enrich failed', { chain: s.chain, symbol: s.symbol, error: errMsg(e) });
     }
@@ -291,6 +496,7 @@ export class Pipeline {
       pipeline: timings,
       links: this.links(s),
       updateOf: followUpOf?.id ?? null,
+      ...(a.detection.caps?.length ? { caps: [...a.detection.caps] } : {}),
     };
 
     db.insertArticle(article);

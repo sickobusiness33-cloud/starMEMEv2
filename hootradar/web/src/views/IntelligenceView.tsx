@@ -113,8 +113,8 @@ function RegimeBanner() {
         <p className="regime__note">
           {r
             ? r.label === 'unknown'
-              ? `Too few young tokens tracked in the last 2 hours to classify (${r.sampleSize}).`
-              : 'Breadth and median 1H move of young tokens the scanners tracked in the last 2 hours.'
+              ? `Too few tokens to classify (${r.sampleSize}): it needs young tokens at least 45 min old, with $5K+ liquidity, observed in the last hour.`
+              : 'Breadth and median 1H move of the young tokens the scanners observed in the last hour (at least 45 min old, $5K+ liquidity).'
             : leaders.status === 'error'
               ? (leaders.error ?? 'Could not load the market regime.')
               : 'Computing from the tracked universe…'}

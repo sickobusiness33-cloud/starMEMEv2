@@ -1,8 +1,10 @@
 /*
  * Search terms, text clean-up and relevance matching shared by the intel providers.
- * Precision first: a short or generic symbol ("AI", "CAT") never counts as a
- * mention on its own — it needs a $cashtag, the contract address, a specific
- * name, or a ticker form such as "CAT token" / "(CAT)".
+ * Precision first: a short or generic symbol ("AI", "CAT", "PEPE") never counts as
+ * a mention on its own. Its $cashtag or ticker form ("CAT token", "(CAT)") counts
+ * only next to the token's distinctive name or its chain: many tokens share a
+ * ticker, and a copycat launched minutes ago must not inherit the chatter about
+ * the famous token. The contract address always counts.
  */
 import { createHash } from 'node:crypto';
 import type { ChainId, IntelItem, TokenLink } from '../../../../shared/types.js';
@@ -33,6 +35,14 @@ export interface IntelTerms {
   /** strongest evidence that `text` mentions the token, or null */
   match(text: string, opts?: MatchOpts): MatchedOn | null;
 }
+
+/** How a chain is named in text, to corroborate an ambiguous ticker ("$CAT on Base"). */
+const CHAIN_WORDS: Record<string, string> = {
+  solana: 'solana',
+  ethereum: 'ethereum|erc-?20',
+  base: 'base\\s+(?:chain|network|l2)|on\\s+base|coinbase(?:\\x27s)?\\s+base',
+  bsc: 'bsc|bnb\\s+(?:smart\\s+)?chain|binance\\s+smart\\s+chain|bep-?20',
+};
 
 export interface MatchOpts {
   /**
@@ -82,31 +92,37 @@ export function intelTerms(t: IntelQuery): IntelTerms {
   return {
     ...terms,
     distinctive: nameDistinctive || (symbolUsable && !symbolAmbiguous),
-    match: buildMatcher(terms),
+    match: buildMatcher(terms, t.chain),
   };
 }
 
 type TermFlags = Omit<IntelTerms, 'distinctive' | 'match'>;
 
-function buildMatcher(t: TermFlags): IntelTerms['match'] {
+function buildMatcher(t: TermFlags, chain: ChainId): IntelTerms['match'] {
   const sym = t.symbolUsable ? escapeRegExp(t.symbol) : null;
   const name = t.name.length >= MIN_SYMBOL_CHARS ? phrasePattern(t.name) : null;
 
   const cashtag = t.symbolUsable ? cashtagRegExp(t.symbol) : null;
   const namePhrase = name && t.nameDistinctive ? wordRegExp(name) : null;
   const bareSymbol = sym && !t.symbolAmbiguous ? wordRegExp(sym) : null;
-  // "PEPE coin", "Pepe token", "Pepe (PEPE)": ticker forms corroborate an ambiguous word
+  // "PEPE coin", "Pepe token", "Pepe (PEPE)": ticker forms of a symbol or name
   const symbolTicker = sym ? new RegExp(`${tickerNoun(sym)}|\\(\\$?${sym}\\)`, 'iu') : null;
   const nameTicker = name ? new RegExp(tickerNoun(name), 'iu') : null;
+  const chainWords = CHAIN_WORDS[chain];
+  const chainMention = chainWords ? new RegExp(`${WORD_BEFORE}(?:${chainWords})${WORD_AFTER}`, 'iu') : null;
+  // an ambiguous ticker is about this token only next to its distinctive name or its chain
+  const corroborated = (text: string) => !!namePhrase?.test(text) || !!chainMention?.test(text);
+  const symbolNeedsCorroboration = t.symbolAmbiguous;
+  const nameNeedsCorroboration = !t.nameDistinctive;
 
   return (text, opts = {}) => {
     if (containsAddress(text, t.address)) return 'contract';
-    if (cashtag?.test(text)) return 'symbol';
+    if (cashtag?.test(text) && (!symbolNeedsCorroboration || corroborated(text))) return 'symbol';
     const word = namePhrase?.test(text) ? 'name' : bareSymbol?.test(text) ? 'symbol' : null;
     if (word && (!opts.needsContext || CRYPTO_CONTEXT.test(text))) return word;
-    // ticker forms carry their own context
-    if (symbolTicker?.test(text)) return 'symbol';
-    if (nameTicker?.test(text)) return 'name';
+    // ticker forms carry their own crypto context, not their own identity
+    if (symbolTicker?.test(text) && (!symbolNeedsCorroboration || corroborated(text))) return 'symbol';
+    if (nameTicker?.test(text) && (!nameNeedsCorroboration || corroborated(text))) return 'name';
     return null;
   };
 }

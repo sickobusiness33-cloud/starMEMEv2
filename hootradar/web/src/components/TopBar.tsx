@@ -26,42 +26,69 @@ export function TopBar() {
 
 type PillState = 'active' | 'booting' | 'degraded' | 'offline';
 
-function pillModel(stats: Stats | null, conn: ConnState, retryAt: number | null, now: number) {
+interface PillModel {
+  state: PillState;
+  /** desktop label (with the sub-label beside it, ≥ 1200px) */
+  text: string;
+  /** narrow label: the sub-label is hidden there, so this one must say AI vs rules on its own */
+  short: string;
+  sub: string;
+  /** amber sub-label: Claude is configured but its last call failed (stories fall back to rules) */
+  warn: boolean;
+  title: string;
+}
+
+/**
+ * Never claims AI when it is not: the rules engine is "ENGINE ACTIVE" + "RULES ENGINE";
+ * Claude is "AI ENGINE ACTIVE" + "CLAUDE · model"; a failing Claude says so in amber.
+ */
+function pillModel(stats: Stats | null, conn: ConnState, retryAt: number | null, now: number): PillModel {
   if (conn === 'offline') {
-    return { state: 'offline' as PillState, text: 'OFFLINE', short: 'OFFLINE', sub: 'NO NETWORK', title: 'Your device is offline.' };
+    return { state: 'offline', text: 'OFFLINE', short: 'OFFLINE', sub: 'NO NETWORK', warn: false, title: 'Your device is offline.' };
   }
   if (!stats || conn !== 'open') {
     const retry = retryAt && retryAt > now ? ` · RETRY ${shortSince(now, retryAt)}` : '';
     const text = stats ? 'RECONNECTING' : 'CONNECTING';
     return {
-      state: 'offline' as PillState,
+      state: 'offline',
       text,
-      short: stats ? 'RECONNECTING' : 'CONNECTING',
+      short: text,
       sub: `STREAM${retry}`,
+      warn: false,
       title: stats ? 'Live stream interrupted — numbers below are the last values received.' : 'Connecting to the engine…',
     };
   }
   const { engine } = stats;
-  const sub = engine.ai === 'claude' ? `CLAUDE · ${engine.model ?? 'model unknown'}` : 'RULES ENGINE';
-  const aiNote = engine.aiError ? ` Last AI error: ${engine.aiError}` : '';
+  const claude = engine.ai === 'claude';
+  const model = engine.model ?? 'model unknown';
+  const aiFailing = claude && engine.aiError !== null && engine.aiError !== '';
+  const sub = aiFailing ? 'AI ERROR · FALLBACK RULES' : claude ? `CLAUDE · ${model}` : 'RULES ENGINE';
+  const writer = aiFailing
+    ? `Claude (${model}) is configured but its last call failed: ${engine.aiError}. Stories fall back to the deterministic rules engine until it recovers.`
+    : claude
+      ? `News written by Claude (${model}).`
+      : 'News written by the deterministic rules engine (no AI key configured).';
+
   if (engine.status === 'starting') {
-    return { state: 'booting' as PillState, text: 'BOOTING', short: 'BOOTING', sub, title: `Engine starting.${aiNote}` };
+    return { state: 'booting', text: 'BOOTING', short: 'BOOTING', sub, warn: aiFailing, title: `Engine starting. ${writer}` };
   }
   if (engine.status === 'degraded') {
     return {
-      state: 'degraded' as PillState,
-      text: engine.ai === 'claude' ? 'AI ENGINE DEGRADED' : 'ENGINE DEGRADED · RULES',
-      short: engine.ai === 'claude' ? 'AI DEGRADED' : 'RULES DEGRADED',
+      state: 'degraded',
+      text: 'DEGRADED',
+      short: claude ? 'AI DEGRADED' : 'RULES DEGRADED',
       sub,
-      title: `Engine degraded.${aiNote}`,
+      warn: aiFailing,
+      title: `Engine degraded: no chain is scanning successfully right now. ${writer}`,
     };
   }
   return {
-    state: 'active' as PillState,
-    text: engine.ai === 'claude' ? 'AI ENGINE ACTIVE' : 'ENGINE ACTIVE · RULES',
-    short: engine.ai === 'claude' ? 'AI ACTIVE' : 'RULES ACTIVE',
+    state: 'active',
+    text: claude ? 'AI ENGINE ACTIVE' : 'ENGINE ACTIVE',
+    short: aiFailing ? 'AI ERROR' : claude ? 'AI ACTIVE' : 'RULES ACTIVE',
     sub,
-    title: engine.ai === 'claude' ? `News written by Claude (${engine.model ?? 'model unknown'}).${aiNote}` : 'News written by the deterministic rules engine (no AI key configured).',
+    warn: aiFailing,
+    title: writer,
   };
 }
 
@@ -78,9 +105,9 @@ function EnginePillTicking({ stats, conn, retryAt }: { stats: Stats | null; conn
   return <EnginePillView model={pillModel(stats, conn, retryAt, now)} />;
 }
 
-const EnginePillView = memo(function EnginePillView({ model }: { model: ReturnType<typeof pillModel> }) {
+const EnginePillView = memo(function EnginePillView({ model }: { model: PillModel }) {
   return (
-    <div className="engine" data-state={model.state} title={model.title}>
+    <div className="engine" data-state={model.state} data-warn={model.warn ? '' : undefined} title={model.title}>
       <span className="engine__dot" aria-hidden="true" />
       <span className="engine__text">
         <span className="engine__full">{model.text}</span>
@@ -129,6 +156,15 @@ function StatRow() {
   );
 }
 
+/**
+ * Counter roll timing. Stats arrive every 5 s all day, in peripheral vision: the library's
+ * 900 ms default is three times the UI budget. State indication, so it moves — briefly.
+ * Module constants so the memoized Stat never sees new props. Reduced motion is honoured by
+ * NumberFlow itself (respectMotionPreference).
+ */
+const ROLL = { duration: 300, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' } as const;
+const FADE = { duration: 150, easing: 'ease-out' } as const;
+
 const Stat = memo(function Stat(props: {
   value: number | null;
   of?: number | null;
@@ -148,7 +184,11 @@ const Stat = memo(function Stat(props: {
         </span>
       </dt>
       <dd className="stat__value">
-        {value === null ? <span className="muted">—</span> : <NumberFlow value={value} locales="en-US" />}
+        {value === null ? (
+          <span className="muted">—</span>
+        ) : (
+          <NumberFlow value={value} locales="en-US" transformTiming={ROLL} spinTiming={ROLL} opacityTiming={FADE} />
+        )}
         {of != null && value !== null && <span className="stat__of">/{of}</span>}
       </dd>
     </div>

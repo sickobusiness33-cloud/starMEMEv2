@@ -422,10 +422,13 @@ function buyerMode(c: Ctx, sig: AnomalySignal): { crowd: string } | { accel: str
   return isNum(crowd) ? { crowd: c.f.num(crowd)! } : null;
 }
 
-/** Positive 1 h price change, the only one that fits a momentum headline. */
-function risingH1(c: Ctx): { signed: string; abs: string } | null {
+/**
+ * Positive 1 h price change, the only one that fits a momentum headline. Under an
+ * hour of trading it is the move since launch (`sinceLaunch`), and is written so.
+ */
+function risingH1(c: Ctx): { signed: string; abs: string; sinceLaunch: boolean } | null {
   const h1 = c.s.priceChangePct.h1;
-  return isNum(h1) && h1 > 0 ? { signed: c.f.pct(h1)!, abs: c.f.abs(h1)! } : null;
+  return isNum(h1) && h1 > 0 ? { signed: c.f.pct(h1)!, abs: c.f.abs(h1)!, sinceLaunch: sinceLaunch(c.m) } : null;
 }
 
 /** Below this, "transactions multiplied by 1.2" is not worth a clause. */
@@ -442,9 +445,14 @@ function valuation(c: Ctx): { kind: 'mc' | 'fdv'; value: string } | null {
   return fdv ? { kind: 'fdv', value: fdv } : null;
 }
 
-/** A token under an hour old: its "1 h" window is its whole life. */
+/**
+ * Under an hour of trading, the "1 h" window is the whole life of the pool the
+ * figures come from (a token under an hour old, or a pool opened less than an hour
+ * ago): its 1 h figures are since-launch figures.
+ */
 function sinceLaunch(m: DerivedMetrics): boolean {
-  return isNum(m.ageMinutes) && m.ageMinutes <= 60;
+  const age = m.windowAgeMinutes ?? m.ageMinutes;
+  return isNum(age) && age <= 60;
 }
 
 /** Volume (and trade count) a young token has done: its whole life while it is under an hour old. */
@@ -568,16 +576,20 @@ const ES: LangPack = {
       if (!h1 && !score) return null;
       return {
         headlines: h1
-          ? [`${c.sym} gana impulso: ${h1.signed} en la última hora`, `Fuerte impulso en ${c.sym}: el precio avanza un ${h1.abs} en 1 h`]
+          ? h1.sinceLaunch
+            ? [`${c.sym} gana impulso: ${h1.signed} desde su lanzamiento`, `Fuerte impulso en ${c.sym}: el precio avanza un ${h1.abs} desde su lanzamiento`]
+            : [`${c.sym} gana impulso: ${h1.signed} en la última hora`, `Fuerte impulso en ${c.sym}: el precio avanza un ${h1.abs} en 1 h`]
           : [`${c.sym} gana impulso: momentum compuesto de ${score}`],
         aiLines: [
-          score ? `El precio acelera con un momentum compuesto de ${score}.` : `El precio avanza un ${h1!.abs} en la última hora.`,
+          score
+            ? `El precio acelera con un momentum compuesto de ${score}.`
+            : `El precio avanza un ${h1!.abs} ${h1!.sinceLaunch ? 'desde su lanzamiento' : 'en la última hora'}.`,
         ],
         bullet:
           h1 && score
-            ? `El precio sube un ${h1.abs} en 1 h y el momentum compuesto marca ${score}.`
+            ? `El precio sube un ${h1.abs} ${h1.sinceLaunch ? 'desde su lanzamiento' : 'en 1 h'} y el momentum compuesto marca ${score}.`
             : h1
-              ? `El precio sube un ${h1.abs} en la última hora.`
+              ? `El precio sube un ${h1.abs} ${h1.sinceLaunch ? 'desde su lanzamiento' : 'en la última hora'}.`
               : `El momentum compuesto de precio marca ${score}.`,
       };
     },
@@ -685,7 +697,9 @@ const ES: LangPack = {
       holders: isNum(growth)
         ? `los holders ${growth >= 0 ? 'han crecido' : 'se han reducido'} un ${f.abs(growth)} ${win ? `en ${win}` : 'en la última hora'}`
         : null,
-      price: isNum(h1) ? `el precio ${h1 >= 0 ? 'sube' : 'cae'} un ${f.abs(h1)} en la última hora` : null,
+      price: isNum(h1)
+        ? `el precio ${h1 >= 0 ? 'sube' : 'cae'} un ${f.abs(h1)} ${sinceLaunch(m) ? 'desde su lanzamiento' : 'en la última hora'}`
+        : null,
       valuation: val ? (val.kind === 'mc' ? `la capitalización se sitúa en ${val.value}` : `la FDV se sitúa en ${val.value}`) : null,
     };
   },
@@ -883,16 +897,20 @@ const EN: LangPack = {
       if (!h1 && !score) return null;
       return {
         headlines: h1
-          ? [`${c.sym} gains momentum: ${h1.signed} in the past hour`, `Strong momentum in ${c.sym}: price up ${h1.abs} in 1h`]
+          ? h1.sinceLaunch
+            ? [`${c.sym} gains momentum: ${h1.signed} since launch`, `Strong momentum in ${c.sym}: price up ${h1.abs} since launch`]
+            : [`${c.sym} gains momentum: ${h1.signed} in the past hour`, `Strong momentum in ${c.sym}: price up ${h1.abs} in 1h`]
           : [`${c.sym} gains momentum: composite score ${score}`],
         aiLines: [
-          score ? `Price is accelerating, with a composite momentum score of ${score}.` : `Price is up ${h1!.abs} over the past hour.`,
+          score
+            ? `Price is accelerating, with a composite momentum score of ${score}.`
+            : `Price is up ${h1!.abs} ${h1!.sinceLaunch ? 'since launch' : 'over the past hour'}.`,
         ],
         bullet:
           h1 && score
-            ? `Price is up ${h1.abs} in 1h and composite momentum reads ${score}.`
+            ? `Price is up ${h1.abs} ${h1.sinceLaunch ? 'since launch' : 'in 1h'} and composite momentum reads ${score}.`
             : h1
-              ? `Price is up ${h1.abs} over the past hour.`
+              ? `Price is up ${h1.abs} ${h1.sinceLaunch ? 'since launch' : 'over the past hour'}.`
               : `Composite price momentum reads ${score}.`,
       };
     },
@@ -995,7 +1013,9 @@ const EN: LangPack = {
       holders: isNum(growth)
         ? `holders have ${growth >= 0 ? 'grown' : 'fallen'} ${f.abs(growth)} ${win ? `in ${win}` : 'within the hour'}`
         : null,
-      price: isNum(h1) ? `the price is ${h1 >= 0 ? 'up' : 'down'} ${f.abs(h1)} over the past hour` : null,
+      price: isNum(h1)
+        ? `the price is ${h1 >= 0 ? 'up' : 'down'} ${f.abs(h1)} ${sinceLaunch(m) ? 'since launch' : 'over the past hour'}`
+        : null,
       valuation: val ? (val.kind === 'mc' ? `market cap stands at ${val.value}` : `fully diluted valuation stands at ${val.value}`) : null,
     };
   },

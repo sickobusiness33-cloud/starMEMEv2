@@ -332,6 +332,11 @@ export interface NewsArticle {
   };
   /** an article about the same token supersedes an earlier one when the situation escalates */
   updateOf: string | null;
+  /**
+   * Why the score's band was held at `severity` (Detection.caps at publish time, e.g. a
+   * BREAKING score published as ALERT on a thin market). Absent when nothing was capped.
+   */
+  caps?: string[];
 }
 
 /* ─────────────────────────── Distribution ─────────────────────────── */
@@ -412,6 +417,8 @@ export interface RadarBrief {
   outlook: NewsOutlook;
   engine: 'claude' | 'rules';
   model: string | null;
+  /** when the brief was written; a Claude brief can be reused for a repeated search of the same token for a few minutes */
+  writtenAt?: number;
 }
 
 /** What one intel provider returned for a Radar search (ok=false: it failed or was not run, see `error`). */
@@ -476,7 +483,10 @@ export interface Stats {
 
 export interface FeedResponse {
   articles: NewsArticle[];
+  /** legacy cursor (createdAt of the last article): drops articles that share that millisecond; prefer nextCursor */
   nextBefore: number | null;
+  /** exact cursor for the next page ("<createdAt>:<id>"), sent back as `before`; null on the last page */
+  nextCursor?: string | null;
 }
 
 export interface ArticleResponse {

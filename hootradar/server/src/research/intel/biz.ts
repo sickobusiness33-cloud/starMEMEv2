@@ -29,8 +29,8 @@ const SNIPPET_MAX = 220;
 /** shorter names are everyday words on /biz/ */
 const MIN_NAME_CHARS = 4;
 
-export async function search(t: IntelQuery): Promise<IntelItem[]> {
-  const json = await fetchJson(BIZ_CATALOG, { limiter: 'biz', cacheTtlMs: CACHE_TTL_MS });
+export async function search(t: IntelQuery, opts: { signal?: AbortSignal } = {}): Promise<IntelItem[]> {
+  const json = await fetchJson(BIZ_CATALOG, { limiter: 'biz', cacheTtlMs: CACHE_TTL_MS, signal: opts.signal });
   return parseBizCatalog(json, t, Date.now());
 }
 
@@ -77,13 +77,17 @@ export function parseBizCatalog(json: unknown, t: IntelQuery, now: number): Inte
     .map((f) => f.item);
 }
 
-/** Address, "$SYMBOL" or the exact name — never the bare symbol, which is too noisy on a forum. */
+/**
+ * Address, "$SYMBOL" or the exact name — never the bare symbol, which is too noisy
+ * on a forum. A short or common ticker's cashtag counts only with corroboration (the
+ * shared matcher decides), and only a distinctive name counts on its own.
+ */
 function threadMatcher(terms: IntelTerms): (text: string) => MatchedOn | null {
   const cashtag = terms.symbol.length >= MIN_SYMBOL_CHARS ? cashtagRegExp(terms.symbol) : null;
-  const name = terms.name.length >= MIN_NAME_CHARS ? phraseRegExp(terms.name) : null;
+  const name = terms.nameDistinctive && terms.name.length >= MIN_NAME_CHARS ? phraseRegExp(terms.name) : null;
   return (text) => {
     if (containsAddress(text, terms.address)) return 'contract';
-    if (cashtag?.test(text)) return 'symbol';
+    if (cashtag?.test(text) && terms.match(text) !== null) return 'symbol';
     if (name?.test(text)) return 'name';
     return null;
   };

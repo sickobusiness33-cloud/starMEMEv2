@@ -88,6 +88,19 @@
   padding: 10px 0 28px;
 }
 
+/* a story opened directly that is older than the loaded range: never imply continuity */
+.feed__gap {
+  margin: 4px 0 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line-2);
+}
+
+.feed-empty__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 /* "↑ N new": new stories wait here instead of shifting what the reader is looking at */
 .new-pill__anchor {
   position: sticky;
@@ -200,8 +213,12 @@
 }
 
 /* Press feedback on the collapsed card. 0.98 rather than 0.97: on a surface this wide
-   the same ratio reads as a lurch; the expanded article (often 1000px+) does not scale. */
-.card:not([data-expanded]):has(> .card__toggle:active) {
+   the same ratio reads as a lurch; the expanded article (often 1000px+) does not scale.
+   [data-pressed] is set from pointer events on the summary and dropped the moment the
+   pointer travels (a drag is a text selection: the card holds still under it);
+   :active on the toggle covers the gaps between rows and a keyboard Space press. */
+.card:not([data-expanded])[data-pressed],
+.card:not([data-expanded]):has(> .card__summary > .card__toggle:active) {
   transform: scale(0.98);
 }
 
@@ -212,6 +229,14 @@
     transform var(--dur-enter) var(--ease-out) var(--enter-delay, 0ms),
     opacity var(--dur-enter) var(--ease-out) var(--enter-delay, 0ms),
     border-color var(--dur-hover) ease;
+}
+
+/* A press during the entrance window answers at press speed, not entrance speed + stagger delay. */
+.card[data-enter]:not([data-expanded])[data-pressed],
+.card[data-enter]:not([data-expanded]):has(> .card__summary > .card__toggle:active),
+.tape__item[data-enter] .tape__row:active {
+  transition-duration: var(--dur-press);
+  transition-delay: 0ms;
 }
 
 @starting-style {
@@ -244,14 +269,29 @@
   }
 }
 
-.card__toggle {
+/* The collapsed card: content (selectable), with the toggle button stretched underneath. */
+.card__summary {
+  position: relative;
   display: grid;
   gap: 10px;
-  width: 100%;
   padding: 14px 16px;
   border-radius: inherit;
-  color: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
   transition: background-color var(--dur-hover) ease;
+}
+
+/* rows paint above the button so they take their own clicks (and text selection) */
+.card__summary > :not(.card__toggle) {
+  position: relative;
+  min-width: 0;
+}
+
+.card__toggle {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  color: inherit;
 }
 
 .card__toggle:focus-visible {
@@ -459,24 +499,162 @@
   .card:hover {
     border-color: var(--line-2);
   }
-  .card__toggle:hover {
+  .card__summary:hover {
     background: var(--hover-veil);
   }
 }
 
+/* chain + time: full words by default; on phones the short forms make room for the token name */
+.card__chain-short,
+.ago__short {
+  display: none;
+}
+
 @media (max-width: 719.98px) {
-  .card__toggle {
+  .card__summary {
     padding: 13px 14px;
+  }
+  .card__head {
+    gap: 10px;
   }
   .card__metrics {
     gap: 6px 14px;
   }
-  .card__name {
-    display: none;
+  .card__chain-short,
+  .ago__short {
+    display: inline;
+  }
+  /* visually hidden, still read: screen readers keep "Solana · 4 min ago" */
+  .card__chain-full,
+  .ago__long {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
 }
 
 /* ───────────── shared small pieces ───────────── */
+
+/* WATCH | ALERT | BREAKING at the default thresholds: the band is the headline, not a bar out of 100 */
+.sevbands {
+  display: grid;
+  gap: 6px;
+}
+
+.sevbands__track {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.sevband {
+  --band: var(--text-3);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+.sevband[data-sev='WATCH'] {
+  --band: var(--text-2);
+}
+
+.sevband[data-sev='ALERT'] {
+  --band: var(--cyan);
+}
+
+.sevband[data-sev='BREAKING'] {
+  --band: var(--green);
+}
+
+.sevband__bar {
+  position: relative;
+  grid-column: 1 / -1;
+  height: 6px;
+  border: 1px solid var(--line-2);
+  border-radius: 2px;
+}
+
+.sevband[data-on] .sevband__bar {
+  border-color: var(--band);
+  background: var(--band);
+}
+
+/* the score reached this band but the severity was held below it (a cap) */
+.sevband[data-capped] .sevband__bar {
+  border: 1px dashed var(--amber);
+  background: var(--amber-dim);
+}
+
+.sevband__tick {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--text);
+  box-shadow: 0 0 0 1px var(--bg-1); /* panel surface: cuts the tick out of a filled band */
+  transform: translateX(-50%);
+}
+
+.sevband__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sevband[data-current] .sevband__label {
+  font-weight: 600;
+  color: var(--band);
+}
+
+.sevband[data-capped] .sevband__label {
+  color: var(--amber);
+}
+
+.sevband__min {
+  font-variant-numeric: tabular-nums;
+}
+
+.sevbands__note {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+/* severity caps: amber, the same voice as the dashed band they explain */
+.cap-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cap-chip {
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius-sm);
+  background: var(--amber-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--amber);
+  overflow-wrap: anywhere;
+}
+
+.score-note {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
 
 .chain-label {
   display: inline-flex;
@@ -1017,20 +1195,31 @@
 
 /* signal tape */
 
+/* Below 1100px the tape sits above the feed in a full-width column: it grows in place
+   ("All") and never becomes a nested scroller that traps a page swipe. Only inside the
+   sticky desktop rail does it scroll on its own. */
 .tape__list {
   flex: 1 1 auto;
   min-height: 0;
-  max-height: 420px;
   padding: 4px 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
 }
 
 @media (min-width: 1100px) {
   .tape__list {
-    max-height: none;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
   }
+}
+
+.live__tape {
+  margin-bottom: 12px;
+}
+
+.tape__toggle {
+  height: 24px;
+  margin-right: -6px;
+  padding: 0 8px;
 }
 
 .tape__row {
@@ -1242,7 +1431,8 @@
       opacity var(--dur-enter) ease,
       border-color var(--dur-hover) ease;
   }
-  .card:not([data-expanded]):has(> .card__toggle:active),
+  .card:not([data-expanded])[data-pressed],
+  .card:not([data-expanded]):has(> .card__summary > .card__toggle:active),
   .tape__row:active,
   .new-pill[data-show]:active {
     transform: none;

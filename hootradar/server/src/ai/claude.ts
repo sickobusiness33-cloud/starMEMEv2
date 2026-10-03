@@ -93,23 +93,37 @@ export class QueueFullError extends Error {
   override name = 'QueueFullError';
 }
 
-const MAX_ERROR_CHARS = 200;
-
-/** Short, secret-free description for logs and the header. Most specific SDK classes first. */
-export function describeAiError(e: unknown): string {
-  return redact(clip(rawDescription(e), MAX_ERROR_CHARS));
+/** The caller gave up while its call waited for a slot (or before it started); nothing was sent. */
+export class CallCancelledError extends Error {
+  override name = 'CallCancelledError';
 }
 
-function rawDescription(e: unknown): string {
+const MAX_ERROR_CHARS = 200;
+
+/**
+ * Short, secret-free category for the header (`aiError`, public) and for Radar
+ * statuses. Provider error messages are never included: they can carry billing or
+ * organization details. Most specific SDK classes first.
+ */
+export function describeAiError(e: unknown): string {
   if (e instanceof Anthropic.AuthenticationError) return 'Anthropic API key rejected (401)';
   if (e instanceof Anthropic.PermissionDeniedError) return 'Anthropic API permission denied (403)';
   if (e instanceof Anthropic.RateLimitError) return 'Anthropic API rate limit reached (429)';
   if (e instanceof Anthropic.APIConnectionTimeoutError) return 'Anthropic API request timed out';
+  if (e instanceof Anthropic.APIUserAbortError) return 'Claude request cancelled';
   if (e instanceof Anthropic.APIConnectionError) return 'Anthropic API unreachable';
-  if (e instanceof Anthropic.BadRequestError) return `Anthropic API rejected the request (400): ${e.message}`;
-  if (e instanceof Anthropic.APIError) return `Anthropic API error ${e.status ?? ''}: ${e.message}`.trim();
-  if (e instanceof AiOutputError) return `Claude output rejected: ${e.message}`;
-  return errMsg(e);
+  if (e instanceof Anthropic.BadRequestError) return 'Anthropic API rejected the request (400)';
+  if (e instanceof Anthropic.APIError) return `Anthropic API error${e.status ? ` ${e.status}` : ''}`;
+  // our own validation messages (refusal, schema, guards) name no secret
+  if (e instanceof AiOutputError) return redact(clip(`Claude output rejected: ${e.message}`, MAX_ERROR_CHARS));
+  return 'Claude request failed';
+}
+
+/** The full (redacted) description, for the server log only. */
+export function aiErrorDetail(e: unknown): string {
+  const category = describeAiError(e);
+  const detail = e instanceof AiOutputError ? '' : errMsg(e);
+  return redact(clip(detail && detail !== category ? `${category}: ${detail}` : category, 2 * MAX_ERROR_CHARS));
 }
 
 function redact(s: string): string {
@@ -144,7 +158,7 @@ export interface StructuredRequest<T> {
 }
 
 /** One structured-output call. Throws SDK errors or AiOutputError; callers decide on the fallback. */
-export async function createStructured<T>(s: ClaudeSession, req: StructuredRequest<T>): Promise<T> {
+export async function createStructured<T>(s: ClaudeSession, req: StructuredRequest<T>, signal?: AbortSignal): Promise<T> {
   const res = await s.client.messages.create(
     {
       model: s.ai.model,
@@ -153,7 +167,7 @@ export async function createStructured<T>(s: ClaudeSession, req: StructuredReque
       messages: [{ role: 'user', content: req.user }],
       output_config: { effort: req.effort, format: req.format },
     },
-    { timeout: s.ai.timeoutMs },
+    signal ? { timeout: s.ai.timeoutMs, signal } : { timeout: s.ai.timeoutMs },
   );
   return parseStructured(res, req.schema);
 }
@@ -213,16 +227,23 @@ export class CallLimiter {
     return this.waiting.length;
   }
 
-  async run<T>(fn: () => Promise<T>): Promise<T> {
-    await this.acquire();
+  /**
+   * Runs `fn` once a slot is free. A caller whose `signal` fires while it waits
+   * leaves the queue (its place goes to the next caller) and nothing is sent; a
+   * signal that has already fired never starts the call.
+   */
+  async run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    await this.acquire(signal);
     try {
+      if (signal?.aborted) throw new CallCancelledError('Claude call cancelled before it started');
       return await fn();
     } finally {
       this.release();
     }
   }
 
-  private acquire(): Promise<void> {
+  private acquire(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(new CallCancelledError('Claude call cancelled before it started'));
     if (this.active < this.maxActive) {
       this.active++;
       return Promise.resolve();
@@ -230,7 +251,19 @@ export class CallLimiter {
     if (this.waiting.length >= this.maxWaiting) {
       return Promise.reject(new QueueFullError(`${this.waiting.length} Claude calls already queued`));
     }
-    return new Promise((resolve) => this.waiting.push(resolve));
+    return new Promise((resolve, reject) => {
+      const grant = () => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      };
+      const onAbort = () => {
+        const i = this.waiting.indexOf(grant);
+        if (i >= 0) this.waiting.splice(i, 1);
+        reject(new CallCancelledError('Claude call cancelled while queued'));
+      };
+      this.waiting.push(grant);
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
   }
 
   /** Hands the slot straight to the next waiter so a new caller cannot overtake it. */
@@ -238,5 +271,37 @@ export class CallLimiter {
     const next = this.waiting.shift();
     if (next) next();
     else this.active--;
+  }
+}
+
+/* ───────────── spend budget ───────────── */
+
+/**
+ * At most `limit` paid calls per sliding `windowMs`, across every caller that
+ * shares the budget (e.g. all Radar visitors). `take` records one call when there
+ * is room and says whether there was.
+ */
+export class CallBudget {
+  private readonly at: number[] = [];
+
+  constructor(
+    readonly limit: number,
+    private readonly windowMs: number,
+  ) {}
+
+  take(now: number): boolean {
+    this.trim(now);
+    if (this.at.length >= this.limit) return false;
+    this.at.push(now);
+    return true;
+  }
+
+  remaining(now: number): number {
+    this.trim(now);
+    return Math.max(0, this.limit - this.at.length);
+  }
+
+  private trim(now: number): void {
+    while (this.at.length > 0 && now - (this.at[0] as number) >= this.windowMs) this.at.shift();
   }
 }

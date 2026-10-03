@@ -7,9 +7,16 @@ const RETRY_MS = 3_000;
 /**
  * Frames that must not be lost (articles, detections, radar reports) wait here
  * while the socket is congested. A client that falls this far behind is cut
- * off; EventSource reconnects and receives a fresh `hello` snapshot.
+ * off; EventSource reconnects and receives a fresh `hello` snapshot. Kept small:
+ * every open stream may hold this much, and a client that never reads would.
  */
-const MAX_PENDING_BYTES = 1024 * 1024;
+const MAX_PENDING_BYTES = 256 * 1024;
+/**
+ * Bytes Node may already hold in the socket's write buffer (the first frames,
+ * written before backpressure is known) beyond which the client is treated as
+ * not reading and cut off.
+ */
+const MAX_BUFFERED_BYTES = 1024 * 1024;
 /** A graceful close waits this long for a congested socket to drain before giving up. */
 const END_DRAIN_TIMEOUT_MS = 5_000;
 
@@ -97,6 +104,10 @@ class ResponseStream implements SseStream {
   sendFrame(frame: string, opts: SendOpts = {}): boolean {
     if (this.closed) return false;
     if (!this.congested) {
+      if (this.res.writableLength > MAX_BUFFERED_BYTES) {
+        this.abort();
+        return false;
+      }
       if (!this.res.write(frame)) this.waitForDrain();
       return true;
     }

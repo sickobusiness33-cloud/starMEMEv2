@@ -5,7 +5,7 @@ export const MIN_REGIME_SAMPLE = 12;
 /** Pools thinner than this are excluded: their 1h change is mostly single-trade noise. */
 export const MIN_REGIME_LIQUIDITY_USD = 5000;
 /** An observation older than this no longer describes the last hour. */
-const MAX_OBSERVATION_AGE_MS = 60 * 60_000;
+export const MAX_OBSERVATION_AGE_MS = 60 * 60_000;
 /**
  * A token younger than this reports its whole life as its "1h" change (launch pumps from a
  * near-zero price), which would swamp breadth and the median. Tokens of unknown age are kept.
@@ -62,4 +62,41 @@ function median(values: number[]): number {
   const mid = Math.floor(sorted.length / 2);
   const hi = sorted[mid] ?? 0;
   return sorted.length % 2 ? hi : ((sorted[mid - 1] ?? hi) + hi) / 2;
+}
+
+/** What the shared regime provider reads: the eligible universe, pre-filtered by storage. */
+export type RegimeUniverseLoader = (
+  now: number,
+  filters: { maxObservationAgeMs: number; minLiquidityUsd: number; minTokenAgeMs: number; maxTokenAgeMs: number },
+) => TokenSnapshot[];
+
+/**
+ * The one market regime the whole newsroom cites (articles, Radar and the
+ * INTELLIGENCE tab), recomputed at most every `ttlMs` over every eligible token:
+ * liquid, observed within the hour, between 45 minutes and `maxTokenAgeHours` old.
+ * Never throws: a failed computation reads 'unknown'.
+ */
+export function createRegimeProvider(
+  load: RegimeUniverseLoader,
+  o: { maxTokenAgeHours: number; ttlMs?: number; onError?: (e: unknown) => void },
+): () => MarketRegime {
+  const ttl = o.ttlMs ?? 30_000;
+  let current: MarketRegime | null = null;
+  return () => {
+    const now = Date.now();
+    if (current && now - current.computedAt < ttl) return current;
+    try {
+      const universe = load(now, {
+        maxObservationAgeMs: MAX_OBSERVATION_AGE_MS,
+        minLiquidityUsd: MIN_REGIME_LIQUIDITY_USD,
+        minTokenAgeMs: MIN_REGIME_TOKEN_AGE_MS,
+        maxTokenAgeMs: o.maxTokenAgeHours * 60 * 60_000,
+      });
+      current = computeRegime(universe, now);
+    } catch (e) {
+      o.onError?.(e);
+      current = { label: 'unknown', breadthPct: null, medianH1ChangePct: null, sampleSize: 0, computedAt: now };
+    }
+    return current;
+  };
 }

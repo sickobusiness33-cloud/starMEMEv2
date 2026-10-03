@@ -13,13 +13,17 @@ export interface QuantSource {
 export const SOURCE_POLICY =
   'HootRadar uses Quantpedia as a research pointer only and strictly respects its terms of use, licences and copyright: ' +
   'we do not scrape it and we do not copy its text. Every methodology in this library is described in our own words from ' +
-  'general academic knowledge and cites the original peer-reviewed paper (DOI link, or the public working-paper page when ' +
+  'general academic knowledge, and every paper it names is cited with a link (DOI, or the public working-paper page when ' +
   'the publisher blocks automated checks). A public Quantpedia strategy page is linked only where we verified, with a single ' +
-  'lightweight request, that the URL resolves; otherwise the paper link stands alone. Reference links were last checked on ' +
-  '1 October 2026. A licensed Quantpedia Pro feed can be connected as an additional methodology source without ' +
+  'lightweight request, that the URL resolves; otherwise the paper links stand alone. Reference links were last checked on ' +
+  '3 October 2026. A licensed Quantpedia Pro feed can be connected as an additional methodology source without ' +
   'changing how matching works.';
 
-/* ─────────── references (each URL verified to end in HTTP 200 on 2026-10-01) ─────────── */
+/*
+ * References: each URL verified to end in HTTP 200 on 2026-10-01; the DOIs added on
+ * 2026-10-03 (Jegadeesh, Gervais et al., Hurst et al., Da et al., Faber, Grossman &
+ * Zhou) were verified as registered at doi.org (one request each, 302 to the publisher).
+ */
 
 const paper = (label: string, url: string): QuantReference => ({ label, url, kind: 'paper' });
 const quantpedia = (label: string, url: string): QuantReference => ({ label, url, kind: 'quantpedia' });
@@ -68,6 +72,30 @@ const REF = {
   danielMoskowitz2016: paper(
     'Daniel & Moskowitz (2016), "Momentum Crashes", Journal of Financial Economics',
     'https://doi.org/10.1016/j.jfineco.2015.12.002',
+  ),
+  jegadeesh1990: paper(
+    'Jegadeesh (1990), "Evidence of Predictable Behavior of Security Returns", Journal of Finance',
+    'https://doi.org/10.1111/j.1540-6261.1990.tb05110.x',
+  ),
+  hurstOoiPedersen2017: paper(
+    'Hurst, Ooi & Pedersen (2017), "A Century of Evidence on Trend-Following Investing", Journal of Portfolio Management',
+    'https://doi.org/10.3905/jpm.2017.44.1.015',
+  ),
+  gervaisKanielMingelgrin2001: paper(
+    'Gervais, Kaniel & Mingelgrin (2001), "The High-Volume Return Premium", Journal of Finance',
+    'https://doi.org/10.1111/0022-1082.00349',
+  ),
+  daEngelbergGao2011: paper(
+    'Da, Engelberg & Gao (2011), "In Search of Attention", Journal of Finance',
+    'https://doi.org/10.1111/j.1540-6261.2011.01679.x',
+  ),
+  faber2007: paper(
+    'Faber (2007), "A Quantitative Approach to Tactical Asset Allocation", Journal of Wealth Management',
+    'https://doi.org/10.3905/jwm.2007.674809',
+  ),
+  grossmanZhou1993: paper(
+    'Grossman & Zhou (1993), "Optimal Investment Strategies for Controlling Drawdowns", Mathematical Finance',
+    'https://doi.org/10.1111/j.1467-9965.1993.tb00044.x',
   ),
   qpTimeSeriesMomentum: quantpedia(
     'Quantpedia public strategy page: time-series momentum',
@@ -160,7 +188,7 @@ export const METHODOLOGIES: QuantMethodology[] = [
       'Equity reversal profits shrink sharply after costs; DEX swap fees, slippage and MEV are far larger.',
       'Buying the low of a liquidity-trap token is the classic way to lose the entire position.',
     ],
-    references: [REF.lehmann, REF.qpShortTermReversal],
+    references: [REF.jegadeesh1990, REF.lehmann, REF.qpShortTermReversal],
   },
   {
     id: 'trend-following',
@@ -183,7 +211,7 @@ export const METHODOLOGIES: QuantMethodology[] = [
       'In thin pools a handful of wallets can manufacture a trend.',
       'Trend followers lose in choppy markets and give back gains at turning points.',
     ],
-    references: [REF.qpTrendFollowingStocks, REF.moskowitzOoiPedersen2012],
+    references: [REF.hurstOoiPedersen2017, REF.qpTrendFollowingStocks, REF.moskowitzOoiPedersen2012],
   },
   {
     id: 'volume-breakout',
@@ -206,7 +234,7 @@ export const METHODOLOGIES: QuantMethodology[] = [
       'The original premium is measured over weeks after a daily volume shock; persistence at minute scale is unproven.',
       'Paid promotion can produce volume bursts that fade as soon as the campaign ends.',
     ],
-    references: [REF.kanielOzoguzStarks2012],
+    references: [REF.gervaisKanielMingelgrin2001, REF.kanielOzoguzStarks2012],
   },
   {
     id: 'volatility-managed',
@@ -298,7 +326,7 @@ export const METHODOLOGIES: QuantMethodology[] = [
       'In the literature attention-driven price pressure is followed by reversal; it is not a sign of value.',
       'Counting mentions in a few public sources misses private channels such as Telegram and Discord groups.',
     ],
-    references: [REF.liuTsyvinski, REF.urquhart2018],
+    references: [REF.daEngelbergGao2011, REF.liuTsyvinski, REF.urquhart2018],
   },
   {
     id: 'regime-filter',
@@ -321,7 +349,7 @@ export const METHODOLOGIES: QuantMethodology[] = [
       'Breadth measured on a few dozen tokens moves quickly and can flip within an hour.',
       'With fewer than 12 eligible tokens the regime is reported as unknown rather than guessed.',
     ],
-    references: [REF.qpAssetClassTrend, REF.danielMoskowitz2016],
+    references: [REF.faber2007, REF.qpAssetClassTrend, REF.danielMoskowitz2016],
   },
   {
     id: 'risk-overlay',
@@ -344,7 +372,7 @@ export const METHODOLOGIES: QuantMethodology[] = [
       'On some chains holder concentration counts pool and burn addresses as holders.',
       'A low score does not make a token safe: team intent and hidden contract logic are invisible to these checks.',
     ],
-    references: [REF.danielMoskowitz2016, REF.barrosoSantaClara2015],
+    references: [REF.grossmanZhou1993, REF.danielMoskowitz2016, REF.barrosoSantaClara2015],
   },
 ];
 

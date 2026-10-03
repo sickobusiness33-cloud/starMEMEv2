@@ -66,3 +66,13 @@ export function useNow(): number {
 export function useClock(): number {
   return useSyncExternalStore(clock.subscribe, clock.get, clock.get);
 }
+
+const idle = () => () => {};
+
+/**
+ * The 1 s clock, subscribed only while `active` (e.g. a countdown that is usually off).
+ * While inactive the value is stale: read it as "re-render now", and pair it with Date.now().
+ */
+export function useClockWhile(active: boolean): number {
+  return useSyncExternalStore(active ? clock.subscribe : idle, clock.get, clock.get);
+}

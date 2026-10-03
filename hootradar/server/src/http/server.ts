@@ -1,13 +1,15 @@
 import { existsSync } from 'node:fs';
+import { isIPv4, isIPv6 } from 'node:net';
 import { join, resolve, sep } from 'node:path';
 import fastifyStatic from '@fastify/static';
-import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
   QUANT_DISCLAIMER,
   type ArticleResponse,
   type FeedResponse,
   type KnownChainId,
+  type MarketRegime,
   type QuantLeader,
   type QuantLeadersResponse,
   type QuantLibraryResponse,
@@ -19,8 +21,8 @@ import {
 } from '../../../shared/types.js';
 import { engineState } from '../ai/claude.js';
 import { CHAIN_CONFIGS } from '../chains/configs.js';
-import type { AppConfig } from '../config.js';
-import type { Db } from '../db/db.js';
+import type { AppConfig, TrustProxy } from '../config.js';
+import { feedCursor, parseFeedCursor, type Db } from '../db/db.js';
 import type { DistributionQueue } from '../distribution/queue.js';
 import type { Bus } from '../engine/bus.js';
 import { deriveMetrics } from '../engine/metrics.js';
@@ -29,8 +31,8 @@ import { buildStats } from '../engine/stats.js';
 import { errMsg, logger } from '../log.js';
 import { computeLeaders } from '../quant/leaders.js';
 import { METHODOLOGIES, SOURCE_POLICY } from '../quant/library.js';
-import { computeRegime } from '../quant/regime.js';
-import type { RadarService } from '../research/radar.js';
+import { createRegimeProvider } from '../quant/regime.js';
+import { RadarBusyError, type RadarService } from '../research/radar.js';
 import { isEventStream, openSse, sseFrame, SseHub, type SseStream } from './sse.js';
 
 const log = logger('http');
@@ -52,6 +54,21 @@ const HELLO_EVENTS = 60;
 const STATS_PUSH_MS = 5_000;
 /** shields the database from reconnect storms; the header refreshes every 5 s anyway */
 const STATS_TTL_MS = 1_000;
+/** the serialized hello frame is shared by every client connecting within this window (reconnect storms) */
+const HELLO_TTL_MS = 1_000;
+
+/**
+ * Open event streams (newsroom + Radar). Each one holds a socket and up to its
+ * pending-frame budget in memory, so they are capped per client and in total;
+ * beyond a cap the request is answered 429 / 503 and EventSource retries later.
+ */
+const MAX_STREAMS_PER_CLIENT = 6;
+const MAX_STREAMS_TOTAL = 1_000;
+const MAX_RADAR_SUBSCRIBERS_PER_REPORT = 20;
+const STREAM_RETRY_AFTER_SEC = 10;
+/** a request (headers and body) must arrive within this; event streams are replies and are not affected */
+const REQUEST_TIMEOUT_MS = 15_000;
+const MAX_CONNECTIONS = 4_000;
 
 const LEADERS_TTL_MS = 15_000;
 const LEADERS_WINDOW_MS = 120 * MINUTE_MS;
@@ -60,6 +77,8 @@ const LEADERS_UNIVERSE = 400;
 const RADAR_QUERY_MAX_CHARS = 120;
 const RADAR_RATE_LIMIT = 10;
 const RADAR_RATE_WINDOW_MS = MINUTE_MS;
+/** radar searches accepted per minute across all clients (address rotation cannot multiply the per-client limit) */
+const RADAR_GLOBAL_RATE_LIMIT = 60;
 /** a radar stream that never reaches a final state is closed; the client can still GET the report */
 const RADAR_STREAM_MAX_MS = 10 * MINUTE_MS;
 
@@ -99,11 +118,13 @@ export interface ServerDeps {
   /** built web app (directory holding index.html); null serves the API only */
   webDist: string | null;
   /**
-   * Fastify `trustProxy`: true, or a comma-separated list of proxy addresses/CIDRs.
-   * Behind a reverse proxy it makes `request.ip` (and so the radar rate limit)
-   * the client instead of the proxy. Default false.
+   * Fastify `trustProxy` (see config.parseTrustProxy): a list of proxy addresses/CIDRs
+   * or a hop-count function, never "trust every hop". Behind a reverse proxy it makes
+   * `request.ip` (and so the rate limits) the client instead of the proxy. Default false.
    */
-  trustProxy?: boolean | string;
+  trustProxy?: TrustProxy;
+  /** the newsroom's shared market regime (articles cite the same one); default: computed here from storage */
+  regime?: () => MarketRegime;
 }
 
 /** Shared state of one server instance, handed to the route groups. */
@@ -111,8 +132,8 @@ interface Ctx extends ServerDeps {
   stats: () => Stats;
   leaders: () => QuantLeadersResponse;
   live: LiveFeed;
-  /** opens an SSE stream that is tracked for shutdown */
-  openStream: (reply: FastifyReply) => SseStream;
+  /** opens an SSE stream that is tracked for shutdown, or answers 429/503 (null) when a cap is reached */
+  openStream: (request: FastifyRequest, reply: FastifyReply) => SseStream | null;
 }
 
 export async function createServer(deps: ServerDeps): Promise<FastifyInstance> {
@@ -120,7 +141,9 @@ export async function createServer(deps: ServerDeps): Promise<FastifyInstance> {
     logger: false,
     bodyLimit: BODY_LIMIT_BYTES,
     trustProxy: deps.trustProxy ?? false,
+    requestTimeout: REQUEST_TIMEOUT_MS,
   });
+  app.server.maxConnections = MAX_CONNECTIONS;
 
   const stats = cached(STATS_TTL_MS, (now) =>
     buildStats({
@@ -134,13 +157,41 @@ export async function createServer(deps: ServerDeps): Promise<FastifyInstance> {
   );
   const live = new LiveFeed(deps.bus, stats);
   const streams = new Set<SseStream>();
-  const openStream = (reply: FastifyReply): SseStream => {
+  const perClient = new Map<string, number>();
+  const openStream = (request: FastifyRequest, reply: FastifyReply): SseStream | null => {
+    const client = clientKey(request.ip);
+    if (streams.size >= MAX_STREAMS_TOTAL) {
+      void reply
+        .code(503)
+        .header('retry-after', String(STREAM_RETRY_AFTER_SEC))
+        .send({ error: 'unavailable', message: 'Too many open event streams, retry shortly' });
+      return null;
+    }
+    if ((perClient.get(client) ?? 0) >= MAX_STREAMS_PER_CLIENT) {
+      void reply
+        .code(429)
+        .header('retry-after', String(STREAM_RETRY_AFTER_SEC))
+        .send({ error: 'rate_limited', message: 'Too many open event streams from this client' });
+      return null;
+    }
     const stream = openSse(reply);
     streams.add(stream);
-    stream.onClose(() => streams.delete(stream));
+    perClient.set(client, (perClient.get(client) ?? 0) + 1);
+    stream.onClose(() => {
+      streams.delete(stream);
+      const left = (perClient.get(client) ?? 1) - 1;
+      if (left <= 0) perClient.delete(client);
+      else perClient.set(client, left);
+    });
     return stream;
   };
-  const leaders = cached(LEADERS_TTL_MS, (now) => buildLeaders(deps.db, deps.config, now));
+  const regime =
+    deps.regime ??
+    createRegimeProvider((now, filters) => deps.db.regimeUniverse(now, filters), {
+      maxTokenAgeHours: deps.config.scan.maxTokenAgeHours,
+      onError: (e) => log.warn('regime computation failed', { error: errMsg(e) }),
+    });
+  const leaders = cached(LEADERS_TTL_MS, (now) => buildLeaders(deps.db, deps.config, regime(), now));
   const ctx: Ctx = { ...deps, stats, leaders, live, openStream };
 
   installHooks(app);
@@ -224,9 +275,18 @@ const queryObject = <T extends z.ZodRawShape>(shape: T) =>
     z.object(shape),
   );
 
+/** `before`: a createdAt (legacy) or the exact "<createdAt>:<id>" cursor of the previous page's last article */
+const FeedCursorParam = z.string().transform((v, ctx) => {
+  if (/^\d{1,16}$/.test(v) && Number(v) > 0) return Number(v);
+  const cursor = parseFeedCursor(v);
+  if (cursor) return cursor;
+  ctx.addIssue({ code: 'custom', message: 'before must be a timestamp or a "<createdAt>:<id>" cursor' });
+  return z.NEVER;
+});
+
 const FeedQuery = queryObject({
   limit: limitParam(FEED_DEFAULT_LIMIT, FEED_MAX_LIMIT),
-  before: z.coerce.number().int().positive().optional(),
+  before: FeedCursorParam.optional(),
   chain: z.enum(CHAIN_IDS).optional(),
   severity: z.enum(SEVERITIES).optional(),
 });
@@ -281,7 +341,12 @@ function registerNewsRoutes(app: FastifyInstance, ctx: Ctx): void {
     if (!q) return reply;
     const articles = db.listArticles(q);
     const last = articles.at(-1);
-    const body: FeedResponse = { articles, nextBefore: articles.length === q.limit && last ? last.createdAt : null };
+    const more = articles.length === q.limit && last !== undefined;
+    const body: FeedResponse = {
+      articles,
+      nextBefore: more ? last.createdAt : null,
+      nextCursor: more ? feedCursor(last) : null,
+    };
     return body;
   });
 
@@ -304,16 +369,24 @@ function registerNewsRoutes(app: FastifyInstance, ctx: Ctx): void {
     return { events: db.recentDetections(q.limit) };
   });
 
-  app.get('/api/stream', { exposeHeadRoute: false }, async (_request, reply) => {
-    // Built before the reply is hijacked so a database error is still a normal 500.
+  // one serialized hello for every client connecting within a second: a reconnect storm
+  // (every client after a deploy) costs one database read, not one per client
+  const helloFrame = cached(HELLO_TTL_MS, () => {
     const hello: StreamEvent = {
       type: 'hello',
       stats: ctx.stats(),
       articles: db.listArticles({ limit: HELLO_ARTICLES }),
       events: db.recentDetections(HELLO_EVENTS),
     };
-    const stream = ctx.openStream(reply);
-    stream.send(hello.type, hello);
+    return sseFrame(hello.type, hello);
+  });
+
+  app.get('/api/stream', { exposeHeadRoute: false }, async (request, reply) => {
+    // Built before the reply is hijacked so a database error is still a normal 500.
+    const frame = helloFrame();
+    const stream = ctx.openStream(request, reply);
+    if (!stream) return reply;
+    stream.sendFrame(frame);
     ctx.live.hub.add(stream);
     return reply;
   });
@@ -368,19 +441,36 @@ class LiveFeed {
 
 function registerRadarRoutes(app: FastifyInstance, ctx: Ctx): void {
   const limiter = new RateLimiter(RADAR_RATE_LIMIT, RADAR_RATE_WINDOW_MS);
+  const global = new RateLimiter(RADAR_GLOBAL_RATE_LIMIT, RADAR_RATE_WINDOW_MS);
+  const subscribers = new Map<string, number>();
   const body = radarBody(ctx.config.chains);
 
   app.post('/api/radar', async (request, reply) => {
     const input = parseOr400(body, request.body, reply);
     if (!input) return reply;
-    const retryAfterSec = limiter.take(request.ip, Date.now());
+    const now = Date.now();
+    const client = clientKey(request.ip);
+    const perClient = limiter.check(client, now);
+    const overall = global.check('*', now);
+    const retryAfterSec = Math.max(perClient, overall);
     if (retryAfterSec > 0) {
       return reply
         .code(429)
         .header('retry-after', String(retryAfterSec))
         .send({ error: 'rate_limited', message: `Too many radar searches, retry in ${retryAfterSec} s` });
     }
-    const report = ctx.radar.start(input.query, input.chain);
+    let report: RadarReport;
+    try {
+      report = ctx.radar.start(input.query, input.chain, { client });
+    } catch (e) {
+      if (!(e instanceof RadarBusyError)) throw e;
+      return reply
+        .code(503)
+        .header('retry-after', String(e.retryAfterSec))
+        .send({ error: 'unavailable', message: e.message });
+    }
+    limiter.record(client, now);
+    global.record('*', now);
     return reply.code(202).send({ id: report.id });
   });
 
@@ -395,16 +485,48 @@ function registerRadarRoutes(app: FastifyInstance, ctx: Ctx): void {
     if (!p) return reply;
     const report = ctx.radar.get(p.id);
     if (!report) return notFound(reply, 'radar report');
-    followRadar(ctx.openStream(reply), report, ctx.radar);
+    if (report.status === 'running' && (subscribers.get(report.id) ?? 0) >= MAX_RADAR_SUBSCRIBERS_PER_REPORT) {
+      return reply
+        .code(429)
+        .header('retry-after', String(STREAM_RETRY_AFTER_SEC))
+        .send({ error: 'rate_limited', message: 'Too many viewers on this radar report, retry shortly or GET it' });
+    }
+    const stream = ctx.openStream(request, reply);
+    if (!stream) return reply;
+    if (report.status === 'running') {
+      subscribers.set(report.id, (subscribers.get(report.id) ?? 0) + 1);
+      stream.onClose(() => {
+        const left = (subscribers.get(report.id) ?? 1) - 1;
+        if (left <= 0) subscribers.delete(report.id);
+        else subscribers.set(report.id, left);
+      });
+    }
+    followRadar(stream, report, ctx.radar);
     return reply;
   });
+}
+
+/**
+ * One serialization per report change, however many viewers follow it: the radar
+ * service hands every subscriber the same copy, so frames are cached by it.
+ */
+const radarFrames = new WeakMap<RadarReport, { report?: string; end?: string }>();
+
+function radarFrame(event: RadarStreamEvent): string {
+  const cache = radarFrames.get(event.report) ?? {};
+  const hit = cache[event.type];
+  if (hit !== undefined) return hit;
+  const frame = sseFrame(event.type, event);
+  cache[event.type] = frame;
+  radarFrames.set(event.report, cache);
+  return frame;
 }
 
 /** Streams a radar report: the current state now, every change after it, then `end` once it is final. */
 function followRadar(stream: SseStream, initial: RadarReport, radar: RadarService): void {
   let lastFrame = '';
   const emit = (event: RadarStreamEvent): void => {
-    const frame = sseFrame(event.type, event);
+    const frame = radarFrame(event);
     if (frame === lastFrame) return; // subscribers may be handed the state they already have
     lastFrame = frame;
     stream.sendFrame(frame);
@@ -434,8 +556,8 @@ function followRadar(stream: SseStream, initial: RadarReport, radar: RadarServic
 }
 
 /**
- * Sliding-window counter per key (client IP). In memory: limits reset on
- * restart, which is acceptable for abuse protection of a single instance.
+ * Sliding-window counter per key (client bucket, see clientKey). In memory: limits
+ * reset on restart, which is acceptable for abuse protection of a single instance.
  */
 class RateLimiter {
   private readonly hits = new Map<string, number[]>();
@@ -448,15 +570,25 @@ class RateLimiter {
 
   /** Records a hit and returns 0, or returns the seconds to wait when the key is over its limit. */
   take(key: string, now: number): number {
+    const wait = this.check(key, now);
+    if (wait === 0) this.record(key, now);
+    return wait;
+  }
+
+  /** 0 when the key may make a request now, else the seconds to wait. Records nothing. */
+  check(key: string, now: number): number {
     this.sweep(now);
     const recent = (this.hits.get(key) ?? []).filter((t) => now - t < this.windowMs);
     this.hits.set(key, recent);
-    if (recent.length >= this.limit) {
-      const oldest = recent[0] ?? now;
-      return Math.max(1, Math.ceil((oldest + this.windowMs - now) / 1000));
-    }
+    if (recent.length < this.limit) return 0;
+    const oldest = recent[0] ?? now;
+    return Math.max(1, Math.ceil((oldest + this.windowMs - now) / 1000));
+  }
+
+  record(key: string, now: number): void {
+    const recent = this.hits.get(key) ?? [];
     recent.push(now);
-    return 0;
+    this.hits.set(key, recent);
   }
 
   private sweep(now: number): void {
@@ -490,10 +622,10 @@ function registerQuantRoutes(app: FastifyInstance, ctx: Ctx): void {
  * clears the scanner's market minimums: a pool with $11 of liquidity "resembles"
  * every momentum methodology on a single trade, which says nothing.
  * Metrics are history-free (growth features stay null), which keeps this cheap.
+ * The regime is the newsroom's shared one, the same that articles cite.
  */
-function buildLeaders(db: Db, config: AppConfig, now: number): QuantLeadersResponse {
+function buildLeaders(db: Db, config: AppConfig, regime: MarketRegime, now: number): QuantLeadersResponse {
   const since = now - LEADERS_WINDOW_MS;
-  const regime = computeRegime(db.latestSnapshots(since, LEADERS_UNIVERSE), now);
   const { minLiquidityUsd, minVolumeH1Usd } = config.scan;
   const snapshots = db.latestSnapshots(since, LEADERS_UNIVERSE, { minLiquidityUsd, minVolumeH1Usd });
   const entries = snapshots.map((snapshot) => ({
@@ -559,6 +691,39 @@ function isSpaRoute(url: string): boolean {
 }
 
 /* ───────────── helpers ───────────── */
+
+/**
+ * The rate-limit identity of a client address: IPv4-mapped IPv6 is its IPv4
+ * address, and IPv6 is bucketed by /64 (one subscriber's allocation), so rotating
+ * addresses within a prefix does not buy a fresh limit.
+ */
+export function clientKey(ip: string): string {
+  const addr = ip.trim().toLowerCase().replace(/%.*$/, '');
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(addr);
+  if (mapped?.[1]) return mapped[1];
+  if (isIPv4(addr) || !isIPv6(addr)) return addr;
+  const groups = expandIPv6(addr);
+  if (!groups) return addr;
+  // "::ffff:7f00:1" is the IPv4-mapped 127.0.0.1 written in hex
+  if (groups.slice(0, 5).every((g) => g === '0000') && groups[5] === 'ffff') {
+    const [hi = 0, lo = 0] = [parseInt(groups[6] ?? '0', 16), parseInt(groups[7] ?? '0', 16)];
+    return [hi >> 8, hi & 255, lo >> 8, lo & 255].join('.');
+  }
+  return `${groups.slice(0, 4).join(':')}::/64`;
+}
+
+/** "2001:db8::1" → 8 four-digit groups; null when it is not a plain IPv6 address. */
+function expandIPv6(addr: string): string[] | null {
+  const [head = '', tail, extra] = addr.split('::');
+  if (extra !== undefined) return null;
+  const left = head ? head.split(':') : [];
+  const right = tail !== undefined && tail !== '' ? tail.split(':') : [];
+  if (right.some((g) => g.includes('.')) || left.some((g) => g.includes('.'))) return null;
+  const missing = 8 - left.length - right.length;
+  if (tail === undefined ? missing !== 0 : missing < 1) return null;
+  const groups = [...left, ...Array.from({ length: tail === undefined ? 0 : missing }, () => '0'), ...right];
+  return groups.length === 8 ? groups.map((g) => g.padStart(4, '0')) : null;
+}
 
 function cached<T>(ttlMs: number, compute: (now: number) => T): () => T {
   let entry: { at: number; value: T } | null = null;

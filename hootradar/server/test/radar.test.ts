@@ -10,12 +10,13 @@ import type {
   TokenSnapshot,
 } from '../../shared/types.js';
 import { writeRadarBrief } from '../src/ai/brief.js';
+import { initClaude } from '../src/ai/claude.js';
 import { CHAIN_CONFIGS } from '../src/chains/configs.js';
 import type { ChainAdapter, TokenEnrichment } from '../src/chains/types.js';
 import { loadConfig } from '../src/config.js';
 import { openDb, type Db } from '../src/db/db.js';
 import { gatherIntel } from '../src/research/intel/index.js';
-import { MAX_QUERY_CHARS, RadarService, SMART_MONEY_REASON } from '../src/research/radar.js';
+import { MAX_ACTIVE_INVESTIGATIONS, MAX_QUERY_CHARS, RadarBusyError, RadarService, SMART_MONEY_REASON } from '../src/research/radar.js';
 import { dsSearch, parseDsPairs } from '../src/sources/dexscreener.js';
 import { parseGtTokenInfo } from '../src/sources/geckoterminal.js';
 import { emptySnapshot } from '../src/sources/merge.js';
@@ -103,7 +104,7 @@ interface Harness {
   clock: { now: number };
 }
 
-function harness(over: Partial<Record<KnownChainId, Partial<ChainAdapter>>> = {}): Harness {
+function harness(over: Partial<Record<KnownChainId, Partial<ChainAdapter>>> = {}, env: Record<string, string> = {}): Harness {
   const adapters = {
     solana: stubAdapter('solana', over.solana),
     ethereum: stubAdapter('ethereum', over.ethereum),
@@ -115,7 +116,7 @@ function harness(over: Partial<Record<KnownChainId, Partial<ChainAdapter>>> = {}
   const service = new RadarService({
     adapters: Object.values(adapters),
     db,
-    config: loadConfig({ NEWS_LANG: 'en' }),
+    config: loadConfig({ NEWS_LANG: 'en', ...env }),
     regime: () => REGIME,
     now: () => clock.now,
   });
@@ -187,8 +188,10 @@ describe('RadarService — symbol search', () => {
 
     // resolution: the busiest exact match on a supported chain, 6 more as candidates; the ticker is
     // also searched as "$PEPE", and both result sets are merged without duplicates
-    expect(dsSearch).toHaveBeenCalledWith('PEPE');
-    expect(dsSearch).toHaveBeenCalledWith('$PEPE');
+    // Radar draws from its own lane of the provider budget, with the stage's cancel signal
+    const radarCall = expect.objectContaining({ lane: 'radar', signal: expect.any(AbortSignal), maxQueueMs: expect.any(Number) });
+    expect(dsSearch).toHaveBeenCalledWith('PEPE', radarCall);
+    expect(dsSearch).toHaveBeenCalledWith('$PEPE', radarCall);
     expect(final.token).toMatchObject({ chain: 'ethereum', address: PEPE_ETH, symbol: 'PEPE', name: 'Pepe' });
     expect(final.candidates).toHaveLength(6);
     expect(final.candidates.map((c) => c.chain)).toEqual(['solana', 'solana', 'solana', 'solana', 'solana', 'base']);
@@ -200,8 +203,8 @@ describe('RadarService — symbol search', () => {
     expect(final.stages[0]?.message).toBe('$PEPE on Ethereum via DexScreener search; 6 other matches');
 
     // on-chain + holders merged into one snapshot; metrics, detection and quant computed from it
-    expect(ethLookup).toHaveBeenCalledWith(PEPE_ETH);
-    expect(adapters.ethereum.enrich).toHaveBeenCalledWith(PEPE_ETH);
+    expect(ethLookup).toHaveBeenCalledWith(PEPE_ETH, radarCall);
+    expect(adapters.ethereum.enrich).toHaveBeenCalledWith(PEPE_ETH, radarCall);
     expect(final.snapshot).toMatchObject({ chain: 'ethereum', holders: ENRICHMENT.holders, top10HolderPct: ENRICHMENT.top10HolderPct });
     expect(final.snapshot?.sources).toEqual(['geckoterminal', 'dexscreener']);
     expect(final.metrics?.ageMinutes).toBeGreaterThan(0);
@@ -212,9 +215,15 @@ describe('RadarService — symbol search', () => {
     // web + ai
     expect(final.intel).toEqual([INTEL]);
     expect(final.stages[4]?.message).toBe('1 mention · gdelt 1 · hn failed');
+    // structured per-provider outcome for the reader
+    expect(final.providers).toEqual([
+      { provider: 'gdelt', ok: true, count: 1, error: null },
+      { provider: 'hn', ok: false, count: 0, error: 'HTTP 503' },
+    ]);
     expect(vi.mocked(gatherIntel).mock.calls[0]?.[0]).toMatchObject({ symbol: 'PEPE', name: 'Pepe', address: PEPE_ETH, chain: 'ethereum' });
     expect(writeRadarBrief).toHaveBeenCalledWith(
       expect.objectContaining({ lang: 'en', intel: [INTEL], snapshot: final.snapshot, quant: final.quant }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(final.brief).toEqual(BRIEF);
     expect(final.unavailable).toEqual([{ field: 'smartMoney', reason: SMART_MONEY_REASON }]);
@@ -298,7 +307,13 @@ describe('RadarService — symbol search', () => {
 });
 
 describe('RadarService — address lookup', () => {
-  it('looks the address up on every matching chain in parallel; the most liquid wins', async () => {
+  it('looks the address up on every chain that lists it, in parallel; the most liquid wins', async () => {
+    // one DexScreener search says where the address trades: GeckoTerminal is asked only there
+    vi.mocked(dsSearch).mockResolvedValue([
+      { ...snapshot('ethereum', EVM_TOKEN), chain: 'ethereum' },
+      { ...snapshot('base', EVM_TOKEN.toUpperCase().replace('0X', '0x')), chain: 'base' },
+      { ...snapshot('bsc', '0x2222222222222222222222222222222222222222'), chain: 'bsc' },
+    ]);
     const { service, adapters } = harness({
       ethereum: { lookup: vi.fn(async (a: string) => snapshot('ethereum', a, { liquidityUsd: 1_000_000 })) },
       base: { lookup: vi.fn(async (a: string) => snapshot('base', a, { liquidityUsd: 5_000_000 })) },
@@ -309,8 +324,8 @@ describe('RadarService — address lookup', () => {
     expect(final.token).toMatchObject({ chain: 'base', liquidityUsd: 5_000_000 });
     expect(final.candidates.map((c) => c.chain)).toEqual(['ethereum']);
     expect(adapters.solana.lookup).not.toHaveBeenCalled();
-    expect(adapters.bsc.lookup).toHaveBeenCalledWith(EVM_TOKEN);
-    expect(dsSearch).not.toHaveBeenCalled();
+    expect(adapters.bsc.lookup).not.toHaveBeenCalled(); // not listed there
+    expect(dsSearch).toHaveBeenCalledTimes(1);
     expect(final.stages[0]?.message).toBe('$TEST on Base via address lookup; 1 other match');
     // an address-resolved token already has its full snapshot: no second lookup
     expect(adapters.base.lookup).toHaveBeenCalledTimes(1);
@@ -327,7 +342,27 @@ describe('RadarService — address lookup', () => {
     expect(adapters.bsc.lookup).not.toHaveBeenCalled();
   });
 
+  it('a random address costs one search, not two GeckoTerminal calls per EVM chain', async () => {
+    vi.mocked(dsSearch).mockResolvedValue([]);
+    const { service, adapters } = harness();
+    const { id } = service.start('0x9999999999999999999999999999999999999999');
+    const final = (await collect(service, id)).pop()!;
+    expect(final.status).toBe('not_found');
+    for (const a of Object.values(adapters)) expect(a.lookup).not.toHaveBeenCalled();
+  });
+
+  it('asks every matching chain when DexScreener cannot say where the address trades', async () => {
+    vi.mocked(dsSearch).mockRejectedValue(new Error('HTTP 503'));
+    const { service, adapters } = harness({ base: { lookup: vi.fn(async (a: string) => snapshot('base', a)) } });
+    const { id } = service.start(EVM_TOKEN);
+    const final = (await collect(service, id)).pop()!;
+    expect(final.token?.chain).toBe('base');
+    expect(adapters.ethereum.lookup).toHaveBeenCalled();
+    expect(adapters.bsc.lookup).toHaveBeenCalled();
+  });
+
   it('reports a provider failure as an error, not as "not found"', async () => {
+    vi.mocked(dsSearch).mockRejectedValue(new Error('HTTP 503'));
     const down = { lookup: vi.fn(async () => Promise.reject(new Error('HTTP 503'))) };
     const { service } = harness({ ethereum: down, base: down, bsc: down });
     const { id } = service.start(EVM_TOKEN);
@@ -354,6 +389,7 @@ describe('RadarService — not found', () => {
   });
 
   it('is not_found when every chain answered without the address', async () => {
+    vi.mocked(dsSearch).mockRejectedValue(new Error('HTTP 503')); // every chain is then asked directly
     const { service } = harness();
     const { id } = service.start(EVM_TOKEN);
     const final = (await collect(service, id)).pop()!;
@@ -452,6 +488,104 @@ describe('RadarService — lifecycle', () => {
     expect(service.start('PEPE').id).toBe(first.id);
     clock.now += 2_000;
     expect(service.start('PEPE').id).not.toBe(first.id);
+  });
+
+  it('runs a failed or empty search again instead of handing back the stale report', async () => {
+    vi.mocked(dsSearch).mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    const { service } = harness();
+    const first = service.start('PEPE');
+    expect((await collect(service, first.id)).pop()?.status).toBe('not_found');
+    const retry = service.start('PEPE');
+    expect(retry.id).not.toBe(first.id);
+    await collect(service, retry.id);
+  });
+
+  it('keeps case-sensitive Solana addresses apart (two mints that differ only in case)', async () => {
+    const { service } = harness();
+    const lower = 'dezxaz8z7pnrnrjjz3wxborgixca6xjnb7yab1ppb263';
+    const real = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+    const a = service.start(lower);
+    const b = service.start(real);
+    expect(b.id).not.toBe(a.id);
+    // EVM addresses are case-insensitive: the same token
+    const c = service.start(EVM_TOKEN.replace('0x', '0X').toUpperCase().replace('0X', '0x'));
+    expect(service.start(EVM_TOKEN).id).toBe(c.id);
+    await Promise.all([collect(service, a.id), collect(service, b.id), collect(service, c.id)]);
+  });
+
+  it('refuses new investigations while too many run', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    vi.mocked(dsSearch).mockImplementation(async () => {
+      await gate;
+      return SEARCH;
+    });
+    const { service } = harness();
+    const ids = Array.from({ length: MAX_ACTIVE_INVESTIGATIONS }, (_, i) => service.start(`TOKEN${i}`).id);
+    expect(() => service.start('ONE MORE')).toThrow(RadarBusyError);
+    expect(service.start('TOKEN0').id).toBe(ids[0]); // joining a running one is always fine
+    release();
+    await Promise.all(ids.map((id) => collect(service, id)));
+    expect(() => service.start('ONE MORE')).not.toThrow();
+  });
+
+  it('cancels a stage at its deadline and keeps going', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let signal: AbortSignal | undefined;
+      const { service } = harness({
+        base: {
+          lookup: vi.fn(async (a: string) => snapshot('base', a)),
+          enrich: vi.fn((_a: string, o?: { signal?: AbortSignal }) => {
+            signal = o?.signal;
+            return new Promise<null>(() => {});
+          }),
+        },
+      });
+      const { id } = service.start(EVM_TOKEN, 'base');
+      const done = collect(service, id);
+      await vi.advanceTimersByTimeAsync(20_001);
+      const final = (await done).pop()!;
+      expect(final.stages[2]).toMatchObject({ status: 'error', message: 'Holders did not finish within 20s' });
+      expect(signal?.aborted).toBe(true);
+      expect(final.status).toBe('done');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('spends paid Claude calls within an hourly budget and says so when it is spent', async () => {
+    initClaude(loadConfig({ ANTHROPIC_API_KEY: 'sk-ant-test-key' }));
+    try {
+      const { service } = harness({}, { RADAR_AI_CALLS_PER_HOUR: '2' });
+      const first = (await collect(service, service.start('PEPE').id)).pop()!;
+      expect(vi.mocked(gatherIntel).mock.calls[0]?.[2]).toMatchObject({ webResearch: { run: true } });
+      expect(vi.mocked(writeRadarBrief).mock.calls[0]?.[1]).toMatchObject({ claude: true });
+      expect(first.status).toBe('done');
+
+      const second = (await collect(service, service.start('BONK').id)).pop()!;
+      expect(vi.mocked(gatherIntel).mock.calls[1]?.[2]).toMatchObject({
+        webResearch: { run: false, reason: 'hourly AI budget reached' },
+      });
+      expect(vi.mocked(writeRadarBrief).mock.calls[1]?.[1]).toMatchObject({ claude: false });
+      expect(second.stages[5]?.message).toBe('Written by the rules engine (hourly AI budget reached)');
+    } finally {
+      initClaude(loadConfig({}));
+    }
+  });
+
+  it('limits each visitor to a few AI-backed investigations', async () => {
+    initClaude(loadConfig({ ANTHROPIC_API_KEY: 'sk-ant-test-key' }));
+    try {
+      const { service } = harness();
+      for (let i = 0; i < 5; i++) await collect(service, service.start(`T${i}`, undefined, { client: '203.0.113.7' }).id);
+      const briefs = vi.mocked(writeRadarBrief).mock.calls.map((c) => c[1]?.claude);
+      expect(briefs).toEqual([true, true, true, true, false]);
+      await collect(service, service.start('OTHER', undefined, { client: '198.51.100.1' }).id);
+      expect(vi.mocked(writeRadarBrief).mock.calls.at(-1)?.[1]).toMatchObject({ claude: true });
+    } finally {
+      initClaude(loadConfig({}));
+    }
   });
 
   it('caps the query at 120 characters', () => {

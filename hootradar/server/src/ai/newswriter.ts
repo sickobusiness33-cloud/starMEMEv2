@@ -13,9 +13,9 @@ import {
   AiOutputError,
   CallLimiter,
   QueueFullError,
+  aiErrorDetail,
   claudeSession,
   createStructured,
-  describeAiError,
   jsonOutputFormat,
   reportAiError,
   reportAiOk,
@@ -107,7 +107,7 @@ Fields:
 - outlook.neutral: one sentence, at most 300 characters: what a consolidation would look like.
 - outlook.risk: 1-2 sentences, at most 300 characters, always concrete. Name the specific risks present in the facts: thin liquidity, holder concentration, mint or freeze authority enabled, developer holdings, paid promotion, volume far above liquidity (possible wash trading), sell pressure, a very young token (rug risk). If none is flagged, describe the concrete risk of a liquidity pull (rug) or a sharp reversal after an activity spike.
 
-Young tokens: when facts.token.windowsCoverWholeLife is "yes" the token is under an hour old, so every 1h/6h/24h figure covers its whole life. Describe those figures as "since launch", never as an hourly rate or average.
+Young tokens: facts.token.windowsSinceLaunch lists the windows (1h, 6h, 24h) that are longer than the token's trading life. Every figure in those windows (volume, price change, transactions) covers its whole life: describe it as "since launch", never as "in the last hour" or "in 24 hours", and never as an hourly rate or average. When facts.token.windowsCoverWholeLife is "yes" this applies to every window.
 
 Follow-ups: when facts.previousArticle is present, this item updates it. Say what changed (escalation, new figures) without repeating the earlier item.
 
@@ -147,7 +147,7 @@ function fallback(i: NewsInput, e: unknown): ArticleDraft {
     log.info('Claude queue full, article written by rules', { symbol: i.snapshot.symbol });
   } else {
     reportAiError(e);
-    log.warn('Claude article failed, written by rules', { symbol: i.snapshot.symbol, error: describeAiError(e) });
+    log.warn('Claude article failed, written by rules', { symbol: i.snapshot.symbol, error: aiErrorDetail(e) });
   }
   return writeArticleRules(i);
 }
@@ -184,35 +184,64 @@ function copyTexts(d: Omit<ArticleDraft, 'engine' | 'model' | 'lang'>): string[]
 
 /* ───────────── output guards ───────────── */
 
-/** Numeric hype ("100x") is caught by the figure guard unless the multiple really is in the facts. */
-const HYPE = /\b(?:moon|mooning|lambo|gems?)\b|to the moon|a la luna/i;
+/** Word boundaries that understand accented letters ("subirá" ends in a letter \b does not know). */
+const wordRe = (body: string) => new RegExp(`(?<![\\p{L}\\p{N}_])(?:${body})(?![\\p{L}\\p{N}_])`, 'iu');
+/** The forbidden vocabulary of the system prompt, in both languages. */
+const HYPE = wordRe(
+  'moon(?:ing|s)?|to the moon|lambo|gems?|rocket(?:s|ing|ed)?|explosive|insane|guaranteed?|a la luna|cohetes?|explosiv[oa]s?|garantizad[oa]s?|garantía',
+);
+/** Certainty about a future price (no predictions): "will rise", "va a subir", "subirá", "garantiza". */
+const PREDICTION = wordRe(
+  [
+    '(?:will|is going to|are going to|is set to|is poised to|is bound to)\\s+(?:rise|rally|pump|soar|surge|climb|explode|skyrocket|go up|moon|double|triple)',
+    'subirán?|se disparar(?:á|án)|despegará|explotará|duplicará|triplicará',
+    'van? a (?:subir|dispararse|despegar|explotar|duplicar|triplicar)',
+    'garantiz\\p{L}*',
+  ].join('|'),
+);
 const EMOJI = /\p{Extended_Pictographic}/u;
 const FIGURE = /\d+(?:[.,]\d+)*/g;
+/** "4.2x", "100x", "10 x": a multiple, compared with the multiples the facts state */
+const MULTIPLE = /(\d+(?:[.,]\d+)*)\s?x(?![\p{L}\p{N}])/giu;
+/** "72/100" is a score on a 100 scale: its "100" is not a figure the copy may reuse ("100%", "100x") */
+const SCALE = /\/\s?100(?![\d.,])/g;
 /** Small counts and time units read naturally in prose ("3 escenarios", "24 horas") without being invented data. */
 const FREE_FIGURES = new Set(['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '12', '24', '60']);
 
 /**
- * Rejects copy that breaks the newsroom rules: hype words, emojis, or a figure
- * that does not occur in the facts (compared on digits, so "$1.4M" and "$1,4M" match).
+ * Rejects copy that breaks the newsroom rules: hype words, predictions, emojis, a
+ * multiple ("100x") the facts do not state, or a figure that does not occur in the
+ * facts (compared on digits, so "$1.4M" and "$1,4M" match).
  */
 export function assertPublishable(texts: string[], factsJson: string): void {
   for (const t of texts) {
     if (EMOJI.test(t)) throw new AiOutputError('emoji in copy');
     const hype = HYPE.exec(t);
     if (hype) throw new AiOutputError(`hype word "${hype[0]}"`);
+    const prediction = PREDICTION.exec(t);
+    if (prediction) throw new AiOutputError(`prediction "${prediction[0]}"`);
   }
-  const unknown = unsupportedFigures(texts.join(' '), factsJson);
+  const text = texts.join(' ');
+  const multiples = unsupportedMultiples(text, factsJson);
+  if (multiples.length) throw new AiOutputError(`hype multiple not in facts: ${multiples.slice(0, 3).join(', ')}`);
+  const unknown = unsupportedFigures(text, factsJson);
   if (unknown.length) throw new AiOutputError(`figure not in facts: ${unknown.slice(0, 3).join(', ')}`);
 }
 
 export function unsupportedFigures(text: string, factsJson: string): string[] {
-  const allowed = new Set([...factsJson.matchAll(FIGURE)].map((m) => digitsOf(m[0])));
-  return [...text.matchAll(FIGURE)]
+  const allowed = new Set([...factsJson.replace(SCALE, '').matchAll(FIGURE)].map((m) => digitsOf(m[0])));
+  return [...text.replace(SCALE, '').matchAll(FIGURE)]
     .map((m) => m[0])
     .filter((f) => {
       const d = digitsOf(f);
       return !allowed.has(d) && !FREE_FIGURES.has(d);
     });
+}
+
+/** Multiples in the copy ("100x", "10x") that the facts never state as a multiple. */
+export function unsupportedMultiples(text: string, factsJson: string): string[] {
+  const allowed = new Set([...factsJson.matchAll(MULTIPLE)].map((m) => digitsOf(m[1] ?? '')));
+  return [...text.matchAll(MULTIPLE)].filter((m) => !allowed.has(digitsOf(m[1] ?? ''))).map((m) => m[0]);
 }
 
 function digitsOf(figure: string): string {
@@ -222,6 +251,13 @@ function digitsOf(figure: string): string {
 /* ───────────── facts ───────────── */
 
 type FactValue = string | number | boolean | FactValue[] | { [k: string]: FactValue | undefined } | null | undefined;
+
+/** Windows that cover a token's whole life while it is younger than their length. */
+const LIFE_WINDOWS: Array<[string, number]> = [
+  ['1h', 60],
+  ['6h', 360],
+  ['24h', 1440],
+];
 
 const WINDOWS: Array<[TimeWindow, string]> = [
   ['m5', '5m'],
@@ -238,9 +274,12 @@ export function tokenFacts(i: CopyInput): Record<string, unknown> {
   const { snapshot: s, metrics: m, detection: d, quant: q, lang } = i;
   const f = factFormatters(lang);
   const fdvOnly = !isNum(s.marketCapUsd) && isNum(s.fdvUsd);
-  // under an hour old the 1 h window is the token's whole life, so 5m-vs-1h ratios compare with its launch average
-  const sinceLaunch = isNum(m.ageMinutes) && m.ageMinutes <= 60;
+  // the windows were measured on one pool: under an hour of its life the 1 h window is its whole
+  // life, so 5m-vs-1h ratios compare with its launch average
+  const windowAge = m.windowAgeMinutes ?? m.ageMinutes;
+  const sinceLaunch = isNum(windowAge) && windowAge <= 60;
   const vs = sinceLaunch ? 'VsAverageSinceLaunch' : 'Vs1hAverage';
+  const wholeLife = isNum(windowAge) ? LIFE_WINDOWS.filter(([, minutes]) => windowAge < minutes).map(([label]) => label) : [];
   return prune({
     token: {
       symbol: displaySymbol(s),
@@ -249,6 +288,7 @@ export function tokenFacts(i: CopyInput): Record<string, unknown> {
       dex: s.dex ?? undefined,
       launched: f.age(m.ageMinutes),
       windowsCoverWholeLife: sinceLaunch ? 'yes' : undefined,
+      windowsSinceLaunch: wholeLife.length ? wholeLife : undefined,
       paidPromotion: s.boosted ? 'yes (DexScreener boost)' : undefined,
     },
     detection: {
