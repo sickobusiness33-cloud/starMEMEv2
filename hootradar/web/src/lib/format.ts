@@ -150,6 +150,13 @@ export function fmtDateTime(ts: number | null | undefined): string {
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
 }
 
+/** 2026-10-01 (UTC calendar day; for sources that give no time of day) */
+export function fmtDate(ts: number | null | undefined): string {
+  if (!isNum(ts)) return DASH;
+  const d = new Date(ts);
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+}
+
 /** 7xKX…9fGh · 0x1234…abcd */
 export function shortAddr(addr: string | null | undefined): string {
   if (!addr) return DASH;

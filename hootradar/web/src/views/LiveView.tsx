@@ -1,7 +1,19 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type FlatIndexLocationWithAlign, type ListItem, type VirtuosoHandle } from 'react-virtuoso';
 import type { NewsArticle } from '@shared/types';
-import { ARTICLE_CAP, filterKey, matchesFilters, rangeFloor, useStore, viewFrom, type EnterInfo, type SeverityFilter } from '../store';
+import {
+  ARTICLE_CAP,
+  atOrAbove,
+  filterKey,
+  isComplete,
+  matchesFilters,
+  rangeFloor,
+  useStore,
+  viewFrom,
+  type EnterInfo,
+  type FeedPos,
+  type SeverityFilter,
+} from '../store';
 import { reconnectNow } from '../lib/stream';
 import { noteFlushed } from '../lib/announce';
 import { STATUS_COLOR } from '../lib/chains';
@@ -168,8 +180,8 @@ function FeedToolbar() {
 interface FeedContext {
   /** stories in the current view */
   count: number;
-  /** oldest createdAt the view is complete down to (-Infinity: its whole history is loaded) */
-  floor: number | null;
+  /** oldest feed position the view is complete down to (COMPLETE: its whole history is loaded) */
+  floor: FeedPos | null;
 }
 
 function headerOffset(): number {
@@ -392,7 +404,7 @@ const VIRTUOSO_COMPONENTS = {
   Footer: ({ context }: { context: FeedContext }) => <FeedFooter {...context} />,
 };
 
-function FeedItem({ article: a, enter, floor }: { article: NewsArticle; enter: EnterInfo | undefined; floor: number | null }) {
+function FeedItem({ article: a, enter, floor }: { article: NewsArticle; enter: EnterInfo | undefined; floor: FeedPos | null }) {
   return (
     <div className="feed__item" data-article-id={a.id}>
       <OutOfRangeNote article={a} floor={floor} />
@@ -402,8 +414,8 @@ function FeedItem({ article: a, enter, floor }: { article: NewsArticle; enter: E
 }
 
 /** A story opened directly (toast, tape) that is older than the loaded range: say so, never imply continuity. */
-function OutOfRangeNote({ article, floor }: { article: NewsArticle; floor: number | null }) {
-  if (floor === null || floor === -Infinity || article.createdAt >= floor) return null;
+function OutOfRangeNote({ article, floor }: { article: NewsArticle; floor: FeedPos | null }) {
+  if (floor === null || atOrAbove(article, floor)) return null;
   return <p className="feed__gap label">Opened directly · the stories around it are not loaded</p>;
 }
 
@@ -441,7 +453,7 @@ function NewPill({ count }: { count: number }) {
 function FeedFooter({ count, floor }: FeedContext) {
   const pages = useStore((s) => s.pages);
   const loadPage = useStore((s) => s.loadPage);
-  const exhausted = floor === -Infinity;
+  const exhausted = isComplete(floor);
   const capped = count >= ARTICLE_CAP;
 
   return (
@@ -521,7 +533,7 @@ function RetryIn({ at }: { at: number }) {
  * "Nothing published" is only claimed when the server confirmed it (the view's whole
  * history is loaded); otherwise the reader can load further back.
  */
-function FeedEmpty({ floor }: { floor: number | null }) {
+function FeedEmpty({ floor }: { floor: FeedPos | null }) {
   const chains = useStore((s) => s.stats?.chains ?? null);
   const filters = useStore((s) => s.filters);
   const setFilters = useStore((s) => s.setFilters);
@@ -530,7 +542,7 @@ function FeedEmpty({ floor }: { floor: number | null }) {
   const now = useClock();
   const n = chains?.length ?? 0;
   const narrowed = filters.chain !== 'all' || filters.severity !== 'all';
-  const complete = floor === -Infinity;
+  const complete = isComplete(floor);
 
   return (
     <div className="state feed-empty">

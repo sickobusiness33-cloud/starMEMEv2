@@ -1,7 +1,7 @@
 import type { RadarReport, RadarStage, RadarStageId } from '@shared/types';
 import { QUANT_DISCLAIMER } from '@shared/types';
 import { useStore } from '../store';
-import { CapChips, capsOf, EngineBadge, EngineLine, MatchBars, OutlookTrio, RegimeTag, SeverityBands } from './bits';
+import { CapChips, capsOf, EngineBadge, EngineLine, MatchBars, OutlookTrio, RegimeTag, SeverityBands, TimeAgo } from './bits';
 
 function stageOf(r: RadarReport, id: RadarStageId): RadarStage | undefined {
   return r.stages.find((s) => s.id === id);
@@ -146,6 +146,8 @@ export function BriefPanel({ report }: { report: RadarReport }) {
   // Never claim AI when the rules engine wrote it: before the brief lands, the live engine decides the title.
   const liveEngine = useStore((s) => s.stats?.engine.ai ?? null);
   const engine = b?.engine ?? liveEngine;
+  // A brief written before this investigation started was reused from a recent search of the same token.
+  const reusedAt = b?.writtenAt !== undefined && b.writtenAt < report.createdAt ? b.writtenAt : null;
   return (
     <section className="panel rpanel brief" aria-labelledby="radar-brief" aria-busy={isBusy(stage) && !b}>
       <div className="panel__head">
@@ -178,9 +180,14 @@ export function BriefPanel({ report }: { report: RadarReport }) {
             )}
             <OutlookTrio outlook={b.outlook} />
             {/* the header badge already says RULES; the model name is the extra fact worth a footer */}
-            {b.engine === 'claude' && (
+            {(b.engine === 'claude' || reusedAt !== null) && (
               <div className="brief__foot">
-                <EngineLine engine={b.engine} model={b.model} />
+                {b.engine === 'claude' && <EngineLine engine={b.engine} model={b.model} />}
+                {reusedAt !== null && (
+                  <span className="label brief__reused">
+                    Written <TimeAgo ts={reusedAt} /> · reused from a recent search of this token
+                  </span>
+                )}
               </div>
             )}
           </>

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { Freshness, IntelItem, IntelProviderStatus, RadarStage } from '@shared/types';
 import { useStore } from '../store';
-import { safeUrl } from '../lib/format';
+import { fmtDate, safeUrl } from '../lib/format';
 import { FreshnessTag, TimeAgo } from './bits';
 import { IconExternal } from './Icons';
 
@@ -19,6 +19,14 @@ const PROVIDER_NAME: Record<string, string> = {
 };
 
 const providerName = (p: string) => PROVIDER_NAME[p] ?? p;
+
+/**
+ * An item dated by calendar day only (publishedAt = that day's 00:00 UTC) cannot be placed
+ * within the last hour: it is never LIVE, whatever the payload says.
+ */
+export function freshnessOf(it: Pick<IntelItem, 'freshness' | 'publishedPrecision'>): Freshness {
+  return it.publishedPrecision === 'day' && it.freshness === 'LIVE' ? 'RECENT' : it.freshness;
+}
 
 interface ProviderResult {
   provider: string;
@@ -70,11 +78,14 @@ export function IntelPanel({
 
   const counts = useMemo(() => {
     const c: Record<Filter, number> = { ALL: intel.length, LIVE: 0, RECENT: 0, OLD: 0 };
-    for (const it of intel) if (it.freshness !== 'UNKNOWN') c[it.freshness] += 1;
+    for (const it of intel) {
+      const f = freshnessOf(it);
+      if (f !== 'UNKNOWN') c[f] += 1;
+    }
     return c;
   }, [intel]);
 
-  const rows = useMemo(() => (filter === 'ALL' ? intel : intel.filter((it) => it.freshness === filter)), [intel, filter]);
+  const rows = useMemo(() => (filter === 'ALL' ? intel : intel.filter((it) => freshnessOf(it) === filter)), [intel, filter]);
   const shown = rows.slice(0, limit);
 
   return (
@@ -153,13 +164,24 @@ function IntelRow({ item: it }: { item: IntelItem }) {
   return (
     <li className="intel__row">
       <span className="intel__meta">
-        <FreshnessTag freshness={it.freshness} />
+        <FreshnessTag freshness={freshnessOf(it)} />
         <span className="tag tag--ghost">{it.sourceType}</span>
         <span className="intel__source truncate" title={it.sourceName}>
           {it.sourceName}
         </span>
-        {/* an undated item already says so in its freshness tag */}
-        {it.publishedAt !== null && <TimeAgo ts={it.publishedAt} className="intel__time" />}
+        {/* an undated item already says so in its freshness tag; a day-only date shows the date, never a time ago */}
+        {it.publishedAt !== null &&
+          (it.publishedPrecision === 'day' ? (
+            <time
+              className="intel__time"
+              dateTime={new Date(it.publishedAt).toISOString().slice(0, 10)}
+              title="The source gives the date only, not the time of day"
+            >
+              {fmtDate(it.publishedAt)}
+            </time>
+          ) : (
+            <TimeAgo ts={it.publishedAt} className="intel__time" />
+          ))}
       </span>
       {url ? (
         <a className="intel__title" href={url} target="_blank" rel="noopener noreferrer">

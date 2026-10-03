@@ -39,6 +39,47 @@ Cada cliente tiene su propio limitador de peticiones, timeouts y caché.
 
 Solana, Ethereum, Base y BNB Chain. Cada cadena tiene su propio adapter (`server/src/chains/`). Para añadir una red nueva basta con su `ChainConfig` y, si hace falta, una fuente de descubrimiento propia.
 
+## Política de severidad
+
+Cada token observado recibe una puntuación de anomalía de 0 a 100. Con los umbrales por defecto:
+**WATCH** desde 22 (solo aparece en la cinta de señales, sin noticia), **ALERT** desde 42 y
+**BREAKING** desde 60 (ambos generan noticia).
+
+- **Filtros de mercado.** Nunca se detecta nada con menos de `MIN_LIQUIDITY_USD` de liquidez o
+  `MIN_VOLUME_H1_USD` de volumen en 1 h (10.000 $ cada uno), ni si la liquidez o el volumen son
+  desconocidos, si el token está marcado como honeypot o tiene más de 7 días. Si la liquidez del
+  mismo pool cae un 50 % o más dentro de la hora, el token se descarta (`Liquidity pulled`) y no se
+  publica nada sobre él.
+- **BREAKING exige tamaño real.** Una puntuación de BREAKING solo se publica como BREAKING si el
+  pool tiene al menos `BREAKING_MIN_LIQUIDITY_USD` de liquidez (25.000 $) **y** al menos
+  `BREAKING_MIN_VOLUME_H1_USD` de volumen en 1 h (75.000 $).
+- **Topes en ALERT.** También se queda en ALERT cuando el top 10 de holders tiene el 80 % o más del
+  supply, o cuando la autoridad de mint o la de congelación siguen activas. Solo cuentan los datos
+  conocidos: un dato desconocido no es prueba y no aplica tope (la noticia lo señala como riesgo).
+- **Transparencia.** Los motivos del tope viajan en `Detection.caps` y en `caps` del artículo. La web
+  los muestra como chips ámbar `Capped at ALERT: <motivo>` en la tarjeta, en la noticia expandida y
+  en el panel de detección de RADAR, junto a un medidor WATCH | ALERT | BREAKING.
+- **Ritmo.** Un mismo token no recibe otra noticia antes de `ARTICLE_COOLDOWN_MIN` minutos salvo que
+  escale de severidad o su puntuación suba con claridad, y hay un máximo global de
+  `MAX_ARTICLES_PER_HOUR` noticias por hora.
+
+## Umbrales relativos por cadena
+
+La actividad típica de un lanzamiento depende de la cadena: un token nuevo en Solana mueve más
+dinero por minuto que uno en Ethereum, Base o BNB Chain. Con una sola rampa global, el feed era solo
+de Solana. Por eso la señal de lanzamiento (`fresh_launch`) usa una referencia propia por cadena:
+
+- Cada cadena guarda el volumen por minuto de sus lanzamientos jóvenes (2–90 min de vida) que pasan
+  los filtros de mercado, durante las últimas 6 horas. Al arrancar se siembra con los datos ya
+  guardados.
+- Con al menos 30 lanzamientos, la señal empieza a sumar en la mediana (p50) de la cadena y alcanza
+  su peso completo en 1,25 × p90. Se recalcula como mucho cada 5 minutos.
+- La referencia nunca se aleja más de 0,25×–2,5× de la calibración global (inicio en 10.000 $/min,
+  peso completo en 50.000 $/min), así que una hora muerta o una granja de bots no puede convertir
+  todos los lanzamientos en noticia. Con menos de 30 lanzamientos se usa la calibración global.
+- Los filtros absolutos de mercado y la política de BREAKING siguen siendo los mismos en todas las
+  cadenas.
+
 ## Arquitectura
 
 ```
@@ -93,9 +134,29 @@ Todas las variables están documentadas en [`.env.example`](.env.example). Las m
 | `ANTHROPIC_API_KEY` | — | Activa Claude para redactar noticias e investigar en la web. Sin clave, funciona entero con el motor de reglas. |
 | `AI_MODEL` | `claude-opus-5-5` | Modelo de Claude. |
 | `NEWS_LANG` | `es` | Idioma de las noticias (`es` / `en`). |
-| `CHAINS` | `solana,ethereum,base,bsc` | Cadenas a escanear. |
-| `THRESHOLD_*` | ver `.env.example` | Umbrales de WATCH / ALERT / BREAKING. |
+| `AI_TIMEOUT_MS` | `45000` | Tiempo máximo por llamada a Claude; al superarlo escribe el motor de reglas. |
+| `RADAR_WEB_RESEARCH` | `true` | Búsqueda web de Claude en RADAR (de pago por búsqueda). `false` deja solo los proveedores gratuitos. |
+| `RADAR_AI_CALLS_PER_HOUR` | `60` | Presupuesto de llamadas a Claude (búsqueda web + resumen) que RADAR puede gastar por hora entre todos los visitantes. Al agotarse, RADAR omite la búsqueda web (lo indica en el estado de proveedores) y el resumen lo escribe el motor de reglas. |
+| `CHAINS` | `solana,ethereum,base,bsc` | Cadenas a escanear. Un nombre desconocido detiene el arranque. |
+| `MAX_TOKEN_AGE_HOURS` | `24` | Solo se siguen tokens más jóvenes que esto. |
+| `MIN_LIQUIDITY_USD`, `MIN_VOLUME_H1_USD` | `10000`, `10000` | Filtros de mercado mínimos para cualquier detección. |
+| `THRESHOLD_WATCH`, `THRESHOLD_ALERT`, `THRESHOLD_BREAKING` | `22`, `42`, `60` | Umbrales de severidad. Deben cumplir WATCH < ALERT ≤ BREAKING o el servidor no arranca. |
+| `BREAKING_MIN_LIQUIDITY_USD`, `BREAKING_MIN_VOLUME_H1_USD` | `25000`, `75000` | Tamaño mínimo para publicar como BREAKING; por debajo se publica como ALERT (ver *Política de severidad*). |
+| `ARTICLE_COOLDOWN_MIN`, `MAX_ARTICLES_PER_HOUR` | `30`, `30` | Pausa entre noticias del mismo token y tope global por hora. |
+| `AUTOPUBLISH` | `true` | Publicar automáticamente. Solo acepta true/false (también 1/0, yes/no, on/off). |
+| `TRUST_PROXY` | — (sin proxy) | Detrás de un proxy inverso: IPs/CIDRs del proxy separadas por comas (recomendado) o el número de saltos. Nunca se confía en todos los saltos: `true` equivale a 1 salto y deja un aviso en el log. Los límites por visitante dependen de esto. |
+| `PUBLIC_BASE_URL` | — | URL pública que se enlaza en las publicaciones distribuidas. |
 | `DISCORD_WEBHOOK_URL`, `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`, `DISTRIBUTION_WEBHOOK_URL` | — | Canales de distribución automáticos. X siempre queda como "listo para copiar". |
+| `DISTRIBUTION_MIN_SEVERITY` | `BREAKING` | Severidad mínima que se envía automáticamente (`BREAKING` / `ALERT`). |
+
+Un valor mal escrito (un número fuera de rango, una palabra que no es true/false, una cadena
+desconocida) detiene el arranque con un error que nombra la variable, en vez de usar un valor por
+defecto en silencio.
+
+Límites fijos de la API pública: RADAR acepta 10 búsquedas por minuto por visitante y 60 por minuto
+en total, ejecuta como mucho 4 investigaciones a la vez (si no, responde 503 con `Retry-After`) y cada
+visitante puede lanzar 4 investigaciones con IA cada 10 minutos. Las conexiones en directo (SSE) están
+limitadas a 6 por visitante y 1.000 en total. Las IPv6 se agrupan por /64.
 
 ## Aviso
 

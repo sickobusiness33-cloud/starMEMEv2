@@ -1150,6 +1150,13 @@
 
 .brief__foot {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.brief__reused {
+  color: var(--text-3);
 }
 
 /* intel */

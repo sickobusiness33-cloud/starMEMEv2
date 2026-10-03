@@ -47,11 +47,65 @@ export type DetailState =
   | { status: 'ready'; data: ArticleResponse; at: number }
   | { status: 'error'; data: ArticleResponse | null; error: string; at: number };
 
+/**
+ * A position in the server's feed order (createdAt DESC, id DESC). A range "down to"
+ * a position holds every story at or above it; `before` = the same position asks the
+ * server for exactly the stories below it. `id: ''` sits below every story of that
+ * millisecond (the whole millisecond is in the range; `before` is then the plain timestamp).
+ */
+export interface FeedPos {
+  ts: number;
+  id: string;
+}
+
+/** the floor of a range whose whole history is in memory */
+export const COMPLETE: FeedPos = Object.freeze({ ts: -Infinity, id: '' });
+
+export function isComplete(floor: FeedPos | null): boolean {
+  return floor !== null && floor.ts === -Infinity;
+}
+
+/** the story is at or above `floor` in feed order (inside a range that goes down to it) */
+export function atOrAbove(a: Pick<NewsArticle, 'createdAt' | 'id'>, floor: FeedPos): boolean {
+  return a.createdAt > floor.ts || (a.createdAt === floor.ts && a.id >= floor.id);
+}
+
+/** < 0 when `a` is older (lower in the feed) than `b` */
+function cmpPos(a: FeedPos, b: FeedPos): number {
+  if (a.ts !== b.ts) return a.ts < b.ts ? -1 : 1;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+const posOf = (a: NewsArticle): FeedPos => ({ ts: a.createdAt, id: a.id });
+
+/** a range that ends just above `a`'s millisecond (stories sharing it are re-read by the next page) */
+const posAbove = (a: NewsArticle): FeedPos => ({ ts: a.createdAt + 1, id: '' });
+
+const maxPos = (a: FeedPos | null, b: FeedPos): FeedPos => (a === null || cmpPos(a, b) < 0 ? b : a);
+
+const samePos = (a: FeedPos | null, b: FeedPos | null): boolean =>
+  a === null || b === null ? a === b : a.ts === b.ts && a.id === b.id;
+
+/** the `before` value for the page below `floor`: the server's "<createdAt>:<id>" cursor, or a plain timestamp */
+export function beforeParam(floor: FeedPos): string | number {
+  return floor.id ? `${floor.ts}:${floor.id}` : floor.ts;
+}
+
+/** parses FeedResponse.nextCursor ("<createdAt>:<id>"); null when absent or malformed */
+export function parseCursor(raw: string | null | undefined): FeedPos | null {
+  if (!raw) return null;
+  const i = raw.indexOf(':');
+  if (i <= 0) return null;
+  const ts = Number(raw.slice(0, i));
+  const id = raw.slice(i + 1);
+  return Number.isSafeInteger(ts) && id ? { ts, id } : null;
+}
+
 export interface PageState {
   loading: boolean;
   error: string | null;
-  /** per filter key: every matching story with createdAt >= cursor is in memory (exclusive `before` for the next page) */
-  cursor: Record<string, number>;
+  /** per filter key: every matching story at or above this position is in memory (`before` for the next page) */
+  cursor: Record<string, FeedPos>;
   /** filter keys whose whole server-side history is in memory */
   exhausted: Record<string, true>;
   /** filter keys already topped up once automatically */
@@ -72,7 +126,7 @@ export interface State {
    * Set when the stories in `buffered` do not connect to `articles` (a long disconnect,
    * or more arrivals than BUFFER_CAP): applied as a new floor for every view on flush.
    */
-  pendingFloor: number | null;
+  pendingFloor: FeedPos | null;
   enter: Record<string, EnterInfo>;
   detections: DetectionEvent[];
   detectionEnter: Record<string, number>;
@@ -116,14 +170,6 @@ export interface State {
 /** the server's feed order (createdAt DESC, id DESC), so a millisecond tie sorts the same on both sides */
 const byNewest = (a: NewsArticle, b: NewsArticle) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
 
-/**
- * Floor of a range whose oldest loaded story is `oldest`, when older stories may exist: stories
- * sharing its millisecond can sit just past the page limit, so the range is complete only above
- * it, and the next page (`before` = this floor, i.e. createdAt < floor) re-reads that millisecond.
- */
-function floorAbove(oldest: NewsArticle): number {
-  return oldest.createdAt + 1;
-}
 const byNewestEvent = (a: DetectionEvent, b: DetectionEvent) => b.ts - a.ts;
 
 function merge<T extends { id: string }>(list: T[], incoming: T[], cmp: (a: T, b: T) => number, cap = Infinity): T[] {
@@ -180,15 +226,15 @@ function supersetKeys(f: FeedFilters): string[] {
 }
 
 /**
- * Oldest createdAt down to which the view for `f` is complete: -Infinity when its whole
+ * Oldest feed position down to which the view for `f` is complete: COMPLETE when its whole
  * history is in memory, null before anything is known (not hydrated).
  */
-export function rangeFloor(pages: PageState, f: FeedFilters): number | null {
-  let floor: number | null = null;
+export function rangeFloor(pages: PageState, f: FeedFilters): FeedPos | null {
+  let floor: FeedPos | null = null;
   for (const k of supersetKeys(f)) {
-    if (pages.exhausted[k]) return -Infinity;
+    if (pages.exhausted[k]) return COMPLETE;
     const c = pages.cursor[k];
-    if (c !== undefined && (floor === null || c < floor)) floor = c;
+    if (c !== undefined && (floor === null || cmpPos(c, floor) < 0)) floor = c;
   }
   return floor;
 }
@@ -197,12 +243,12 @@ export function rangeFloor(pages: PageState, f: FeedFilters): number | null {
 export function viewFrom(
   articles: NewsArticle[],
   filters: FeedFilters,
-  floor: number | null,
+  floor: FeedPos | null,
   pinned: Record<string, true>,
 ): NewsArticle[] {
   const narrow = filters.chain !== 'all' || filters.severity !== 'all';
-  if (!narrow && (floor === null || floor === -Infinity)) return articles;
-  return articles.filter((a) => matchesFilters(a, filters) && (floor === null || a.createdAt >= floor || pinned[a.id] === true));
+  if (!narrow && (floor === null || isComplete(floor))) return articles;
+  return articles.filter((a) => matchesFilters(a, filters) && (floor === null || atOrAbove(a, floor) || pinned[a.id] === true));
 }
 
 export function viewOf(s: Pick<State, 'articles' | 'filters' | 'pages' | 'pinned'>): NewsArticle[] {
@@ -227,7 +273,7 @@ function evict(
   let inView = 0;
   for (const a of articles) {
     if (inView >= ARTICLE_CAP) break;
-    if (matchesFilters(a, filters) && (floor === null || a.createdAt >= floor)) {
+    if (matchesFilters(a, filters) && (floor === null || atOrAbove(a, floor))) {
       keep.add(a.id);
       inView += 1;
     }
@@ -247,14 +293,15 @@ function evict(
   const filled = { ...pages.filled };
   for (const key of new Set([ALL_KEY, ...Object.keys(cursor), ...Object.keys(exhausted), ...Object.keys(filled)])) {
     const f = parseKey(key);
-    let newest = -Infinity;
-    for (const d of dropped) if (d.createdAt > newest && matchesFilters(d, f)) newest = d.createdAt;
-    if (newest === -Infinity) continue;
-    const raised = newest + 1;
+    let newest: NewsArticle | null = null;
+    for (const d of dropped) if ((newest === null || d.createdAt > newest.createdAt) && matchesFilters(d, f)) newest = d;
+    if (newest === null) continue;
+    const raised = posAbove(newest);
+    const prev = cursor[key];
     if (exhausted[key]) {
       delete exhausted[key];
       cursor[key] = raised;
-    } else if (cursor[key] === undefined || cursor[key] < raised) {
+    } else if (prev === undefined || cmpPos(prev, raised) < 0) {
       cursor[key] = raised;
     }
     // what the automatic top-up brought in is gone: allow it again when the reader returns
@@ -264,10 +311,11 @@ function evict(
 }
 
 /** Stories below `floor` may be missing (missed while disconnected): no view may claim them as contiguous. */
-function applyFloor(pages: PageState, floor: number): PageState {
+function applyFloor(pages: PageState, floor: FeedPos): PageState {
   const cursor = { ...pages.cursor };
   for (const key of new Set([ALL_KEY, ...Object.keys(cursor), ...Object.keys(pages.exhausted)])) {
-    if (cursor[key] === undefined || cursor[key] < floor) cursor[key] = floor;
+    const prev = cursor[key];
+    if (prev === undefined || cmpPos(prev, floor) < 0) cursor[key] = floor;
   }
   return { ...pages, cursor, exhausted: {}, filled: {} };
 }
@@ -315,7 +363,7 @@ export const useStore = create<State>()((set, get) => ({
         pages: {
           ...s.pages,
           filled: { [ALL_KEY]: true },
-          cursor: oldest && list.length >= PAGE ? { [ALL_KEY]: floorAbove(oldest) } : {},
+          cursor: oldest && list.length >= PAGE ? { [ALL_KEY]: posOf(oldest) } : {},
           exhausted: list.length < PAGE ? { [ALL_KEY]: true } : {},
         },
       });
@@ -339,7 +387,7 @@ export const useStore = create<State>()((set, get) => ({
       fresh.length === articles.length &&
       articles.length >= PAGE &&
       oldestFresh.createdAt > newestKnown;
-    if (gap) set({ pendingFloor: Math.max(get().pendingFloor ?? -Infinity, floorAbove(oldestFresh)) });
+    if (gap) set({ pendingFloor: maxPos(get().pendingFloor, posOf(oldestFresh)) });
     const out: Array<{ article: NewsArticle; result: ArrivalResult }> = [];
     for (const a of [...fresh].reverse()) out.push({ article: a, result: get().ingestArticle(a) });
     for (const e of [...events].sort(byNewestEvent).reverse()) get().ingestDetection(e);
@@ -368,10 +416,10 @@ export const useStore = create<State>()((set, get) => ({
     const buffered = merge(s.buffered, [a], byNewest, BUFFER_CAP);
     // the oldest waiting stories were dropped: what is left no longer connects to the feed
     const lastKept = buffered.at(-1);
-    const floor = s.buffered.length >= BUFFER_CAP && lastKept ? floorAbove(lastKept) : null;
+    const floor = s.buffered.length >= BUFFER_CAP && lastKept ? posOf(lastKept) : null;
     set({
       buffered,
-      pendingFloor: floor === null ? s.pendingFloor : Math.max(s.pendingFloor ?? -Infinity, floor),
+      pendingFloor: floor === null ? s.pendingFloor : maxPos(s.pendingFloor, floor),
     });
     return 'buffered';
   },
@@ -450,14 +498,14 @@ export const useStore = create<State>()((set, get) => ({
     const key = filterKey(filters);
     if (s.pages.loading) return;
     const floor = rangeFloor(s.pages, filters);
-    if (floor === -Infinity) return; // the whole history for this filter is in memory
+    if (isComplete(floor)) return; // the whole history for this filter is in memory
     if (kind === 'fill' && s.pages.filled[key]) return;
     if (kind === 'older' && viewOf(s).length >= ARTICLE_CAP) return;
     set({ pages: { ...s.pages, loading: true, error: null } });
     try {
       const res = await api.feed({
         limit: PAGE,
-        before: floor,
+        before: floor === null ? null : beforeParam(floor),
         chain: filters.chain === 'all' ? null : filters.chain,
         severity: filters.severity === 'all' ? null : (filters.severity as Severity),
       });
@@ -465,15 +513,17 @@ export const useStore = create<State>()((set, get) => ({
       let pages: PageState = { ...cur.pages, loading: false, filled: { ...cur.pages.filled, [key]: true } };
       // The page continues the range only if the range did not move while it was in flight
       // (an eviction or a reconnect gap); otherwise its stories are kept but not trusted as contiguous.
-      if (rangeFloor(cur.pages, filters) === floor) {
+      if (samePos(rangeFloor(cur.pages, filters), floor)) {
         const oldest = res.articles.at(-1);
-        if (res.nextBefore === null || res.articles.length < PAGE) {
+        const last = res.nextCursor !== undefined ? res.nextCursor === null : res.nextBefore === null;
+        if (last || res.articles.length < PAGE) {
           pages = { ...pages, exhausted: { ...pages.exhausted, [key]: true } };
         } else if (oldest) {
-          // a whole page inside one millisecond would never move past it: then accept its own floor
-          const above = floorAbove(oldest);
-          const next = floor === null || above < floor ? above : oldest.createdAt;
-          pages = { ...pages, cursor: { ...pages.cursor, [key]: Math.min(pages.cursor[key] ?? Infinity, next) } };
+          // the server's exact cursor (the page's last story): the next page starts right below it,
+          // so stories sharing a millisecond are neither skipped nor read twice
+          const next = parseCursor(res.nextCursor) ?? posOf(oldest);
+          const prev = pages.cursor[key];
+          pages = { ...pages, cursor: { ...pages.cursor, [key]: prev !== undefined && cmpPos(prev, next) < 0 ? prev : next } };
         }
       }
       // older pages land below the fold: no enter animation, no buffering

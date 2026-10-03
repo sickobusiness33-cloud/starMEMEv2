@@ -184,6 +184,46 @@ describe('rate limiters', () => {
     expect(order).toEqual(Array.from({ length: 25 }, (_, i) => i));
   });
 
+  it('a configured burst starts at once and still keeps any 60 s window within perMinute', async () => {
+    registerLimiter('test-burst', { perMinute: 6, burst: 3 });
+    const startedAt: number[] = [];
+    stubFetch(async () => {
+      startedAt.push(Date.now());
+      return jsonResponse({});
+    });
+    const t0 = Date.now();
+    const all = Promise.all(
+      Array.from({ length: 9 }, (_, i) => fetchJson(`https://example.test/b?i=${i}`, { limiter: 'test-burst', maxQueueMs: 180_000 })),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(startedAt.length).toBe(3);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(startedAt.filter((t) => t - t0 < 60_000).length).toBeLessThanOrEqual(6);
+    await vi.advanceTimersByTimeAsync(120_000);
+    await all;
+    expect(startedAt.length).toBe(9);
+    for (let i = 0; i < startedAt.length; i++) {
+      const windowStarts = startedAt.filter((t) => t >= startedAt[i]! && t - startedAt[i]! < 60_000).length;
+      expect(windowStarts).toBeLessThanOrEqual(6);
+    }
+  });
+
+  it("one Radar search's two GeckoTerminal calls start together in the radar lane", async () => {
+    const startedAt: number[] = [];
+    stubFetch(async () => {
+      startedAt.push(Date.now());
+      return jsonResponse({});
+    });
+    const limiter = laneLimiter('geckoterminal', 'radar');
+    const both = Promise.allSettled([
+      fetchJson('https://example.test/pools', { limiter, maxQueueMs: 10_000 }),
+      fetchJson('https://example.test/info', { limiter, maxQueueMs: 10_000 }),
+    ]);
+    await vi.advanceTimersByTimeAsync(10_001);
+    expect((await both).map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
+    expect(startedAt.length).toBe(2);
+  });
+
   it('serializes requests at minIntervalMs', async () => {
     registerLimiter('test-serial', { perMinute: 600, minIntervalMs: 1000 });
     const startedAt: number[] = [];

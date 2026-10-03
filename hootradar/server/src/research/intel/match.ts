@@ -68,6 +68,11 @@ const COMMON_WORDS = new Set([
   'meme', 'memes', 'money', 'moon', 'musk', 'new', 'nft', 'official', 'pepe', 'pump', 'queen', 'real', 'rich',
   'rocket', 'sell', 'shib', 'sol', 'solana', 'sun', 'test', 'the', 'token', 'trump', 'usa', 'wagmi', 'web3',
   'wow', 'world',
+  // everyday words that precede "token" / "coin" in ordinary prose (LLM, auth and game tokens): live, a
+  // Solana token named "good" collected 27 Hacker News comments about "good token" predictions
+  'access', 'auth', 'bad', 'best', 'better', 'big', 'cheap', 'cool', 'early', 'easy', 'fair', 'first', 'free',
+  'game', 'good', 'great', 'happy', 'hot', 'last', 'max', 'more', 'my', 'native', 'next', 'nice', 'one', 'only',
+  'open', 'our', 'power', 'safe', 'smart', 'stable', 'super', 'this', 'top', 'true', 'utility', 'your',
 ]);
 
 /** Crypto vocabulary that makes a bare word in general-audience text read as a token reference. */
@@ -118,11 +123,13 @@ function buildMatcher(t: TermFlags, chain: ChainId): IntelTerms['match'] {
   return (text, opts = {}) => {
     if (containsAddress(text, t.address)) return 'contract';
     if (cashtag?.test(text) && (!symbolNeedsCorroboration || corroborated(text))) return 'symbol';
+    const inContext = !opts.needsContext || CRYPTO_CONTEXT.test(text) || !!chainMention?.test(text);
     const word = namePhrase?.test(text) ? 'name' : bareSymbol?.test(text) ? 'symbol' : null;
-    if (word && (!opts.needsContext || CRYPTO_CONTEXT.test(text))) return word;
-    // ticker forms carry their own crypto context, not their own identity
-    if (symbolTicker?.test(text) && (!symbolNeedsCorroboration || corroborated(text))) return 'symbol';
-    if (nameTicker?.test(text) && (!nameNeedsCorroboration || corroborated(text))) return 'name';
+    if (word && inContext) return word;
+    // Ticker forms carry their own crypto context on crypto sources, never their own identity. On a
+    // general-audience source "token" is mostly an LLM or auth token, so they need crypto vocabulary there too.
+    if (symbolTicker?.test(text) && (!symbolNeedsCorroboration || corroborated(text)) && inContext) return 'symbol';
+    if (nameTicker?.test(text) && (!nameNeedsCorroboration || corroborated(text)) && inContext) return 'name';
     return null;
   };
 }

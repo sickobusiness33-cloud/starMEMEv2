@@ -176,6 +176,20 @@ export function parseGtTokenPools(
   return mostLiquid(asBase) ?? mostLiquid(asQuote);
 }
 
+/**
+ * A share of supply in percent, or null when it cannot be one. GeckoTerminal sometimes
+ * reports a top-10 share a little over 100 with a negative remainder (live: top_10
+ * "101.1462", rest "-1.8852" for a 37-holder pump.fun token) when its supply figure lags
+ * burns or mints. Up to SUPPLY_PCT_OVERSHOOT points over is that lag and reads as 100;
+ * anything further outside 0-100 is not a share of supply and is unknown.
+ */
+const SUPPLY_PCT_OVERSHOOT = 5;
+export function supplyPct(v: unknown): number | null {
+  const n = toNum(v);
+  if (n == null || n < 0 || n > 100 + SUPPLY_PCT_OVERSHOOT) return null;
+  return Math.min(n, 100);
+}
+
 export function parseGtTokenInfo(json: unknown): TokenEnrichment | null {
   const data = asRecord(asRecord(json).data);
   if (!('attributes' in data)) return null;
@@ -183,7 +197,7 @@ export function parseGtTokenInfo(json: unknown): TokenEnrichment | null {
   const holders = asRecord(a.holders);
   return {
     holders: toNum(holders.count),
-    top10HolderPct: toNum(asRecord(holders.distribution_percentage).top_10),
+    top10HolderPct: supplyPct(asRecord(holders.distribution_percentage).top_10),
     security: readSecurity(a),
     imageUrl: toHttpUrl(a.image_url),
     links: readInfoLinks(a),
@@ -195,7 +209,7 @@ function readSecurity(a: Record<string, unknown>): TokenSecurity | null {
     mintAuthority: yesNo(a.mint_authority),
     freezeAuthority: yesNo(a.freeze_authority),
     honeypot: a.is_honeypot === 'yes' ? 'yes' : a.is_honeypot === 'no' ? 'no' : 'unknown',
-    devHoldingPct: toNum(a.developer_holding_percentage),
+    devHoldingPct: supplyPct(a.developer_holding_percentage),
   };
   const known =
     security.mintAuthority !== null ||

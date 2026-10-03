@@ -66,7 +66,10 @@ export function SeverityBands({ score, severity, capped = false }: { score: numb
   const thresholds = DEFAULT_BANDS.map((b) => b.min).join(' / ');
   const summary = severity
     ? `${severity}${capped && reachedRank > rank ? `, held below ${reached}` : ''}: score ${Math.round(score)} on the default thresholds ${thresholds}.`
-    : `Below WATCH: score ${Math.round(score)} on the default thresholds ${thresholds}.`;
+    : reached
+      ? // a score past WATCH with no severity: the token was not eligible (the panel lists why)
+        `No severity, not eligible: score ${Math.round(score)} would reach ${reached} on the default thresholds ${thresholds}.`
+      : `Below WATCH: score ${Math.round(score)} on the default thresholds ${thresholds}.`;
   return (
     <div className="sevbands">
       <p className="sr-only">{summary}</p>
@@ -110,16 +113,19 @@ export function capsOf(x: object | null | undefined): string[] {
   return x.caps.filter((c): c is string => typeof c === 'string' && c.trim().length > 0);
 }
 
-export function CapChips({ caps, severity }: { caps: string[]; severity: Severity | null }) {
+/** `compact`: one line per chip, cut with an ellipsis (the full reason is in the title), for the feed card. */
+export function CapChips({ caps, severity, compact = false }: { caps: string[]; severity: Severity | null; compact?: boolean }) {
   if (caps.length === 0) return null;
   return (
-    <ul className="cap-chips" aria-label="Severity caps">
-      {caps.map((c) => (
-        <li key={c} className="cap-chip">
-          {severity ? `Capped at ${severity}: ` : 'Capped: '}
-          {c}
-        </li>
-      ))}
+    <ul className={clsx('cap-chips', compact && 'cap-chips--compact')} aria-label="Severity caps">
+      {caps.map((c) => {
+        const text = `${severity ? `Capped at ${severity}: ` : 'Capped: '}${c}`;
+        return (
+          <li key={c} className="cap-chip" title={compact ? text : undefined}>
+            {text}
+          </li>
+        );
+      })}
     </ul>
   );
 }

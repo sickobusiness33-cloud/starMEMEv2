@@ -801,6 +801,8 @@ function riskFlags(s: TokenSnapshot, m: DerivedMetrics): string[] {
   if (liq != null && liq < MIN_SAFE_LIQUIDITY_USD) flags.push('Liquidity under $10k');
   const top10 = finite(s.top10HolderPct);
   if (top10 != null && top10 > MAX_TOP10_PCT) flags.push(`Top-10 holders own ${num(top10)}% of supply`);
+  // like an unknown honeypot status: unknown concentration never caps a severity, so the story says it is unknown
+  else if (top10 == null) flags.push('Holder concentration unknown');
   const dev = finite(sec?.devHoldingPct);
   if (dev != null && dev > MAX_DEV_PCT) flags.push(`Developer holds ${num(dev)}% of supply`);
   const age = finite(m.ageMinutes);

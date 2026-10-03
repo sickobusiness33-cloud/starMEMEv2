@@ -11,7 +11,7 @@ import {
   parseDsListings,
   parseDsPairs,
 } from '../src/sources/dexscreener.js';
-import { parseGtPools, parseGtTokenInfo, parseGtTokenPools } from '../src/sources/geckoterminal.js';
+import { parseGtPools, parseGtTokenInfo, parseGtTokenPools, supplyPct } from '../src/sources/geckoterminal.js';
 import { emptySnapshot, mergeAcrossPools, mergeSnapshots, toEpochMs, toNum } from '../src/sources/merge.js';
 import { parsePumpCoins } from '../src/sources/pumpfun.js';
 
@@ -140,6 +140,19 @@ describe('GeckoTerminal parsers', () => {
       { type: 'twitter', url: 'https://x.com/bonk_inu' },
       { type: 'discord', url: 'https://discord.gg/ubqvDDFUhf' },
     ]);
+  });
+
+  it('reads a provider share of supply slightly over 100% as 100%, and an impossible one as unknown', () => {
+    const doc = (top10: unknown, dev: unknown) => ({
+      data: { attributes: { holders: { count: 37, distribution_percentage: { top_10: top10 } }, developer_holding_percentage: dev } },
+    });
+    // live GeckoTerminal payload: top_10 "101.1462" with rest "-1.8852" (lagging supply figure)
+    expect(parseGtTokenInfo(doc('101.1462', '0'))!.top10HolderPct).toBe(100);
+    expect(parseGtTokenInfo(doc('99.5', '0'))!.top10HolderPct).toBe(99.5);
+    expect(parseGtTokenInfo(doc('140', '0'))!.top10HolderPct).toBeNull();
+    expect(parseGtTokenInfo(doc('-2', '0'))!.top10HolderPct).toBeNull();
+    expect(parseGtTokenInfo(doc(null, '102'))!.security?.devHoldingPct).toBe(100);
+    expect(supplyPct('abc')).toBeNull();
   });
 
   it('returns null token info for an empty document', () => {

@@ -103,6 +103,12 @@ export class RequestQueueError extends Error {
 
 interface LimiterOpts {
   perMinute: number;
+  /**
+   * Requests that may start at once from a full bucket (default 10% of perMinute, at
+   * least 1). The rest of the budget refills evenly, so a 60 s window still never
+   * exceeds perMinute; a larger burst only front-loads it.
+   */
+  burst?: number;
   /** minimum gap between request starts; also makes requests run one at a time */
   minIntervalMs?: number;
   /** waiting requests beyond this are refused at once (RequestQueueError 'full'); default unbounded */
@@ -129,8 +135,9 @@ interface AcquireOpts {
 }
 
 /**
- * FIFO token bucket. The bucket holds a small burst (10% of the budget) and refills
- * at the remaining rate, so no 60-second window can exceed `perMinute` requests.
+ * FIFO token bucket. The bucket holds a small burst (10% of the budget unless `burst`
+ * says otherwise) and refills at the remaining rate, so no 60-second window can exceed
+ * `perMinute` requests.
  * A waiting request leaves the queue when its caller gives up (abort signal or
  * maximum wait), so an abandoned request never costs a provider call.
  */
@@ -150,7 +157,7 @@ class Limiter {
 
   constructor(readonly opts: LimiterOpts) {
     const perMinute = Math.max(1, opts.perMinute);
-    this.capacity = Math.max(1, Math.floor(perMinute / 10));
+    this.capacity = Math.min(perMinute, Math.max(1, Math.floor(opts.burst ?? perMinute / 10)));
     this.refillPerMs = Math.max(1, perMinute - this.capacity) / 60_000;
     this.minIntervalMs = Math.max(0, opts.minIntervalMs ?? 0);
     this.tokens = this.capacity;
@@ -291,7 +298,11 @@ export function registerLimiter(key: string, opts: LimiterOpts): void {
  * arrive, the scanner keeps its share and its queue never grows behind them.
  */
 registerLimiter('geckoterminal', { perMinute: 20, maxQueue: 60, group: 'geckoterminal' });
-registerLimiter('geckoterminal-radar', { perMinute: 5, maxQueue: 12, group: 'geckoterminal' });
+// One Radar search asks GeckoTerminal for the token's top pool and its token info at the same
+// time (the holders stage reuses both from the source cache): a burst of 3 lets a search get both
+// at once. With a burst of 1 the second call waited 15 s for a slot and missed Radar's 10 s
+// deadline on every search. Scanner 20 + Radar 6 stays under GeckoTerminal's 30 calls/min.
+registerLimiter('geckoterminal-radar', { perMinute: 6, burst: 3, maxQueue: 12, group: 'geckoterminal' });
 registerLimiter('dexscreener', { perMinute: 220, group: 'dexscreener' });
 registerLimiter('dexscreener-radar', { perMinute: 30, maxQueue: 30, group: 'dexscreener' });
 registerLimiter('dexscreener-meta', { perMinute: 55 });

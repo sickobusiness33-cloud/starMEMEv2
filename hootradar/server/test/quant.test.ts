@@ -297,7 +297,8 @@ describe('matchQuant', () => {
     expectWellFormed(r);
     expect(r.matches).toEqual([]);
     expect(r.top).toBeNull();
-    expect(r.riskFlags).toEqual(['Honeypot status unknown']);
+    // unknowns never cap a severity, so the story says they are unknown
+    expect(r.riskFlags).toEqual(['Honeypot status unknown', 'Holder concentration unknown']);
   });
 
   it('excludes missing features from the denominator but caps the score by coverage', () => {
@@ -357,7 +358,12 @@ describe('matchQuant', () => {
     expectWellFormed(r);
     expect(r.top?.methodologyId).toBe('risk-overlay');
     expect(r.top?.rationale).toContain('an 82% drop since launch');
-    expect(r.riskFlags).toEqual(['Honeypot status unknown', 'Liquidity under $10k', 'Token younger than 15 minutes']);
+    expect(r.riskFlags).toEqual([
+      'Honeypot status unknown',
+      'Liquidity under $10k',
+      'Holder concentration unknown',
+      'Token younger than 15 minutes',
+    ]);
   });
 
   it('raises every structural risk flag it can see', () => {
@@ -381,7 +387,12 @@ describe('matchQuant', () => {
     ]);
     expect(matchQuant(snap({ security: { ...CLEAN_SECURITY, honeypot: 'yes' } }), metrics(), UNKNOWN_REGIME).riskFlags).toEqual([
       'Honeypot detected',
+      'Holder concentration unknown',
     ]);
+    // a known, moderate concentration is not flagged at all
+    expect(
+      matchQuant(snap({ top10HolderPct: 30, security: { ...CLEAN_SECURITY, honeypot: 'no' } }), metrics(), UNKNOWN_REGIME).riskFlags,
+    ).toEqual([]);
   });
 
   it('never counts an unknown honeypot status as a security red flag', () => {

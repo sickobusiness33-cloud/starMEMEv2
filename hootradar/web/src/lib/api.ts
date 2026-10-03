@@ -107,7 +107,8 @@ function qs(params: Record<string, string | number | null | undefined>): string 
 
 export interface FeedQuery {
   limit?: number;
-  before?: number | null;
+  /** the previous page's FeedResponse.nextCursor ("<createdAt>:<id>"), or a plain createdAt (stories strictly older) */
+  before?: string | number | null;
   chain?: ChainId | null;
   severity?: Severity | null;
 }

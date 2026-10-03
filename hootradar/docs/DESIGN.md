@@ -24,18 +24,30 @@ Skill files: `$SKILLS/<name>/SKILL.md` (path given in the task prompt). Read the
   --text-3: #7a858f;    /* AA (4.5:1+) on every surface; #66717b failed it */
   --green: #3dff8f;     /* neon — live, BREAKING, positive, primary action */
   --green-dim: rgb(61 255 143 / 0.12);
+  --on-green: #03140a;  /* text on a green fill (BREAKING tag) */
+  --green-hover: #6bffaa; /* primary button hover */
   --cyan: #2fe0ff;      /* AI, ALERT, links, focus */
   --cyan-dim: rgb(47 224 255 / 0.12);
+  --on-cyan: #001218;   /* text on a cyan fill (skip link) */
   --red: #ff5a6a;       /* risk only (risk outlook, risk flags, sells) */
+  --red-dim: rgb(255 90 106 / 0.12);
   --amber: #ffc04d;     /* degraded / held-back states only (chain degraded, AI fallback, severity cap) */
+  --amber-dim: rgb(255 192 77 / 0.12);
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --dur-press: 120ms;   /* press feedback */
+  --dur-hover: 150ms;   /* hover color */
+  --dur-ui: 200ms;      /* indicator slides, small popovers */
+  --dur-enter: 220ms;   /* list entries, accordion */
   --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SFMono-Regular', Menlo, monospace;
   --radius: 10px;
   --radius-sm: 6px;
 }
 ```
+Lines, bars, glows, glass and shadows are derived in `tokens.css` (`--green-line`, `--cyan-line`,
+`--amber-line`, `--bar-glass`, `--shadow-*` …) with `color-mix()` from the tokens above, so changing a
+token carries through; components never use literal colors.
 Chain dots (small, 6px): solana `#b18cff`, ethereum `#8ea2ff`, base `#3d7bff`, bsc `#f3c344` — take from `ChainInfo.color`.
 
 Typography: Inter for prose (14px base, 1.5 line height); JetBrains Mono for numbers, tickers,
@@ -49,8 +61,11 @@ All numerals `font-variant-numeric: tabular-nums`. Background: `--bg` with an ex
 - Left: small radar/owl SVG mark + `HOOTRADAR` (mono, 600, letter-spaced).
 - Engine pill: `● AI ENGINE ACTIVE` — green dot with a soft expanding ring (CSS keyframes, linear,
   2.4 s, constant motion = linear is correct; static under reduced motion). Sub-label shows the real
-  engine: `CLAUDE · claude-opus-5-5` or `RULES ENGINE` (then the pill text is `● ENGINE ACTIVE · RULES`,
-  never claim AI when it isn't). `starting` → cyan "BOOTING", `degraded` → amber.
+  engine: `CLAUDE · claude-opus-5-5`, or for the rules engine the pill reads `● ENGINE ACTIVE` with
+  sub-label `RULES ENGINE` (never claim AI when it isn't). A Claude engine reporting `aiError` shows an
+  amber `AI ERROR · FALLBACK RULES` sub-label. `starting` → cyan "BOOTING", `degraded` → amber
+  "DEGRADED". At ≤ 1199px the pill shows the short label (`AI ACTIVE` / `RULES ACTIVE` / `AI ERROR`);
+  the full label stays readable to screen readers.
 - Stat cells divided by hairlines: `{n} CHAINS SCANNING`, `{n} TOKENS ANALYZED`, `{n} ANOMALIES DETECTED`,
   `{n} BREAKING EVENTS` — value mono 15px `--text`, label 10.5px `--text-3`. Values animate with
   `@number-flow/react` (that is what it is for). "24H" scope hint in the label tooltip/title.
@@ -80,6 +95,9 @@ AI  El token está mostrando una aceleración anormal de actividad on-chain…
   (green / red at 70% opacity). Null → `—`.
 - Quant: 10-segment meter in cyan + `QUANT MATCH 84%` + methodology name; `title` = disclaimer.
 - AI line: `AI` badge (cyan, mono) + `aiLine` in `--text-2`. If `engine === 'rules'` badge reads `RULES`.
+- Severity caps: when the article carries `caps` (a score that reached a higher band but was held,
+  e.g. BREAKING on a thin market published as ALERT), an amber chip `Capped at ALERT: <reason>` sits
+  above the AI line (one line, ellipsized; full reasons in the expanded article's Signals section).
 - Relative time updates every 15 s (one shared ticker, not one interval per card).
 - Click / Enter expands inline (grid-template-rows 0fr→1fr, 220ms `--ease-out` — the sanctioned
   accordion exception) to the full article:
@@ -121,18 +139,26 @@ Investigation view:
   Transactions (1h/24h), Tx/min, Holders, Holder growth, Buy/Sell ratio, Wallet activity
   (unique buyers/sellers 5m/1h), Smart money (proxy + note), Momentum, Volatility, Token age.
   Each cell: label, value, small sub-line. Unknown → `—` + reason from `report.unavailable`.
-- Detection: score + signals chips. Quant panel: top matches with bars + regime + risk flags + disclaimer.
+- Detection: the severity word large with `score N` beside it, a WATCH | ALERT | BREAKING band meter
+  (default thresholds 22 / 42 / 60, filled up to the severity, tick at the score), amber
+  `Capped at <severity>: <reason>` chips when `detection.caps` holds the band, then signals chips.
+  Quant panel: top matches with bars + regime + risk flags + disclaimer.
 - Internet intel: segmented control `ALL · LIVE · RECENT · OLD` with counts; rows: freshness badge
   (LIVE green w/ dot, RECENT cyan, OLD gray, UNKNOWN dim), source type tag, source name, time ago,
-  title (link, `rel="noopener noreferrer"`, `target=_blank`), snippet. Provider status line underneath
-  (which sources answered / failed — honesty).
-- AI brief: summary, bullets, outlook trio. Engine badge.
+  title (link, `rel="noopener noreferrer"`, `target=_blank`), snippet. An item dated by day only
+  (`publishedPrecision: 'day'`) shows the date (`2026-10-01`), never a minute-precise time ago, and is
+  never LIVE. Provider status line underneath from `report.providers` (which sources answered, with
+  counts, or failed / were not run and why — honesty).
+- AI brief: summary, bullets, outlook trio. Engine badge. A brief reused from a recent search of the
+  same token (`writtenAt` before the report started) says `Written N min ago · reused …`.
 - Ambiguous symbol: "Also matching" candidate chips → clicking re-runs on that address+chain.
 - Deep link `#/radar?q=…&chain=…` auto-runs.
 
 ## INTELLIGENCE
 
 - Regime banner: `MARKET REGIME · RISK-ON` + breadth %, median 1h change, sample size, computed time.
+  The note states the real sample: young tokens observed in the last 60 min, at least 45 min old, with
+  $5K+ liquidity (fewer than 12 → `Unknown`).
 - Methodology library (responsive grid, 1–3 columns): name, family tag, summary, "Looks for" (signature),
   "Crypto adaptation", horizon, caveats, references (paper / Quantpedia link icons).
   Each card has a `LIVE LEADERS` strip: top tokens matching it now (from `/api/quant/leaders`) with

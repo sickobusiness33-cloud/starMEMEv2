@@ -96,6 +96,15 @@ const REGIME_TEXT: Record<MarketRegime['label'], string> = {
   unknown: 'Unknown',
 };
 
+/**
+ * How server/src/quant/regime.ts samples (createRegimeProvider over db.regimeUniverse):
+ * the newest observation per tracked token, observed within the last 60 min, $5K+ liquidity,
+ * at least 45 min old (its 1H change must be a real hour), no older than the scanner's
+ * token-age window; fewer than 12 such tokens reads 'unknown'.
+ */
+const REGIME_MIN_SAMPLE = 12;
+const REGIME_UNIVERSE = 'Sample: young tokens observed in the last 60 min, at least 45 min old, with $5K+ liquidity.';
+
 function RegimeBanner() {
   const leaders = useQuant((s) => s.leaders);
   const r = leaders.data?.regime ?? null;
@@ -113,8 +122,8 @@ function RegimeBanner() {
         <p className="regime__note">
           {r
             ? r.label === 'unknown'
-              ? `Too few tokens to classify (${r.sampleSize}): it needs young tokens at least 45 min old, with $5K+ liquidity, observed in the last hour.`
-              : 'Breadth and median 1H move of the young tokens the scanners observed in the last hour (at least 45 min old, $5K+ liquidity).'
+              ? `Too few tokens to classify: ${r.sampleSize} of the ${REGIME_MIN_SAMPLE} needed. ${REGIME_UNIVERSE}`
+              : `Breadth and median 1H move. ${REGIME_UNIVERSE}`
             : leaders.status === 'error'
               ? (leaders.error ?? 'Could not load the market regime.')
               : 'Computing from the tracked universe…'}

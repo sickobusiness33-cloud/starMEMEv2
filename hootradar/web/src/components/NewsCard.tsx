@@ -3,7 +3,7 @@ import type { NewsArticle } from '@shared/types';
 import { QUANT_DISCLAIMER } from '@shared/types';
 import { isEntering, useStore, type EnterInfo } from '../store';
 import { fmtNum, fmtPct, fmtSplit, fmtTicker, fmtUsd, fmtWindow } from '../lib/format';
-import { BuySellBar, EngineBadge, QuantMeter, SeverityTag, TimeAgo, useChainMeta } from './bits';
+import { BuySellBar, CapChips, capsOf, EngineBadge, QuantMeter, SeverityTag, TimeAgo, useChainMeta } from './bits';
 import { ArticleDetail } from './ArticleDetail';
 
 interface Props {
@@ -49,6 +49,7 @@ export const NewsCard = memo(function NewsCard({ article: a, enter }: Props) {
 
   const m = a.metrics;
   const top = a.quant.top;
+  const caps = capsOf(a);
   const detailId = `card-${a.id}-detail`;
   const aiId = `card-${a.id}-ai`;
   const style: CSSProperties | undefined =
@@ -171,6 +172,12 @@ export const NewsCard = memo(function NewsCard({ article: a, enter }: Props) {
           <span className="card__quant-score">QUANT MATCH {top ? `${Math.round(top.score)}%` : '—'}</span>
           {top && <span className="card__quant-name">· {top.name}</span>}
         </div>
+
+        {caps.length > 0 && (
+          <div className="card__caps">
+            <CapChips caps={caps} severity={a.severity} compact />
+          </div>
+        )}
 
         <div className="card__ai" id={aiId}>
           <EngineBadge engine={a.engine} model={a.model} />

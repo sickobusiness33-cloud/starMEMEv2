@@ -94,10 +94,10 @@ export async function fetchJson<T = unknown>(url: string, opts?: FetchOpts): Pro
 export async function fetchText(url: string, opts?: FetchOpts): Promise<string>
 ```
 Default User-Agent `HootRadar/0.1 (+crypto intelligence newsroom)`. 429 honours `retry-after`.
-Limiter = FIFO token bucket. A request waits at most `maxQueueMs` (default 60 s) for a slot and leaves the
+Limiter = FIFO token bucket (burst = 10% of perMinute unless `burst` is set; any 60 s window stays within perMinute). A request waits at most `maxQueueMs` (default 60 s) for a slot and leaves the
 queue when its caller's signal fires, so the request timeout plus the queue wait bound its total time;
 queues are capped (`maxQueue`). Cache keyed by URL; a shared cached request is cancelled only when every caller gave up.
-Pre-registered limiters: `geckoterminal` 20/min (scanner) + `geckoterminal-radar` 5/min, `dexscreener` 220/min +
+Pre-registered limiters: `geckoterminal` 20/min (scanner) + `geckoterminal-radar` 6/min burst 3 (one search's top-pool + token-info calls start together), `dexscreener` 220/min +
 `dexscreener-radar` 30/min (lanes of one group: a 429 pauses both; Radar can never starve the scanner),
 `dexscreener-meta` 55/min, `pumpfun` 30/min, `gdelt` 10/min minInterval 5500ms, `hn` 60/min, `biz` 30/min minInterval 1000ms.
 

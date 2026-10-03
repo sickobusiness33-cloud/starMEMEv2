@@ -334,6 +334,35 @@ describe('relevance filter', () => {
     ]);
   });
 
+  it('an everyday-word token ("good") does not collect generic "good token" chatter', () => {
+    // live: a Solana token named "good" got 27 Hacker News comments about LLM "good token" predictions
+    const good = query('good', 'good');
+    const terms = intelTerms(good);
+    expect(terms.distinctive).toBe(false);
+    const kept = filterRelevant(
+      [
+        item({ title: 'Re: Claude Opus 4.8', snippet: '…reach some max simulation of next good token.', url: 'https://example.com/a', provider: 'hn' }),
+        item({ title: 'This is a good token, anon', url: 'https://example.com/b', provider: 'biz' }),
+        item({ title: '$good on Solana is sending', url: 'https://example.com/c', provider: 'biz' }),
+        item({ title: 'good token CA', snippet: `ca ${BONK_ADDRESS}`, url: 'https://example.com/d', provider: 'hn' }),
+      ],
+      { ...good, address: BONK_ADDRESS },
+      NOW,
+    );
+    expect(kept.map((i) => [i.url.slice(-1), i.matchedOn])).toEqual([
+      ['c', 'symbol'],
+      ['d', 'contract'],
+    ]);
+  });
+
+  it('on Hacker News a ticker form needs crypto vocabulary: "token" alone is usually an LLM or auth token', () => {
+    const bonk = intelTerms(query('BONK', 'Bonk'));
+    expect(bonk.match('the bonk token in our JWT flow expired', { needsContext: true })).toBeNull();
+    expect(bonk.match('BONK token rallies as Solana memecoins rebound', { needsContext: true })).toBe('name');
+    // crypto-native sources keep the ticker form on its own
+    expect(bonk.match('BONK token is sending')).toBe('name');
+  });
+
   it('a copycat launched minutes ago does not inherit the famous ticker\'s chatter', () => {
     // live: intelTerms({symbol:'CAT'}).match('$CAT is sending, best memecoin on base') was 'symbol' for a Solana CAT
     const cat = query('CAT', 'Cat');
