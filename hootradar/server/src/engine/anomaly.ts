@@ -145,7 +145,10 @@ function gateReasons(s: TokenSnapshot, m: DerivedMetrics, o: DetectOpts): string
 /**
  * Why a score in BREAKING range is held at ALERT: the market is too small for the
  * label (one wallet can move it), or the token carries a structural rug risk.
- * Unknown values never cap: they are not evidence (the article's risk flags say so).
+ * Unknown market values never cap: they are not evidence. Unknown holder
+ * concentration does: BREAKING is a claim that the move is worth trusting, and
+ * live, two of three BREAKINGs were <15 min old with no holder data yet (one
+ * rugged minutes later). The story still publishes immediately, as ALERT.
  */
 function breakingCaps(s: TokenSnapshot, o: DetectOpts): string[] {
   const caps: string[] = [];
@@ -155,7 +158,8 @@ function breakingCaps(s: TokenSnapshot, o: DetectOpts): string[] {
   const volumeH1 = s.volumeUsd.h1 ?? null;
   if (volumeH1 != null && volumeH1 < o.breakingMinVolumeH1Usd)
     caps.push(`1h volume ${usd(volumeH1)} below the ${usd(o.breakingMinVolumeH1Usd)} BREAKING minimum`);
-  if (s.top10HolderPct != null && s.top10HolderPct >= BREAKING_MAX_TOP10_PCT)
+  if (s.top10HolderPct == null) caps.push('Holder concentration not available yet');
+  else if (s.top10HolderPct >= BREAKING_MAX_TOP10_PCT)
     caps.push(`Top 10 holders own ${Math.round(s.top10HolderPct)}% of supply`);
   if (s.security?.mintAuthority === true) caps.push('Mint authority enabled');
   if (s.security?.freezeAuthority === true) caps.push('Freeze authority enabled');

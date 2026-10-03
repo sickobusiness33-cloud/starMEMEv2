@@ -54,8 +54,11 @@ Cada token observado recibe una puntuación de anomalía de 0 a 100. Con los umb
   pool tiene al menos `BREAKING_MIN_LIQUIDITY_USD` de liquidez (25.000 $) **y** al menos
   `BREAKING_MIN_VOLUME_H1_USD` de volumen en 1 h (75.000 $).
 - **Topes en ALERT.** También se queda en ALERT cuando el top 10 de holders tiene el 80 % o más del
-  supply, o cuando la autoridad de mint o la de congelación siguen activas. Solo cuentan los datos
-  conocidos: un dato desconocido no es prueba y no aplica tope (la noticia lo señala como riesgo).
+  supply, cuando la autoridad de mint o la de congelación siguen activas, o cuando todavía no se
+  conoce la concentración de holders (GeckoTerminal no la publica hasta ~15 min después del
+  lanzamiento). BREAKING es una afirmación de confianza: sin ese dato la noticia sale igual al
+  instante, pero como ALERT. El resto de datos desconocidos no aplican tope (la noticia los señala
+  como riesgo).
 - **Transparencia.** Los motivos del tope viajan en `Detection.caps` y en `caps` del artículo. La web
   los muestra como chips ámbar `Capped at ALERT: <motivo>` en la tarjeta, en la noticia expandida y
   en el panel de detección de RADAR, junto a un medidor WATCH | ALERT | BREAKING.

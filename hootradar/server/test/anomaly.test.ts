@@ -37,7 +37,7 @@ function snap(over: Partial<TokenSnapshot> = {}): TokenSnapshot {
     priceChangePct: { h1: 34 },
     txns: {},
     holders: null,
-    top10HolderPct: null,
+    top10HolderPct: 30,
     createdAt: T0 - 3 * 60 * MIN,
     imageUrl: null,
     links: [],
@@ -330,6 +330,9 @@ describe('BREAKING policy', () => {
     expect(concentrated.severity).toBe('ALERT');
     expect(concentrated.caps).toEqual(['Top 10 holders own 92% of supply']);
     expect(breaking({ top10HolderPct: 79.9 }).severity).toBe('BREAKING');
+    const unknown = breaking({ top10HolderPct: null });
+    expect(unknown.severity).toBe('ALERT');
+    expect(unknown.caps).toEqual(['Holder concentration not available yet']);
     const authority = breaking({ security: { mintAuthority: true, freezeAuthority: true, honeypot: 'no', devHoldingPct: null } });
     expect(authority.severity).toBe('ALERT');
     expect(authority.caps).toEqual(['Mint authority enabled', 'Freeze authority enabled']);

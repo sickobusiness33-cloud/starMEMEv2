@@ -204,7 +204,8 @@ Detection policy (anomaly.ts, pure):
   liquidity not pulled (≤ −50 % against our own history of the same pool → rejected "Liquidity pulled").
 - BREAKING needs real size (liquidity ≥ `BREAKING_MIN_LIQUIDITY_USD` $25K and 1 h volume ≥ `BREAKING_MIN_VOLUME_H1_USD` $75K) and
   no structural rug risk (top-10 holders < 80 %, mint and freeze authority not enabled); otherwise it is held at ALERT
-  and `Detection.caps` says why. Unknown values never cap.
+  and `Detection.caps` says why. Unknown holder concentration also caps (BREAKING is a trust claim; the story still
+  publishes immediately as ALERT); other unknown values never cap.
 - 5m-vs-1h ratios use the age of the pool the windows were measured on (`pairCreatedAt`); unknown → null, never "a full hour".
   Liquidity growth is measured only within one pool, one provider and one valuation method.
 - Launch traction (`fresh_launch`) is scaled per chain: onset at the chain's p50 volume-per-minute of young (≤ 90 min)
