@@ -44,10 +44,15 @@ export interface Coin {
   ticker: string; description: string; lore: string; traits: string[];
   supply: string; distribution: { label: string; pct: number }[];
   roadmap: { phase: string; text: string }[]; community: string[]; logo: boolean;
+  /** Estudio de meme coins (v2): estilo visual, mascota, red propuesta, frases de marquesina e imágenes generadas. */
+  style?: CoinStyle; mascot?: string; chain?: string; taxes?: string; slogans?: string[]; images?: string[]; theme?: string; quality?: number;
 }
+export const COIN_STYLES = ["sticker", "neon", "pastel", "luxe"] as const;
+export type CoinStyle = (typeof COIN_STYLES)[number];
+export const COIN_CHAINS = ["Solana", "Base", "Ethereum", "BNB Chain", "TON"];
 
 // ------------------------------------------------------------------ saneado
-const clean = (v: unknown, max: number, fallback = ""): string =>
+export const clean = (v: unknown, max: number, fallback = ""): string =>
   String(v ?? fallback).replace(/<[^>]*>/g, "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim().slice(0, max) || fallback;
 export const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const HEX = /^#[0-9a-f]{6}$/i;
@@ -137,12 +142,20 @@ export function normalizeCoin(raw: any, logo: boolean): Coin {
     roadmap: list(raw?.roadmap, 5, (r) => (r?.text ? { phase: clean(r.phase, 30, "Fase"), text: clean(r.text, 200) } : null)),
     community: list(raw?.community, 5, (t) => clean(t, 140) || null),
     logo,
+    style: COIN_STYLES.includes(raw?.style) ? raw.style : COIN_STYLES[ticker.charCodeAt(0) % COIN_STYLES.length],
+    mascot: clean(raw?.mascot, 40, ""),
+    chain: COIN_CHAINS.find((c) => c.toLowerCase() === String(raw?.chain ?? "").toLowerCase()) ?? "Solana",
+    taxes: clean(raw?.taxes, 20, "0% / 0%"),
+    slogans: list(raw?.slogans, 6, (t) => clean(t, 60) || null),
+    images: list(raw?.images, 3, (t) => (["logo", "art", "meme"].includes(t) ? t : null)),
+    theme: clean(raw?.theme, 80, ""),
+    quality: Number.isFinite(Number(raw?.quality)) ? Math.max(0, Math.min(10, Number(raw.quality))) : undefined,
   };
 }
 
 // ------------------------------------------------------------------ HTML
 /** Variables CSS del modo de la marca + el modo contrario derivado (con contraste válido). */
-function themeCss(c: Spec["brand"], f: { head: string; body: string }): string {
+export function themeCss(c: Spec["brand"], f: { head: string; body: string }): string {
   const vars = (b: { bg: string; surface: string; text: string; muted: string; accent: string; accent2: string }) =>
     `--bg:${b.bg};--surface:${b.surface};--text:${b.text};--muted:${b.muted};--accent:${b.accent};--accent2:${b.accent2};--on-accent:${contrast("#000000", b.accent) >= 4.5 ? "#000000" : "#ffffff"}`;
   const fit = (accent: string, bg: string, toward: string) => { let a = accent; for (let i = 0; i < 10 && contrast(a, bg) < 3.2; i++) a = mix(a, toward, 0.18); return a; };

@@ -282,6 +282,6 @@
   if (!matchMedia("(prefers-reduced-motion: reduce)").matches && "IntersectionObserver" in window) {
     const io = new IntersectionObserver((es) => es.forEach((e) => { if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); } }), { rootMargin: "0px 0px -8% 0px", threshold: 0.01 });
     // Solo lo que está por debajo de la pantalla al cargar (lo visible nunca parpadea).
-    document.querySelectorAll(".fx-card, .fx-steps li, .fx-faq").forEach((n) => { if (n.getBoundingClientRect().top > innerHeight) { n.classList.add("fx-reveal"); io.observe(n); } });
+    document.querySelectorAll(".fx-card, .fx-steps li, .fx-faq, .cx-card, .cx-art").forEach((n) => { if (n.getBoundingClientRect().top > innerHeight) { n.classList.add("fx-reveal"); io.observe(n); } });
   }
 })();

@@ -110,11 +110,22 @@ def test_mision_meme_coins_con_logo_y_parar(api):
     assert all(c["ok"] for c in d["checks"]["security"])
     # Web de la moneda: logo propio, lore, tokenomics y aviso de que no está on-chain
     w = httpx.get(f"{BASE}/s/{p['slug']}/")
-    assert w.status_code == 200 and 'class="fx-coin-logo"' in w.text and 'id="tokenomics"' in w.text
+    assert w.status_code == 200 and 'fx-coin-logo' in w.text and 'id="tokenomics"' in w.text
     assert "no existe en ninguna blockchain" in w.text and f"${p['ticker']}" in w.text
     logo = httpx.get(f"{BASE}/s/{p['slug']}/logo")
     assert logo.status_code == 200 and logo.headers["content-type"].startswith("image/") and len(logo.content) > 50
     assert httpx.get(f"{BASE}/s/no-existe/logo").status_code == 404
+    for n in ("art", "meme"):
+        assert httpx.get(f"{BASE}/s/{p['slug']}/{n}").status_code == 200
+    assert 'class="cx-donut"' in w.text and 'id="roadmap"' in w.text and "cx-marquee" in w.text
+
+    # Coin Studio: apartado propio, cualquier temática forzada a meme coin
+    cs = api.get("/api/factory/coins").json()
+    assert cs["totals"]["live"] == 2 and {"logo", "art", "meme"} <= set(cs["coins"][0]["images"])
+    assert cs["coins"][0]["quality"] == 9 and cs["missions"][0]["id"] == m["id"]
+    r2 = api.post("/api/factory/command", json={"text": "webs de dinosaurios DJ", "kind": "memecoin", "per_day": 1})
+    assert r2.json()["mission"]["kind"] == "memecoin"
+    wait_live(api, 3)
 
     # Panel: la misión muestra su progreso del día
     f = api.get("/api/factory").json()
@@ -127,6 +138,6 @@ def test_mision_meme_coins_con_logo_y_parar(api):
     mm = next(x for x in api.get("/api/factory").json()["missions"] if x["id"] == m["id"])
     assert mm["active"] == 0 and mm["per_day"] == 7
     assert api.delete(f"/api/factory/missions/{m['id']}").status_code == 200
-    assert api.get("/api/factory").json()["missions"] == []
+    assert all(x["id"] != m["id"] for x in api.get("/api/factory").json()["missions"])
     # Lo creado se conserva
     assert httpx.get(f"{BASE}/s/{p['slug']}/").status_code == 200

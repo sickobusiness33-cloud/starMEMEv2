@@ -69,3 +69,15 @@ Escribe una orden en la barra de la Fábrica y se convierte en una **misión dia
 - Parar una misión pausa lo que estaba a medias; lo publicado sigue online. Borrarla conserva lo creado.
 - Modelos: Claude si hay créditos (plataforma o «Usar mi API»); si no, los más potentes gratuitos de Workers AI (gpt-oss-120b para razonar, Llama 3.3 70B, FLUX para logos).
 - **Las meme coins son conceptos**: no se despliega ningún token en una blockchain. La web lo dice claramente. Lanzarlo on-chain es una operación financiera que solo puede autorizar el dueño.
+
+## Coin Studio (apartado propio)
+
+Menú → **Coin Studio**. Escribe cualquier temática ("gatos samuráis", "fútbol callejero", "una IA rebelde"…), elige cuántas al día (1–50) y pulsa **Empezar a crear**. Cada moneda pasa por:
+
+1. **Director creativo**: nombre, ticker, mascota, historia, eslóganes, tokenomics, roadmap, comunidad, identidad visual y estilo (sticker, neon, pastel o luxe).
+2. **Editor jefe**: puntúa el borrador (0–10) y reescribe lo flojo (autocrítica).
+3. **Ilustrador (FLUX.1 schnell, gratis)**: logo, ilustración de la historia y meme.
+4. **Web de lanzamiento** (`src/factory/coinsite.ts` + `public/fx-coin.css`): hero con mascota, marquesina, historia ilustrada, tokenomics con gráfico de anillo, roadmap, comunidad, chat con la mascota, mercado real y FAQ.
+5. QA + seguridad + publicación en `/s/<slug>/` (imágenes en `/s/<slug>/logo|art|meme`).
+
+Coste aproximado por moneda en Workers AI: ~400–600 neuronas (el cupo gratis de 10.000/día da para unas 15–20 monedas). Con créditos de Claude, el director y el editor pasan a Claude automáticamente.

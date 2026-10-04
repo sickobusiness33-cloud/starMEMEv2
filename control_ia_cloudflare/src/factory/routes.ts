@@ -34,9 +34,10 @@ export function parseCommand(text: string): { kind: "memecoin" | "website"; nich
 }
 
 /** Crea una misión permanente y lanza ya la primera tanda. */
-async function createMission(c: any, text: string, perDay?: number) {
+async function createMission(c: any, text: string, perDay?: number, forceKind?: string) {
   const u = c.get("user");
   const parsed = parseCommand(text);
+  if (forceKind === "memecoin") Object.assign(parsed, { kind: "memecoin", niche: "crypto", title: `Meme coins · ${text.slice(0, 48)}` });
   const per = perDay ? int(perDay, 1, 50, parsed.perDay) : parsed.perDay;
   const s = await fxSettings(c.env, u.id);
   const active = (await one<any>(c.env.DB, "SELECT COUNT(*) AS n FROM fx_missions WHERE user_id = ? AND active = 1", u.id))?.n ?? 0;
@@ -145,7 +146,33 @@ factoryRoutes.post("/command", async (c) => {
   const b = await c.req.json<any>().catch(() => ({}));
   const text = String(b.text ?? "").replace(/[<>]/g, "").trim().slice(0, 300);
   if (text.length < 3) fail(400, "Escribe qué quieres que haga la fábrica.");
-  return c.json({ ok: true, mission: await createMission(c, text, b.per_day) });
+  return c.json({ ok: true, mission: await createMission(c, text, b.per_day, b.kind) });
+});
+
+/** Coin Studio: solo meme coins (misiones, monedas con su arte y la actividad del taller). */
+factoryRoutes.get("/coins", async (c) => {
+  const u = c.get("user");
+  const db = c.env.DB;
+  const today = new Date().toISOString().slice(0, 10);
+  const missions = await all<any>(db, `SELECT m.id, m.title, m.prompt, m.per_day, m.active, m.created_at, m.last_at,
+    (SELECT COUNT(*) FROM fx_projects p WHERE p.mission_id = m.id AND p.created_at >= ? AND p.status NOT IN ('rejected','failed')) AS made_today,
+    (SELECT COUNT(*) FROM fx_projects p WHERE p.mission_id = m.id AND p.stage IN ('live','maintenance')) AS live_total,
+    (SELECT COUNT(*) FROM fx_projects p WHERE p.mission_id = m.id AND p.status = 'working') AS working
+    FROM fx_missions m WHERE m.user_id = ? AND m.kind = 'memecoin' ORDER BY m.active DESC, m.id DESC`, today, u.id);
+  const coins = await all<any>(db, `SELECT p.id, p.slug, p.name, p.idea, p.stage, p.status, p.url, p.version, p.mission_id, p.created_at, p.live_at, p.errors,
+    json_extract(p.research_json, '$.ticker') AS ticker, json_extract(p.research_json, '$.theme') AS theme, json_extract(p.research_json, '$.quality') AS quality,
+    json_extract(p.spec_json, '$.tagline') AS tagline, json_extract(p.spec_json, '$.coin.style') AS style, json_extract(p.spec_json, '$.coin.chain') AS chain,
+    json_extract(p.spec_json, '$.brand.accent') AS accent, json_extract(p.spec_json, '$.brand.bg') AS bg, json_extract(p.spec_json, '$.coin.mascot') AS mascot,
+    (SELECT GROUP_CONCAT(a.name) FROM fx_assets a WHERE a.project_id = p.id) AS images
+    FROM fx_projects p WHERE p.user_id = ? AND p.kind = 'memecoin' ORDER BY p.id DESC LIMIT 400`, u.id);
+  const events = await all<any>(db, `SELECT e.id, e.project_id, e.agent, e.kind, e.message, e.created_at, p.name AS project FROM fx_events e JOIN fx_projects p ON p.id = e.project_id
+    WHERE e.user_id = ? AND p.kind = 'memecoin' ORDER BY e.id DESC LIMIT 40`, u.id);
+  const s = await fxSettings(c.env, u.id);
+  return c.json({
+    enabled: s.enabled, missions, events,
+    coins: coins.map((x) => ({ ...x, images: String(x.images ?? "").split(",").filter(Boolean) })),
+    totals: { coins: coins.length, live: coins.filter((x) => x.stage === "live" || x.stage === "maintenance").length, today: coins.filter((x) => String(x.created_at) >= today).length, working: coins.filter((x) => x.status === "working").length, tokens_today: await fxTokensToday(c.env, u.id) },
+  });
 });
 
 factoryRoutes.patch("/missions/:id", async (c) => {

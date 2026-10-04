@@ -17,6 +17,7 @@ import { getSubscription } from "../plans";
 import { failures, passed, qaChecks, securityChecks } from "./checks";
 import { cryptoMarket, cryptoTrending } from "./data";
 import { ensureFactorySchema } from "./schema";
+import { renderCoinSite } from "./coinsite";
 import { NICHES, normalizeCoin, normalizeSpec, renderSite, WIDGETS, type Spec } from "./render";
 
 export const STAGES = ["backlog", "research", "building", "testing", "security", "deploying", "live", "maintenance"] as const;
@@ -44,7 +45,7 @@ export const FX_AGENTS = [
 
 const MAX_ATTEMPTS = 3;
 const LEASE_MS = 8 * 60_000;
-const assetVersion = "202610042";
+const assetVersion = "202610043";
 const todayIso = () => new Date().toISOString().slice(0, 10);
 const origin = (env: Env) => (env.PUBLIC_URL || "http://127.0.0.1:8787").replace(/\/$/, "");
 export const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, " ").trim().slice(0, 80);
@@ -136,7 +137,7 @@ export async function ideateCoins(env: Env, userId: number, prompt: string, coun
   const existing = await all<any>(env.DB, "SELECT name, json_extract(research_json, '$.ticker') AS ticker FROM fx_projects WHERE user_id = ? AND kind = 'memecoin' ORDER BY id DESC LIMIT 120", userId);
   await fxEmit(env, userId, null, "backlog", "research", "start", `Inventando ${count} meme coin(s) nuevas («${prompt.slice(0, 80)}»).`);
   const { json } = await ask(env, userId, "coins", 0,
-    "Eres el director creativo de un estudio de meme coins. Inventas conceptos originales, graciosos y con potencial viral (mascota, chiste central, comunidad), sin copiar marcas ni personas reales y sin prometer rentabilidad.",
+    "Eres el director creativo de un estudio top de meme coins. Inventas conceptos muy originales, graciosos y con potencial viral sobre CUALQUIER temática que te pidan (animales, deportes, comida, IA, historia, cultura pop genérica…): una mascota con personalidad, un chiste central fácil de entender y algo que la comunidad quiera repetir. Nada de nombres genéricos ni copias de monedas existentes; sin marcas ni personas reales; sin prometer rentabilidad.",
     `Orden del dueño: ${prompt}\n${await marketContext(env, "crypto")}\nYa existen (no repitas nombre ni ticker): ${existing.map((e) => `${e.name} ($${e.ticker ?? "?"})`).join(", ") || "ninguna"}.\n` +
     `Propón ${count} meme coins distintas. JSON: {"coins":[{"name":"nombre corto y pegadizo","ticker":"3-6 letras","idea":"la mascota y el chiste en 1-2 frases"}]}`,
     { capability: "reasoning", premium: true, maxTokens: 1200 });
@@ -150,42 +151,67 @@ export async function ideateCoins(env: Env, userId: number, prompt: string, coun
     let slug = slugify(`${name}-coin`);
     if (await one(env.DB, "SELECT 1 FROM fx_projects WHERE slug = ?", slug)) slug = `${slug}-${Date.now().toString(36).slice(-4)}`;
     const ins = await env.DB.prepare("INSERT OR IGNORE INTO fx_projects (user_id, slug, name, niche, idea, dedupe_key, stage, status, priority, research_json, mission_id, kind, created_at, updated_at) VALUES (?, ?, ?, 'crypto', ?, ?, 'backlog', 'queued', 8, ?, ?, 'memecoin', ?, ?)")
-      .bind(userId, slug, name, idea, `coin ${norm(ticker)}`, dumps({ ticker }), missionId, nowIso(), nowIso()).run();
+      .bind(userId, slug, name, idea, `coin ${norm(ticker)}`, dumps({ ticker, theme: prompt.slice(0, 160) }), missionId, nowIso(), nowIso()).run();
     if (ins.meta.changes) { created++; existing.push({ name, ticker }); await fxEmit(env, userId, Number(ins.meta.last_row_id), "backlog", "research", "idea", `Nueva meme coin: ${name} ($${ticker}) — ${idea.slice(0, 160)}`); }
   }
   return created;
 }
 
-/** Construye la meme coin: identidad, lore, tokenomics propuesta, logo (FLUX) y su web. */
+const COIN_SCHEMA = `{"name":"nombre de marca (2-18 caracteres, pegadizo)","ticker":"3-6 letras","theme":"temática en 3-6 palabras","mascot":"nombre propio de la mascota","tagline":"≤90, frase vendedora","description":"2-3 frases que enganchen","lore":"historia del meme en 120-180 palabras, con conflicto, humor y un giro","traits":["4-5 rasgos cortos de la mascota"],"slogans":["4-6 frases cortas tipo grito de comunidad (≤40)"],"style":"sticker|neon|pastel|luxe (el que mejor encaje con la temática)","chain":"Solana|Base|Ethereum|BNB Chain|TON (la que mejor encaje)","taxes":"p. ej. 0% / 0%","tokenomics":{"supply":"p. ej. 1.000.000.000","distribution":[{"label":"...","pct":número}×3-5]},"roadmap":[{"phase":"nombre creativo de fase","text":"..."}×4],"community":["4-5 ideas concretas de memes, retos o contenido"],"logo_prompt":"EN INGLÉS: mascota para logo (especie/forma, colores exactos, accesorio, expresión)","art_prompt":"EN INGLÉS: escena ilustrada de la mascota contando su historia (lugar, acción, luz)","meme_prompt":"EN INGLÉS: situación graciosa de la mascota tipo meme","ai":{"label":"Habla con <mascota>","placeholder":"...","examples":["3 preguntas graciosas"],"system":"personalidad y forma de hablar de la mascota"},"brand":{"bg":"#hex","surface":"#hex","text":"#hex","muted":"#hex","accent":"#hex","accent2":"#hex","fonts":"unbounded|syne|bricolage|grotesk|sora|outfit|fraunces|archivo","radius":0-28,"mode":"dark|light"},"hero":{"eyebrow":"≤40","title":"≤70, titular potente","subtitle":"≤180","cta":"≤22"},"faq":[{"q":"...","a":"..."}×5],"seo":{"title":"10-60 caracteres","description":"50-155 caracteres","keywords":["..."]}}`;
+
+/** Una imagen con FLUX (gratis en Workers AI). Devuelve false si falla (salvo cupo agotado: entonces lanza). */
+async function coinImage(env: Env, p: any, name: string, prompt: string): Promise<string | null> {
+  try {
+    const img = await routeImage(await ctx(env, p.user_id, "logo", p.id), { mode: "t2i", width: 768, height: 768, prompt: prompt.slice(0, 1800) });
+    await run(env.DB, "INSERT OR REPLACE INTO fx_assets (project_id, name, mime, data_b64, model, created_at) VALUES (?, ?, ?, ?, ?, ?)", p.id, name, img.mime, bytesToB64(img.bytes), img.model, nowIso());
+    return img.model;
+  } catch (err) {
+    if (name === "logo" || (err instanceof RouterError && err.code === "free_quota")) throw err;
+    await fxEmit(env, p.user_id, p.id, "building", "uiux", "error", `Imagen «${name}» no generada: ${(err as Error).message.slice(0, 160)}`);
+    return null;
+  }
+}
+
+/** Construye la meme coin como un estudio profesional: director creativo → editor crítico → arte (FLUX) → web de lanzamiento. */
 async function buildCoin(env: Env, p: any) {
   const r = loads<any>(p.research_json, {});
-  await fxEmit(env, p.user_id, p.id, "building", "marketing", "start", `Escribiendo identidad, lore y tokenomics de $${r.ticker ?? "?"}.`);
-  const { json, model } = await ask(env, p.user_id, "coin", p.id,
-    "Eres el estudio creativo de una fábrica de meme coins: naming, lore, branding, tokenomics orientativa y comunidad. Tono divertido pero profesional. Prohibido prometer rentabilidad, precios u objetivos de mercado.",
-    `Concepto: ${p.name} ($${r.ticker ?? ""}) — ${p.idea}\n${p.feedback ? `CORRIGE ESTO DEL INTENTO ANTERIOR: ${p.feedback}\n` : ""}` +
-    `JSON: {"name":"...","ticker":"...","tagline":"≤90","description":"2-3 frases","lore":"historia del meme, 80-140 palabras","traits":["3-5 rasgos de la mascota"],"tokenomics":{"supply":"p. ej. 1.000.000.000","distribution":[{"label":"...","pct":número}]},"roadmap":[{"phase":"Fase 1","text":"..."}×3-4],"community":["ideas de memes y contenido"×3-5],"logo_prompt":"descripción visual EN INGLÉS de la mascota (colores, estilo, expresión)","ai":{"label":"Habla con la mascota","placeholder":"...","examples":["..."],"system":"personalidad de la mascota para un chat divertido"},"brand":{"bg":"#hex","surface":"#hex","text":"#hex","muted":"#hex","accent":"#hex","accent2":"#hex","fonts":"unbounded|syne|bricolage|grotesk|sora","radius":0-28,"mode":"dark|light"},"hero":{"eyebrow":"≤40","title":"≤90","subtitle":"≤200","cta":"≤24"},"faq":[{"q":"...","a":"..."}×4],"seo":{"title":"10-60 caracteres","description":"50-155 caracteres","keywords":["..."]}}`,
-    { capability: "reasoning", premium: true, maxTokens: 2600 });
-  if (!json) throw new Error("El estudio creativo no devolvió un concepto válido.");
-  await fxEmit(env, p.user_id, p.id, "building", "uiux", "start", "Dibujando el logo con FLUX.");
-  const look = String(json.logo_prompt ?? p.idea).replace(/[\r\n]+/g, " ").slice(0, 600);
-  const img = await routeImage(await ctx(env, p.user_id, "logo", p.id), {
-    mode: "t2i", width: 512, height: 512,
-    prompt: `${look}. Meme coin mascot logo: one character, centered, inside a round coin emblem, bold clean vector illustration, thick outlines, vibrant saturated colors, plain solid background, high contrast, iconic, no text, no letters, no watermark`,
-  });
-  await run(env.DB, "INSERT OR REPLACE INTO fx_assets (project_id, name, mime, data_b64, model, created_at) VALUES (?, 'logo', ?, ?, ?, ?)", p.id, img.mime, bytesToB64(img.bytes), img.model, nowIso());
+  await fxEmit(env, p.user_id, p.id, "building", "marketing", "start", `Director creativo: identidad, historia y tokenomics de $${r.ticker ?? "?"}.`);
+  const draft = await ask(env, p.user_id, "coin", p.id,
+    "Eres el director creativo de un estudio top de lanzamientos de meme coins (nivel agencia premium). Creas marcas memorables: nombre y ticker con gancho, mascota con personalidad, historia con humor y giro, frases de comunidad que se gritan, identidad visual coherente con la temática y textos que venden sin mentir. Escribes en español natural (nada de traducción literal). Prohibido prometer rentabilidad, precios, 'x100' u objetivos de mercado; prohibido usar marcas registradas o personas reales.",
+    `Concepto: ${p.name} ($${r.ticker ?? ""}) — ${p.idea}\n${r.theme ? `Temática pedida por el dueño: ${r.theme}\n` : ""}${p.feedback ? `CORRIGE ESTO DEL INTENTO ANTERIOR: ${p.feedback}\n` : ""}JSON exacto: ${COIN_SCHEMA}`,
+    { capability: "reasoning", premium: true, maxTokens: 3200 });
+  if (!draft.json) throw new Error("El director creativo no devolvió un concepto válido.");
+  // Editor: critica con criterios de marca y devuelve la versión mejorada (autocrítica, como un equipo real).
+  await fxEmit(env, p.user_id, p.id, "building", "marketing", "tool", "Editor jefe: revisando nombre, historia, frases y coherencia visual.");
+  const ed = await ask(env, p.user_id, "editor", p.id,
+    "Eres el editor jefe del estudio. Puntúas el borrador (0-10) en: originalidad del nombre/ticker, gancho de la mascota, calidad y humor de la historia, fuerza de los eslóganes, coherencia visual con la temática y claridad comercial. Después REESCRIBES lo flojo para que todo quede a nivel 9+, manteniendo el mismo esquema JSON. Mismas prohibiciones: sin promesas de rentabilidad, sin marcas ni personas reales.",
+    `BORRADOR:\n${JSON.stringify(draft.json).slice(0, 9000)}\n\nDevuelve el JSON completo mejorado con el mismo esquema, añadiendo "quality": nota final 0-10 y "review": "1 frase con lo que mejoraste".`,
+    { capability: "reasoning", premium: true, maxTokens: 3400 }).catch(() => ({ json: null, model: "" }));
+  const json = ed.json && ed.json.name && ed.json.lore ? { ...draft.json, ...ed.json } : draft.json;
+  const quality = Number(json.quality) || null;
+  if (ed.json?.review) await fxEmit(env, p.user_id, p.id, "building", "marketing", "decision", `Editor (${quality ?? "?"}/10): ${String(ed.json.review).slice(0, 200)}`);
+
+  const mascot = String(json.mascot ?? json.name ?? p.name).slice(0, 40);
+  const look = (k: string, d: string) => String(json[k] ?? d).replace(/[\r\n]+/g, " ").slice(0, 600);
+  await fxEmit(env, p.user_id, p.id, "building", "uiux", "start", "Ilustrador: logo, ilustración de la historia y meme (FLUX).");
+  const logoModel = await coinImage(env, p, "logo", `${look("logo_prompt", p.idea)}. Professional meme coin mascot logo, one character, centered, head and shoulders, inside a perfect round coin emblem with a thick rim, bold clean vector illustration, smooth shading, thick outlines, vibrant saturated colors, plain solid background, high contrast, iconic, sticker quality, no text, no letters, no watermark`);
+  const images = ["logo"];
+  if (await coinImage(env, p, "art", `${look("art_prompt", `${mascot} adventure`)}. Featuring ${look("logo_prompt", mascot)}. Cinematic digital illustration, dynamic composition, rich colors, dramatic lighting, highly detailed, polished game key art style, no text, no watermark`)) images.push("art");
+  if (await coinImage(env, p, "meme", `${look("meme_prompt", `${mascot} funny situation`)}. Featuring ${look("logo_prompt", mascot)}. Funny meme illustration, expressive exaggerated face, cartoon style, bold colors, clean background, internet meme vibe, no text, no letters, no watermark`)) images.push("meme");
+
   const ticker = String(json.ticker ?? r.ticker ?? "").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 8) || r.ticker;
   const raw = {
-    ...json, ticker, archetype: ["spotlight", "bento", "editorial"][p.id % 3],
-    widgets: [{ type: "ai-tool", title: String(json.ai?.label ?? "Habla con la mascota") }, { type: "crypto-trending", title: "El mercado meme ahora", note: "Datos reales en vivo de DexScreener/GeckoTerminal, para contexto." }],
-    ai: { ...(json.ai ?? {}), system: `${String(json.ai?.system ?? "")} Eres la mascota de la meme coin ${json.name ?? p.name} ($${ticker}). Respondes con humor y en personaje. El token es un concepto: no está lanzado, no tiene precio y no se puede comprar; dilo si preguntan.`.trim() },
+    ...json, ticker,
+    widgets: [{ type: "ai-tool", title: String(json.ai?.label ?? `Habla con ${mascot}`) }, { type: "crypto-trending", title: "Meme coins en tendencia", note: "Datos reales en vivo de DexScreener/GeckoTerminal, para contexto." }],
+    ai: { ...(json.ai ?? {}), system: `${String(json.ai?.system ?? "")} Eres ${mascot}, la mascota de la meme coin ${json.name ?? p.name} ($${ticker}). Respondes con humor, en personaje y en el idioma del usuario. El token es un concepto: no está lanzado, no tiene precio y no se puede comprar; dilo si preguntan.`.trim() },
     features: [], steps: [],
     disclaimer: `$${ticker} es un concepto creativo generado por Kairo Factory. No está desplegado en ninguna blockchain, no tiene precio ni valor y nada aquí es una oferta de inversión ni asesoramiento financiero.`,
   };
   const spec = normalizeSpec(raw, "crypto", p.id);
-  spec.coin = normalizeCoin({ ...json, ticker }, true);
-  const html = renderSite(spec, p.slug, origin(env), assetVersion);
-  await run(env.DB, "UPDATE fx_projects SET name = ?, spec_json = ?, html = ?, apis_json = ?, research_json = ? WHERE id = ?", spec.name, dumps(spec), html, dumps(["FLUX.1 schnell (logo)", "Kairo AI (mascota)", "DexScreener API"]), dumps({ ...r, ticker, model }), p.id);
-  await fxEmit(env, p.user_id, p.id, "building", "frontend", "tool", `$${ticker} lista: logo (${img.model.split("/").pop()}), lore, tokenomics, roadmap y web (${(html.length / 1024).toFixed(1)} KB).`);
+  spec.coin = normalizeCoin({ ...json, ticker, images, quality, theme: json.theme ?? r.theme }, true);
+  const html = renderCoinSite(spec, p.slug, origin(env), assetVersion);
+  await run(env.DB, "UPDATE fx_projects SET name = ?, spec_json = ?, html = ?, apis_json = ?, research_json = ? WHERE id = ?", spec.name, dumps(spec), html, dumps(["FLUX.1 schnell (arte)", "Kairo AI (mascota)", "DexScreener API"]), dumps({ ...r, ticker, model: draft.model, editor: ed.model || null, score: quality ?? r.score ?? null, quality }), p.id);
+  await fxEmit(env, p.user_id, p.id, "building", "frontend", "tool", `$${ticker} lista: ${images.length} imágenes (${String(logoModel).split("/").pop()}), estilo ${spec.coin.style}, web de lanzamiento (${(html.length / 1024).toFixed(1)} KB).`);
   await advance(env, p, "testing");
 }
 

@@ -199,7 +199,13 @@ function factoryMock(system: string, all: string): string {
     const seed = Date.now().toString(36).slice(-4).toUpperCase();
     return JSON.stringify({ coins: Array.from({ length: n }, (_, i) => ({ name: `Gato Lunar ${seed}${i}`, ticker: `GL${seed}${i}`.slice(0, 8), idea: "Un gato astronauta que siempre llega tarde a la luna; la comunidad hace memes de sus excusas." })) });
   }
+  if (role === "editor") {
+    const m = all.match(/BORRADOR:\n(\{[\s\S]*\})\n\nDevuelve/);
+    try { return JSON.stringify({ ...JSON.parse(m?.[1] ?? "{}"), quality: 9, review: "Nombre más corto y eslóganes con más gancho." }); } catch { return "{}"; }
+  }
   if (role === "coin") return JSON.stringify({
+    theme: "gatos astronautas", mascot: "Lunar", style: "sticker", chain: "Solana", taxes: "0% / 0%", slogans: ["Llegamos tarde, pero llegamos", "Excusa del día", "Miau a la luna"],
+    art_prompt: "cat astronaut floating near the moon", meme_prompt: "cat astronaut oversleeping in a rocket",
     name: all.match(/Concepto: ([^($]+)/)?.[1]?.trim() || "Gato Lunar", tagline: "El gato que llega tarde a la luna", description: "Una meme coin conceptual sobre un gato astronauta impuntual.",
     lore: "Todo empezó cuando un gato llamado Lunar se coló en un cohete de juguete. Desde entonces promete llegar a la luna cada lunes, pero siempre encuentra una excusa nueva: una siesta, una caja vacía o un rayo de sol perfecto. La comunidad colecciona sus excusas.",
     traits: ["Impuntual", "Casco de pecera", "Optimista"], tokenomics: { supply: "1.000.000.000", distribution: [{ label: "Liquidez", pct: 80 }, { label: "Comunidad", pct: 15 }, { label: "Marketing", pct: 5 }] },
