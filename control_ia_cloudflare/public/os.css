@@ -1064,3 +1064,29 @@ main > * { animation-duration: 240ms; animation-timing-function: var(--ease-out)
 .fx-niche { display: grid; grid-template-columns: auto 1fr 140px; align-items: center; gap: 10px; padding: 6px 0; }
 @media (max-width: 900px) { .fx-cols { grid-template-columns: 1fr; } .fx-lanes { grid-template-columns: repeat(8, 150px); } .fx-cmdbar { flex-direction: column; } }
 @media (prefers-reduced-motion: reduce) { .fx-ring { animation: none; } .fx-drawer { animation: none; } }
+
+/* Fábrica · misiones (órdenes diarias) y galería de creaciones */
+.fx-how { margin: -6px 0 0; font-size: .9rem; color: rgba(255,255,255,.8); max-width: 820px; }
+.fx-missions { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.fx-mission { background: rgba(0,0,0,.18); border: 1px solid rgba(255,255,255,.14); border-radius: 18px; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+.fx-mission.on { border-color: rgba(255,255,255,.5); }
+.fx-mission.empty { grid-column: 1 / -1; }
+.fx-mission header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.fx-mission h3 { margin: 0; color: #fff; font: 700 1.25rem var(--display); letter-spacing: -0.02em; text-transform: none; }
+.fx-mk { font: 600 .7rem var(--mono); letter-spacing: .1em; text-transform: uppercase; color: rgba(255,255,255,.7); }
+.fx-prog { height: 8px; border-radius: 999px; background: rgba(255,255,255,.18); overflow: hidden; }
+.fx-prog i { display: block; height: 100%; background: #fff; border-radius: inherit; transition: width .4s var(--ease-out); }
+.fx-mrow { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin: 0; font-size: .85rem; color: rgba(255,255,255,.8); }
+.fx-mrow b { color: #fff; font-variant-numeric: tabular-nums; }
+.fx-per input { width: 58px; min-height: 30px; border-radius: 8px; border: 1px solid rgba(255,255,255,.4); background: rgba(0,0,0,.2); color: #fff; padding: 0 6px; font: 600 .85rem var(--sans); }
+.fx-mission .fx-acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.fx-gal { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin-top: 10px; }
+.fx-gcard { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 10px; border-radius: 14px; background: rgba(255,255,255,.08); color: #fff; text-decoration: none; text-align: center; transition: transform 160ms var(--ease-out), background-color .15s ease; }
+.fx-gcard:hover { background: rgba(255,255,255,.14); }
+.fx-gcard:active { transform: scale(.97); }
+.fx-gcard img, .fx-gweb { width: 72px; height: 72px; border-radius: 50%; object-fit: cover; box-shadow: 0 0 0 2px var(--c); background: var(--b); }
+.fx-gweb { display: grid; place-items: center; font: 700 1.8rem var(--display); color: var(--c); border-radius: 18px; }
+.fx-gcard b { font-size: .86rem; line-height: 1.2; overflow-wrap: anywhere; }
+.fx-gcard small { font: 600 .72rem var(--mono); color: rgba(255,255,255,.7); }
+.fx-dlogo { width: 120px; height: 120px; border-radius: 50%; object-fit: cover; display: block; margin: 4px 0 8px; }
+@media (max-width: 600px) { .fx-cmdbar { flex-direction: column; } }

@@ -36,6 +36,14 @@ export interface Spec {
   ai: { label: string; placeholder: string; examples: string[]; system: string } | null;
   seo: { title: string; description: string; keywords: string[] };
   disclaimer: string;
+  /** Solo en meme coins: concepto de token (no desplegado on-chain). */
+  coin?: Coin | null;
+}
+
+export interface Coin {
+  ticker: string; description: string; lore: string; traits: string[];
+  supply: string; distribution: { label: string; pct: number }[];
+  roadmap: { phase: string; text: string }[]; community: string[]; logo: boolean;
 }
 
 // ------------------------------------------------------------------ saneado
@@ -113,6 +121,25 @@ export function normalizeSpec(raw: any, niche: string, seed: number): Spec {
   };
 }
 
+/** Valida el concepto de meme coin del LLM (texto plano, porcentajes que suman 100). */
+export function normalizeCoin(raw: any, logo: boolean): Coin {
+  const list = <T,>(v: unknown, n: number, f: (x: any) => T | null): T[] => (Array.isArray(v) ? v : []).map(f).filter((x): x is T => !!x).slice(0, n);
+  const ticker = clean(raw?.ticker, 8, "MEME").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 8) || "MEME";
+  let dist = list(raw?.tokenomics?.distribution, 6, (d) => { const pct = Number(d?.pct); return d?.label && Number.isFinite(pct) && pct > 0 ? { label: clean(d.label, 40), pct } : null; });
+  const sum = dist.reduce((a, d) => a + d.pct, 0);
+  if (!dist.length || sum <= 0) dist = [{ label: "Liquidez", pct: 85 }, { label: "Comunidad y airdrops", pct: 10 }, { label: "Marketing", pct: 5 }];
+  else { dist = dist.map((d) => ({ ...d, pct: Math.round((d.pct / sum) * 1000) / 10 })); }
+  return {
+    ticker, description: clean(raw?.description, 400), lore: clean(raw?.lore, 1200),
+    traits: list(raw?.traits, 5, (t) => clean(t, 60) || null),
+    supply: clean(raw?.tokenomics?.supply, 30, "1.000.000.000").replace(/[^0-9.,\s]/g, "").trim() || "1.000.000.000",
+    distribution: dist,
+    roadmap: list(raw?.roadmap, 5, (r) => (r?.text ? { phase: clean(r.phase, 30, "Fase"), text: clean(r.text, 200) } : null)),
+    community: list(raw?.community, 5, (t) => clean(t, 140) || null),
+    logo,
+  };
+}
+
 // ------------------------------------------------------------------ HTML
 /** Variables CSS del modo de la marca + el modo contrario derivado (con contraste válido). */
 function themeCss(c: Spec["brand"], f: { head: string; body: string }): string {
@@ -128,6 +155,7 @@ function themeCss(c: Spec["brand"], f: { head: string; body: string }): string {
 
 export function renderSite(spec: Spec, slug: string, origin: string, assetVersion: string): string {
   const f = FONT_PAIRS[spec.brand.fonts];
+  const coin = spec.coin ?? null;
   const url = `${origin}/s/${slug}/`;
   const c = spec.brand;
   const config = { slug, name: spec.name, niche: spec.niche, widgets: spec.widgets, ai: spec.ai ? { label: spec.ai.label, placeholder: spec.ai.placeholder, examples: spec.ai.examples } : null };
@@ -145,7 +173,7 @@ export function renderSite(spec: Spec, slug: string, origin: string, assetVersio
 <meta name="description" content="${esc(spec.seo.description)}">
 ${spec.seo.keywords.length ? `<meta name="keywords" content="${esc(spec.seo.keywords.join(", "))}">` : ""}
 <link rel="canonical" href="${esc(url)}">
-<meta property="og:type" content="website"><meta property="og:title" content="${esc(spec.seo.title)}"><meta property="og:description" content="${esc(spec.seo.description)}"><meta property="og:url" content="${esc(url)}"><meta name="twitter:card" content="summary">
+<meta property="og:type" content="website"><meta property="og:title" content="${esc(spec.seo.title)}"><meta property="og:description" content="${esc(spec.seo.description)}"><meta property="og:url" content="${esc(url)}"><meta name="twitter:card" content="${coin?.logo ? "summary_large_image" : "summary"}">${coin?.logo ? `<meta property="og:image" content="${esc(url)}logo">` : ""}
 <meta name="theme-color" content="${c.bg}">
 <link rel="icon" href="data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='16' fill='${c.accent}'/><text x='50%' y='58%' text-anchor='middle' font-family='sans-serif' font-weight='700' font-size='34' fill='${c.bg}'>${spec.name.slice(0, 1).toUpperCase()}</text></svg>`)}">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -160,16 +188,18 @@ ${faqLd ? `<script type="application/ld+json">${json(faqLd)}</script>` : ""}
 <body>
 <a class="fx-skip" href="#main">Saltar al contenido</a>
 <header class="fx-nav"><div class="fx-wrap fx-nav-in"><a class="fx-brand" href="#top" aria-label="${esc(spec.name)} — inicio"><span class="fx-logo" aria-hidden="true">${esc(spec.name.slice(0, 1).toUpperCase())}</span>${esc(spec.name)}</a>
-<nav aria-label="Secciones"><a href="#tools">Herramienta</a>${spec.features.length ? `<a href="#features">Funciones</a>` : ""}${spec.faq.length ? `<a href="#faq">FAQ</a>` : ""}</nav>
+<nav aria-label="Secciones">${coin ? `<a href="#lore">Lore</a><a href="#tokenomics">Tokenomics</a>` : ""}<a href="#tools">${coin ? "Mercado" : "Herramienta"}</a>${spec.features.length ? `<a href="#features">Funciones</a>` : ""}${spec.faq.length ? `<a href="#faq">FAQ</a>` : ""}</nav>
 <button class="fx-theme" type="button" aria-label="Cambiar tema claro/oscuro"><span aria-hidden="true"></span></button></div></header>
 <main id="main">
 <section class="fx-hero" id="top"><div class="fx-wrap fx-hero-in">
-<p class="fx-eyebrow">${esc(spec.hero.eyebrow)}</p>
+${coin?.logo ? `<img class="fx-coin-logo" src="logo?v=${esc(assetVersion)}" alt="Logo de ${esc(spec.name)}" width="168" height="168" decoding="async">` : ""}
+<p class="fx-eyebrow">${coin ? `$${esc(coin.ticker)} · ` : ""}${esc(spec.hero.eyebrow)}</p>
 <h1>${esc(spec.hero.title)}</h1>
 <p class="fx-lead">${esc(spec.hero.subtitle)}</p>
 <div class="fx-cta"><a class="fx-btn" href="#tools">${esc(spec.hero.cta)}</a>${spec.features.length ? `<a class="fx-btn ghost" href="#features">Ver funciones</a>` : ""}</div>
-<div class="fx-stats" data-stats aria-live="polite"></div>
+${coin ? `<p class="fx-coin-state" role="note"><b>Estado: concepto.</b> $${esc(coin.ticker)} todavía no existe en ninguna blockchain. Si alguien te ofrece comprarlo, no es este proyecto.</p>` : `<div class="fx-stats" data-stats aria-live="polite"></div>`}
 </div><div class="fx-hero-art" aria-hidden="true"><i></i><i></i><i></i></div></section>
+${coin ? coinSections(spec, coin) : ""}
 <section class="fx-tools" id="tools" aria-label="Herramientas"><div class="fx-wrap fx-grid-w">${spec.widgets.map(widget).join("")}</div></section>
 ${spec.features.length ? `<section class="fx-sec" id="features"><div class="fx-wrap"><h2>Lo que hace ${esc(spec.name)}</h2><div class="fx-features">${spec.features.map((x) => `<article class="fx-card"><h3>${esc(x.title)}</h3><p>${esc(x.text)}</p></article>`).join("")}</div></div></section>` : ""}
 ${spec.steps.length ? `<section class="fx-sec"><div class="fx-wrap"><h2>Cómo funciona</h2><ol class="fx-steps">${spec.steps.map((x) => `<li><h3>${esc(x.title)}</h3><p>${esc(x.text)}</p></li>`).join("")}</ol></div></section>` : ""}
@@ -178,4 +208,12 @@ ${spec.faq.length ? `<section class="fx-sec" id="faq"><div class="fx-wrap fx-nar
 <footer class="fx-foot"><div class="fx-wrap"><p><b>${esc(spec.name)}</b> · ${esc(spec.tagline)}</p>${spec.disclaimer ? `<p class="fx-disc">${esc(spec.disclaimer)}</p>` : ""}<p class="fx-src">${spec.widgets.some((w) => WIDGET_DATA[w.type]) ? "Datos: DexScreener, GeckoTerminal y CoinGecko (APIs públicas), actualizados en vivo." : ""} Creado por <a href="${esc(origin)}/s/" rel="noopener">Kairo Factory</a>.</p></div></footer>
 </body>
 </html>`;
+}
+
+function coinSections(spec: Spec, c: Coin): string {
+  const colors = ["var(--accent)", "var(--accent2)", "var(--text)", "var(--muted)", "var(--accent)", "var(--accent2)"];
+  return `<section class="fx-sec" id="lore"><div class="fx-wrap fx-coin-grid"><div><h2>La historia de ${esc(spec.name)}</h2>${c.description ? `<p class="fx-lead">${esc(c.description)}</p>` : ""}${c.lore ? `<p>${esc(c.lore)}</p>` : ""}</div>${c.traits.length ? `<ul class="fx-traits" aria-label="Rasgos">${c.traits.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>` : ""}</div></section>
+<section class="fx-sec" id="tokenomics"><div class="fx-wrap"><h2>Tokenomics propuesta</h2><p class="fx-src">Suministro total propuesto: <b>${esc(c.supply)}</b> $${esc(c.ticker)} · diseño orientativo, no desplegado.</p><div class="fx-bar" role="img" aria-label="${esc(c.distribution.map((d) => `${d.label} ${d.pct}%`).join(", "))}">${c.distribution.map((d, i) => `<span style="width:${d.pct}%;background:${colors[i % colors.length]}"></span>`).join("")}</div><ul class="fx-legend">${c.distribution.map((d, i) => `<li><i style="background:${colors[i % colors.length]}"></i>${esc(d.label)} <b>${d.pct}%</b></li>`).join("")}</ul></div></section>
+${c.roadmap.length ? `<section class="fx-sec"><div class="fx-wrap"><h2>Roadmap</h2><ol class="fx-steps">${c.roadmap.map((r) => `<li><h3>${esc(r.phase)}</h3><p>${esc(r.text)}</p></li>`).join("")}</ol></div></section>` : ""}
+${c.community.length ? `<section class="fx-sec"><div class="fx-wrap"><h2>Ideas para la comunidad</h2><div class="fx-features">${c.community.map((t) => `<article class="fx-card"><p>${esc(t)}</p></article>`).join("")}</div></div></section>` : ""}`;
 }

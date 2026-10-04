@@ -7,7 +7,8 @@
 // Corre en la cola + cron de Cloudflare: funciona sin navegador abierto.
 
 import { RouterError } from "../ai/errors";
-import { generate, isQuotaError, type CallContext } from "../ai/router";
+import { generate, isQuotaError, routeImage, type CallContext } from "../ai/router";
+import { bytesToB64 } from "../b64";
 import { instantiate } from "../connectors";
 import type { GitHubConnector } from "../connectors/github";
 import { all, dumps, loads, nowIso, one, run } from "../db";
@@ -16,7 +17,7 @@ import { getSubscription } from "../plans";
 import { failures, passed, qaChecks, securityChecks } from "./checks";
 import { cryptoMarket, cryptoTrending } from "./data";
 import { ensureFactorySchema } from "./schema";
-import { NICHES, normalizeSpec, renderSite, WIDGETS, type Spec } from "./render";
+import { NICHES, normalizeCoin, normalizeSpec, renderSite, WIDGETS, type Spec } from "./render";
 
 export const STAGES = ["backlog", "research", "building", "testing", "security", "deploying", "live", "maintenance"] as const;
 export type Stage = (typeof STAGES)[number];
@@ -43,7 +44,7 @@ export const FX_AGENTS = [
 
 const MAX_ATTEMPTS = 3;
 const LEASE_MS = 8 * 60_000;
-const assetVersion = "202610041";
+const assetVersion = "202610042";
 const todayIso = () => new Date().toISOString().slice(0, 10);
 const origin = (env: Env) => (env.PUBLIC_URL || "http://127.0.0.1:8787").replace(/\/$/, "");
 export const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, " ").trim().slice(0, 80);
@@ -104,7 +105,7 @@ async function marketContext(env: Env, niche: string): Promise<string> {
   }
 }
 
-export async function ideate(env: Env, userId: number, niche: string, count: number, hint = ""): Promise<number> {
+export async function ideate(env: Env, userId: number, niche: string, count: number, hint = "", missionId: number | null = null): Promise<number> {
   await ensureFactorySchema(env.DB);
   niche = NICHES.includes(niche) ? niche : "other";
   const existing = await all<any>(env.DB, "SELECT name FROM fx_projects WHERE user_id = ? AND niche = ? ORDER BY id DESC LIMIT 60", userId, niche);
@@ -114,7 +115,7 @@ export async function ideate(env: Env, userId: number, niche: string, count: num
     "Eres el agente Research de una fábrica de productos web. Propones micro-SaaS/herramientas web útiles, concretas y diferenciadas que se puedan construir con los widgets disponibles.",
     `Nicho: ${niche}. ${hint ? `Indicación del dueño: ${hint}.` : ""}\n${await marketContext(env, niche)}\nWidgets disponibles (la web DEBE basarse en ellos): ${widgets.join(", ")}.\nYa existen (no repitas): ${existing.map((e) => e.name).join(", ") || "ninguno"}.\n` +
     `Propón ${count} ideas distintas. JSON: {"ideas":[{"name":"nombre de marca corto y original","idea":"qué problema resuelve y para quién, 1-2 frases","widgets":["..."]}]}`,
-    { capability: "reasoning", cheap: true, maxTokens: 1200 });
+    { capability: "reasoning", premium: true, maxTokens: 1400 });
   let created = 0;
   for (const it of (Array.isArray(json?.ideas) ? json.ideas : []).slice(0, count)) {
     const name = String(it?.name ?? "").replace(/[<>]/g, "").trim().slice(0, 40);
@@ -122,11 +123,95 @@ export async function ideate(env: Env, userId: number, niche: string, count: num
     if (name.length < 3 || idea.length < 10) continue;
     let slug = slugify(name);
     if (await one(env.DB, "SELECT 1 FROM fx_projects WHERE slug = ?", slug)) slug = `${slug}-${Date.now().toString(36).slice(-4)}`;
-    const ins = await env.DB.prepare("INSERT OR IGNORE INTO fx_projects (user_id, slug, name, niche, idea, dedupe_key, stage, status, priority, research_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'backlog', 'queued', ?, ?, ?, ?)")
-      .bind(userId, slug, name, niche, idea, norm(name), niche === "crypto" || niche === "ai" ? 8 : 5, dumps({ widgets: Array.isArray(it.widgets) ? it.widgets.slice(0, 4) : [] }), nowIso(), nowIso()).run();
+    const ins = await env.DB.prepare("INSERT OR IGNORE INTO fx_projects (user_id, slug, name, niche, idea, dedupe_key, stage, status, priority, research_json, mission_id, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'backlog', 'queued', ?, ?, ?, 'website', ?, ?)")
+      .bind(userId, slug, name, niche, idea, norm(name), niche === "crypto" || niche === "ai" ? 8 : 5, dumps({ widgets: Array.isArray(it.widgets) ? it.widgets.slice(0, 4) : [] }), missionId, nowIso(), nowIso()).run();
     if (ins.meta.changes) { created++; await fxEmit(env, userId, Number(ins.meta.last_row_id), "backlog", "research", "idea", `Nueva idea: ${name} — ${idea.slice(0, 160)}`); }
   }
   return created;
+}
+
+// ------------------------------------------------------------------ meme coins (concepto + logo; nunca se despliega on-chain sin el dueño)
+export async function ideateCoins(env: Env, userId: number, prompt: string, count: number, missionId: number | null): Promise<number> {
+  await ensureFactorySchema(env.DB);
+  const existing = await all<any>(env.DB, "SELECT name, json_extract(research_json, '$.ticker') AS ticker FROM fx_projects WHERE user_id = ? AND kind = 'memecoin' ORDER BY id DESC LIMIT 120", userId);
+  await fxEmit(env, userId, null, "backlog", "research", "start", `Inventando ${count} meme coin(s) nuevas («${prompt.slice(0, 80)}»).`);
+  const { json } = await ask(env, userId, "coins", 0,
+    "Eres el director creativo de un estudio de meme coins. Inventas conceptos originales, graciosos y con potencial viral (mascota, chiste central, comunidad), sin copiar marcas ni personas reales y sin prometer rentabilidad.",
+    `Orden del dueño: ${prompt}\n${await marketContext(env, "crypto")}\nYa existen (no repitas nombre ni ticker): ${existing.map((e) => `${e.name} ($${e.ticker ?? "?"})`).join(", ") || "ninguna"}.\n` +
+    `Propón ${count} meme coins distintas. JSON: {"coins":[{"name":"nombre corto y pegadizo","ticker":"3-6 letras","idea":"la mascota y el chiste en 1-2 frases"}]}`,
+    { capability: "reasoning", premium: true, maxTokens: 1200 });
+  let created = 0;
+  for (const it of (Array.isArray(json?.coins) ? json.coins : []).slice(0, count)) {
+    const name = String(it?.name ?? "").replace(/[<>]/g, "").trim().slice(0, 40);
+    const ticker = String(it?.ticker ?? "").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 8);
+    const idea = String(it?.idea ?? "").replace(/[<>]/g, "").trim().slice(0, 400);
+    if (name.length < 2 || ticker.length < 2 || idea.length < 10) continue;
+    if (existing.some((e) => String(e.ticker ?? "").toUpperCase() === ticker)) continue;
+    let slug = slugify(`${name}-coin`);
+    if (await one(env.DB, "SELECT 1 FROM fx_projects WHERE slug = ?", slug)) slug = `${slug}-${Date.now().toString(36).slice(-4)}`;
+    const ins = await env.DB.prepare("INSERT OR IGNORE INTO fx_projects (user_id, slug, name, niche, idea, dedupe_key, stage, status, priority, research_json, mission_id, kind, created_at, updated_at) VALUES (?, ?, ?, 'crypto', ?, ?, 'backlog', 'queued', 8, ?, ?, 'memecoin', ?, ?)")
+      .bind(userId, slug, name, idea, `coin ${norm(ticker)}`, dumps({ ticker }), missionId, nowIso(), nowIso()).run();
+    if (ins.meta.changes) { created++; existing.push({ name, ticker }); await fxEmit(env, userId, Number(ins.meta.last_row_id), "backlog", "research", "idea", `Nueva meme coin: ${name} ($${ticker}) — ${idea.slice(0, 160)}`); }
+  }
+  return created;
+}
+
+/** Construye la meme coin: identidad, lore, tokenomics propuesta, logo (FLUX) y su web. */
+async function buildCoin(env: Env, p: any) {
+  const r = loads<any>(p.research_json, {});
+  await fxEmit(env, p.user_id, p.id, "building", "marketing", "start", `Escribiendo identidad, lore y tokenomics de $${r.ticker ?? "?"}.`);
+  const { json, model } = await ask(env, p.user_id, "coin", p.id,
+    "Eres el estudio creativo de una fábrica de meme coins: naming, lore, branding, tokenomics orientativa y comunidad. Tono divertido pero profesional. Prohibido prometer rentabilidad, precios u objetivos de mercado.",
+    `Concepto: ${p.name} ($${r.ticker ?? ""}) — ${p.idea}\n${p.feedback ? `CORRIGE ESTO DEL INTENTO ANTERIOR: ${p.feedback}\n` : ""}` +
+    `JSON: {"name":"...","ticker":"...","tagline":"≤90","description":"2-3 frases","lore":"historia del meme, 80-140 palabras","traits":["3-5 rasgos de la mascota"],"tokenomics":{"supply":"p. ej. 1.000.000.000","distribution":[{"label":"...","pct":número}]},"roadmap":[{"phase":"Fase 1","text":"..."}×3-4],"community":["ideas de memes y contenido"×3-5],"logo_prompt":"descripción visual EN INGLÉS de la mascota (colores, estilo, expresión)","ai":{"label":"Habla con la mascota","placeholder":"...","examples":["..."],"system":"personalidad de la mascota para un chat divertido"},"brand":{"bg":"#hex","surface":"#hex","text":"#hex","muted":"#hex","accent":"#hex","accent2":"#hex","fonts":"unbounded|syne|bricolage|grotesk|sora","radius":0-28,"mode":"dark|light"},"hero":{"eyebrow":"≤40","title":"≤90","subtitle":"≤200","cta":"≤24"},"faq":[{"q":"...","a":"..."}×4],"seo":{"title":"10-60 caracteres","description":"50-155 caracteres","keywords":["..."]}}`,
+    { capability: "reasoning", premium: true, maxTokens: 2600 });
+  if (!json) throw new Error("El estudio creativo no devolvió un concepto válido.");
+  await fxEmit(env, p.user_id, p.id, "building", "uiux", "start", "Dibujando el logo con FLUX.");
+  const look = String(json.logo_prompt ?? p.idea).replace(/[\r\n]+/g, " ").slice(0, 600);
+  const img = await routeImage(await ctx(env, p.user_id, "logo", p.id), {
+    mode: "t2i", width: 512, height: 512,
+    prompt: `${look}. Meme coin mascot logo: one character, centered, inside a round coin emblem, bold clean vector illustration, thick outlines, vibrant saturated colors, plain solid background, high contrast, iconic, no text, no letters, no watermark`,
+  });
+  await run(env.DB, "INSERT OR REPLACE INTO fx_assets (project_id, name, mime, data_b64, model, created_at) VALUES (?, 'logo', ?, ?, ?, ?)", p.id, img.mime, bytesToB64(img.bytes), img.model, nowIso());
+  const ticker = String(json.ticker ?? r.ticker ?? "").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 8) || r.ticker;
+  const raw = {
+    ...json, ticker, archetype: ["spotlight", "bento", "editorial"][p.id % 3],
+    widgets: [{ type: "ai-tool", title: String(json.ai?.label ?? "Habla con la mascota") }, { type: "crypto-trending", title: "El mercado meme ahora", note: "Datos reales en vivo de DexScreener/GeckoTerminal, para contexto." }],
+    ai: { ...(json.ai ?? {}), system: `${String(json.ai?.system ?? "")} Eres la mascota de la meme coin ${json.name ?? p.name} ($${ticker}). Respondes con humor y en personaje. El token es un concepto: no está lanzado, no tiene precio y no se puede comprar; dilo si preguntan.`.trim() },
+    features: [], steps: [],
+    disclaimer: `$${ticker} es un concepto creativo generado por Kairo Factory. No está desplegado en ninguna blockchain, no tiene precio ni valor y nada aquí es una oferta de inversión ni asesoramiento financiero.`,
+  };
+  const spec = normalizeSpec(raw, "crypto", p.id);
+  spec.coin = normalizeCoin({ ...json, ticker }, true);
+  const html = renderSite(spec, p.slug, origin(env), assetVersion);
+  await run(env.DB, "UPDATE fx_projects SET name = ?, spec_json = ?, html = ?, apis_json = ?, research_json = ? WHERE id = ?", spec.name, dumps(spec), html, dumps(["FLUX.1 schnell (logo)", "Kairo AI (mascota)", "DexScreener API"]), dumps({ ...r, ticker, model }), p.id);
+  await fxEmit(env, p.user_id, p.id, "building", "frontend", "tool", `$${ticker} lista: logo (${img.model.split("/").pop()}), lore, tokenomics, roadmap y web (${(html.length / 1024).toFixed(1)} KB).`);
+  await advance(env, p, "testing");
+}
+
+// ------------------------------------------------------------------ misiones: órdenes permanentes que se repiten cada día
+/** Rellena el cupo diario de cada misión activa (por tandas de 3 para no saturar la cola). */
+export async function missionTick(env: Env, userId: number, onlyId?: number): Promise<number> {
+  await ensureFactorySchema(env.DB);
+  const ms = await all<any>(env.DB, `SELECT * FROM fx_missions WHERE user_id = ? AND active = 1${onlyId ? " AND id = ?" : ""} ORDER BY id`, userId, ...(onlyId ? [onlyId] : []));
+  let total = 0;
+  for (const m of ms) {
+    const made = (await one<any>(env.DB, "SELECT COUNT(*) AS n FROM fx_projects WHERE mission_id = ? AND created_at >= ? AND status NOT IN ('rejected','failed')", m.id, todayIso()))?.n ?? 0;
+    const open = (await one<any>(env.DB, "SELECT COUNT(*) AS n FROM fx_projects WHERE mission_id = ? AND stage NOT IN ('live','maintenance') AND status NOT IN ('failed','rejected','paused')", m.id))?.n ?? 0;
+    if (made >= m.per_day || open >= 3) continue;
+    const n = Math.min(3 - open, m.per_day - made);
+    try {
+      const created = m.kind === "memecoin" ? await ideateCoins(env, userId, m.prompt, n, m.id) : await ideate(env, userId, m.niche, n, m.prompt, m.id);
+      total += created;
+      await run(env.DB, "UPDATE fx_missions SET last_at = ? WHERE id = ?", nowIso(), m.id);
+      const q = await all<any>(env.DB, "SELECT id FROM fx_projects WHERE mission_id = ? AND stage = 'backlog' AND status = 'queued' ORDER BY id DESC LIMIT ?", m.id, Math.max(created, 1));
+      for (const p of q) await env.RUNS.send({ fxStep: p.id });
+    } catch (err) {
+      const msg = (err as Error).message ?? String(err);
+      await fxEmit(env, userId, null, "backlog", "research", (err instanceof RouterError && err.code === "free_quota") || isQuotaError(msg) ? "limit" : "error", `Misión «${m.title}»: ${msg.slice(0, 200)}`);
+    }
+  }
+  return total;
 }
 
 // ------------------------------------------------------------------ pipeline
@@ -175,6 +260,7 @@ export async function fxStep(env: Env, id: number) {
     switch (p.stage as Stage) {
       case "backlog":
         agent = "research";
+        if (p.kind === "memecoin") { await advance(env, p, "building"); return; }
         await fxEmit(env, p.user_id, id, "research", "research", "start", `Investigando «${p.name}».`);
         await advance(env, p, "research");
         return;
@@ -198,6 +284,7 @@ export async function fxStep(env: Env, id: number) {
         return;
       }
       case "building": {
+        if (p.kind === "memecoin") { agent = "marketing"; await buildCoin(env, p); return; }
         agent = "architect";
         const research = loads<any>(p.research_json, {});
         const allowed = WIDGETS.filter((w) => (p.niche === "crypto" ? w.startsWith("crypto") || w === "ai-tool" : p.niche === "nutrition" ? ["calc-tdee", "calc-macros", "ai-tool"].includes(w) : p.niche === "sport" ? ["calc-1rm", "calc-pace", "calc-hrzones", "ai-tool"].includes(w) : w === "ai-tool"));
@@ -352,8 +439,11 @@ export async function factoryTick(env: Env) {
   for (const u of users) {
     const s = await fxSettings(env, u.user_id);
     const budgetOk = (await fxTokensToday(env, u.user_id)) < s.token_budget_day;
-    // Ideas nuevas hasta el objetivo diario
-    if (s.auto_ideas && budgetOk) {
+    // Misiones (órdenes permanentes): cada una rellena su cupo diario
+    const missions = (await one<any>(env.DB, "SELECT COUNT(*) AS n FROM fx_missions WHERE user_id = ? AND active = 1", u.user_id))?.n ?? 0;
+    if (missions && budgetOk) await missionTick(env, u.user_id).catch(() => undefined);
+    // Ideas nuevas sueltas hasta el objetivo diario (solo si no hay misiones: las misiones mandan)
+    if (!missions && s.auto_ideas && budgetOk) {
       const today = (await one<any>(env.DB, "SELECT COUNT(*) AS n FROM fx_projects WHERE user_id = ? AND created_at >= ?", u.user_id, todayIso()))?.n ?? 0;
       const open = (await one<any>(env.DB, "SELECT COUNT(*) AS n FROM fx_projects WHERE user_id = ? AND stage NOT IN ('live','maintenance') AND status NOT IN ('failed','rejected','paused')", u.user_id))?.n ?? 0;
       if (today < s.daily_target && open < s.max_parallel * 2) {

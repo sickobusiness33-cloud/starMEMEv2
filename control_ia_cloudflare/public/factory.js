@@ -14,12 +14,19 @@ async function viewFactory(main) {
   const root = h("div", { class: "fx-app" });
   main.replaceChildren(root);
 
-  const cmd = h("input", { type: "text", class: "fx-cmd", placeholder: "Crea proyectos nuevos de meme coins", "aria-label": "Orden para la fábrica", maxlength: 300 });
+  const cmd = h("input", { type: "text", class: "fx-cmd", placeholder: "Créame criptomonedas · Hazme webs de deportes · 5 webs de IA al día", "aria-label": "Orden para la fábrica", maxlength: 300 });
   const send = async (ev) => {
     ev?.preventDefault();
-    const text = cmd.value.trim() || cmd.placeholder;
-    try { const r = await api("POST", "/api/factory/command", { text }); toast(`${r.created} ideas nuevas de ${FX_NICHE[r.niche]} en marcha`); cmd.value = ""; load(); } catch (e) { toast(e.message, true); }
+    const text = cmd.value.trim();
+    if (!text) { cmd.focus(); return; }
+    try {
+      const { mission: m } = await api("POST", "/api/factory/command", { text });
+      toast(`Misión creada: ${m.title} · ${m.perDay} al día, todos los días, hasta que la pares`);
+      cmd.value = ""; load();
+    } catch (e) { toast(e.message, true); }
   };
+  const missionsEl = h("section", { class: "fx-missions", "aria-label": "Misiones activas" });
+  const gallery = h("section", { class: "fx-panel" });
   const top = h("header", { class: "fx-top" });
   const kpis = h("div", { class: "fx-kpis" });
   const net = h("div", { class: "fx-net", "aria-label": "Red de agentes de la fábrica" });
@@ -27,8 +34,9 @@ async function viewFactory(main) {
   const reg = h("section", { class: "fx-panel" });
   const feed = h("ol", { class: "fx-feed" });
   const human = h("section", { class: "fx-panel" });
-  root.append(top, h("form", { class: "fx-cmdbar", onsubmit: send }, cmd, h("button", { class: "fx-go", type: "submit" }, "Ejecutar")),
-    kpis, net, lanes, h("div", { class: "fx-cols" }, reg, h("div", { class: "fx-side" }, h("section", { class: "fx-panel" }, h("h3", {}, "Actividad en vivo"), feed), human)));
+  root.append(top, h("form", { class: "fx-cmdbar", onsubmit: send }, cmd, h("button", { class: "fx-go", type: "submit" }, "Crear misión")),
+    h("p", { class: "fx-how" }, "Dile qué quieres y se convierte en una misión: cada día la fábrica crea esa cantidad sola (idea → diseño → pruebas → seguridad → publicación), aunque cierres el navegador, hasta que pulses Parar."),
+    missionsEl, gallery, kpis, net, lanes, h("div", { class: "fx-cols" }, reg, h("div", { class: "fx-side" }, h("section", { class: "fx-panel" }, h("h3", {}, "Actividad en vivo"), feed), human)));
 
   const render = () => {
     const d = data, s = d.settings;
@@ -39,9 +47,11 @@ async function viewFactory(main) {
         h("span", { class: "fx-state" + (s.enabled ? " on" : "") }, s.enabled ? "● En marcha 24/7" : "○ En pausa"),
         h("button", { class: "fx-go ghost", type: "button", onclick: settings }, "Ajustes"),
         h("button", { class: "fx-go", type: "button", onclick: async () => { await api("POST", `/api/factory/${s.enabled ? "pause" : "start"}`); load(); } }, s.enabled ? "Pausar" : "Arrancar")));
+    renderMissions(d);
+    renderGallery(d);
     const t = d.totals;
     kpis.replaceChildren(...[
-      ["En producción", t.live], [`Hoy / objetivo`, `${t.today}/${s.daily_target}`], ["Publicadas hoy", t.live_today],
+      ["En producción", t.live], ["Creados hoy", t.today], ["Publicadas hoy", t.live_today],
       ["En cadena", Object.entries(d.counts).filter(([k]) => !["live", "maintenance"].includes(k)).reduce((a, [, v]) => a + v, 0)],
       ["Tokens hoy", `${Number(t.tokens_today).toLocaleString("es-ES")} / ${Number(s.token_budget_day).toLocaleString("es-ES")}`],
       ["Descartadas · fallidas", `${t.rejected} · ${t.failed}`],
@@ -68,6 +78,38 @@ async function viewFactory(main) {
     human.replaceChildren(h("h3", {}, "Solo tú decides"), h("p", { class: "fx-small" }, "Todo lo demás lo hace la fábrica sola. Esto requiere tu autorización:"),
       h("ul", { class: "fx-human" }, d.approvals.map((a) => h("li", {}, h("b", {}, a.title), h("span", {}, a.detail)))));
   };
+
+  function renderMissions(d) {
+    const ms = d.missions || [];
+    if (!ms.length) {
+      missionsEl.replaceChildren(h("div", { class: "fx-mission empty" }, h("b", {}, "Sin misiones todavía."), h("p", {}, "Prueba: «Créame criptomonedas» (10 al día con logo, nombre, lore y web) o «Hazme webs de deportes»."),
+        h("div", { class: "fx-acts" }, ["Créame criptomonedas", "Hazme webs de deportes", "Webs de inteligencia artificial"].map((x) => h("button", { class: "fx-go small ghost", type: "button", onclick: () => { cmd.value = x; send(); } }, x)))));
+      return;
+    }
+    missionsEl.replaceChildren(...ms.map((m) => {
+      const pct = Math.min(100, Math.round((m.made_today / m.per_day) * 100));
+      const per = h("input", { type: "number", min: 1, max: 50, value: m.per_day, "aria-label": "Cantidad al día", onchange: async (e) => { try { await api("PATCH", `/api/factory/missions/${m.id}`, { per_day: +e.target.value }); load(); } catch (err) { toast(err.message, true); } } });
+      return h("article", { class: "fx-mission" + (m.active ? " on" : "") },
+        h("header", {}, h("span", { class: "fx-mk" }, m.kind === "memecoin" ? "Meme coins" : FX_NICHE[m.niche] || m.niche), h("span", { class: "fx-state" + (m.active ? " on" : "") }, m.active ? (m.working ? "● trabajando" : "● activa") : "○ parada")),
+        h("h3", {}, m.title), h("p", { class: "fx-small" }, `«${trunc(m.prompt, 90)}»`),
+        h("div", { class: "fx-prog", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": m.per_day, "aria-valuenow": m.made_today }, h("i", { style: `width:${pct}%` })),
+        h("p", { class: "fx-mrow" }, h("span", {}, h("b", {}, `${m.made_today}/${m.per_day}`), " hoy"), h("span", {}, h("b", {}, String(m.live_total)), " publicadas"), h("label", { class: "fx-per" }, per, " al día")),
+        h("div", { class: "fx-acts" },
+          h("button", { class: "fx-go small" + (m.active ? " ghost" : ""), type: "button", onclick: async () => { await api("PATCH", `/api/factory/missions/${m.id}`, { active: !m.active }); load(); } }, m.active ? "Parar" : "Reanudar"),
+          h("button", { class: "fx-go small ghost", type: "button", onclick: async () => {
+            if (!(await confirmDialog({ title: "Borrar misión", body: `Se borra la orden «${m.title}». Lo ya creado se queda en el registro.`, confirmLabel: "Borrar", danger: true }))) return;
+            await api("DELETE", `/api/factory/missions/${m.id}`); load(); } }, "Borrar")));
+    }));
+  }
+
+  function renderGallery(d) {
+    const live = d.projects.filter((p) => p.version > 0 && (p.stage === "live" || p.stage === "maintenance")).slice(0, 24);
+    if (!live.length) { gallery.replaceChildren(h("div", { class: "fx-panel-h" }, h("h3", {}, "Creaciones")), h("p", { class: "fx-small" }, "Aquí aparecerá cada criptomoneda y cada web en cuanto pase las pruebas y se publique.")); return; }
+    gallery.replaceChildren(h("div", { class: "fx-panel-h" }, h("h3", {}, `Creaciones · ${live.length}`), h("a", { class: "fx-link", href: "/s/", target: "_blank", rel: "noopener" }, "Ver todas ↗")),
+      h("div", { class: "fx-gal" }, live.map((p) => h("a", { class: "fx-gcard", href: p.url, target: "_blank", rel: "noopener", style: `--c:${p.accent || "#fff"};--b:${p.bg || "#111"}` },
+        p.kind === "memecoin" ? h("img", { src: `/s/${p.slug}/logo`, alt: `Logo de ${p.name}`, loading: "lazy", width: 96, height: 96 }) : h("span", { class: "fx-gweb", "aria-hidden": "true" }, p.name.slice(0, 1).toUpperCase()),
+        h("b", {}, p.name), h("small", {}, p.kind === "memecoin" ? `$${p.ticker || "?"}` : FX_NICHE[p.niche] || p.niche)))));
+  }
 
   function drawNet(d) {
     const W = 1000, H = 300, colW = W / FX_CLUSTERS.length;
@@ -112,6 +154,7 @@ async function viewFactory(main) {
     drawer = h("aside", { class: "fx-drawer", role: "dialog", "aria-label": p.name },
       h("header", {}, h("div", {}, h("p", { class: "fx-kicker" }, `${FX_NICHE[p.niche] || p.niche} · v${p.version}`), h("h2", {}, p.name)),
         h("button", { class: "fx-x", type: "button", "aria-label": "Cerrar", onclick: () => { drawer.remove(); drawer = null; } }, "✕")),
+      p.kind === "memecoin" ? h("img", { class: "fx-dlogo", src: `/s/${p.slug}/logo`, alt: `Logo de ${p.name}`, width: 120, height: 120 }) : null,
       h("p", {}, p.spec.tagline || p.idea),
       h("div", { class: "fx-meta" }, ...[["Etapa", FX_STAGE_LABEL[p.stage]], ["Estado", FX_STATUS[p.status] || p.status], ["Puntuación", p.research.score ? `${p.research.score}/10` : "—"], ["Stack", p.stack], ["APIs", p.apis.join(", ") || "—"], ["Peso", `${p.html_kb} KB`], ["Repositorio", p.repo || "—"]].map(([k, v]) => h("div", {}, h("span", {}, k), h("b", {}, v)))),
       p.url && p.version ? h("div", { class: "fx-prev" }, h("iframe", { src: p.url, title: `Vista previa de ${p.name}`, sandbox: "allow-scripts allow-popups", loading: "lazy" }), h("a", { class: "fx-link", href: p.url, target: "_blank", rel: "noopener" }, `${p.url} ↗`)) : null,
@@ -137,9 +180,9 @@ async function viewFactory(main) {
       return { id, en, w, row: h("label", { class: "fx-niche" }, en, h("span", {}, FX_NICHE[id]), w) };
     });
     openDialog("Ajustes de la fábrica", [
-      h("div", { class: "row" }, field("Proyectos al día (objetivo)", target), field("En paralelo", par)),
+      h("div", { class: "row" }, field("Ideas sueltas al día (sin misiones)", target), field("En paralelo", par)),
       field("Presupuesto de tokens al día", budget, "Cuando se alcanza, la fábrica para y sigue sola al día siguiente."),
-      h("label", { class: "switch" }, auto, "Generar ideas nuevas sola"),
+      h("label", { class: "switch" }, auto, "Si no hay misiones, generar ideas sola por nichos"),
       h("div", {}, h("div", { class: "mono-up" }, "Nichos y prioridad"), ...niches.map((n) => n.row)),
       h("div", { class: "row" }, field("Color de la pantalla", theme), field("Exportar código a GitHub", gh, "Rama «factory» del repo del conector. Nunca toca main.")),
     ], [h("button", { class: "btn", type: "button", onclick: () => closeDialog(false) }, "Cancelar"), h("button", { class: "btn primary", type: "button", onclick: async () => {
@@ -150,7 +193,11 @@ async function viewFactory(main) {
     } }, "Guardar")]);
   }
 
-  async function load() { data = await api("GET", "/api/factory"); render(); }
+  async function load() {
+    data = await api("GET", "/api/factory");
+    if (document.activeElement?.tagName === "INPUT" && missionsEl.contains(document.activeElement)) return; // no pisar lo que estás escribiendo
+    render();
+  }
   await load();
   every(3000, load);
 }

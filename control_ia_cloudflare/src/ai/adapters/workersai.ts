@@ -194,6 +194,23 @@ function factoryMock(system: string, all: string): string {
       { name: crypto ? `Pulso Solana ${tag}`.trim() : `Prompt Lab ${tag}`.trim(), idea: crypto ? "Panel de tokens nuevos en Solana con volumen y compras/ventas en vivo." : "Mejora prompts para modelos de IA con ejemplos y explicación." },
     ] });
   }
+  if (role === "coins") {
+    const n = Number(all.match(/Propón (\d+) meme coins/)?.[1] ?? 2);
+    const seed = Date.now().toString(36).slice(-4).toUpperCase();
+    return JSON.stringify({ coins: Array.from({ length: n }, (_, i) => ({ name: `Gato Lunar ${seed}${i}`, ticker: `GL${seed}${i}`.slice(0, 8), idea: "Un gato astronauta que siempre llega tarde a la luna; la comunidad hace memes de sus excusas." })) });
+  }
+  if (role === "coin") return JSON.stringify({
+    name: all.match(/Concepto: ([^($]+)/)?.[1]?.trim() || "Gato Lunar", tagline: "El gato que llega tarde a la luna", description: "Una meme coin conceptual sobre un gato astronauta impuntual.",
+    lore: "Todo empezó cuando un gato llamado Lunar se coló en un cohete de juguete. Desde entonces promete llegar a la luna cada lunes, pero siempre encuentra una excusa nueva: una siesta, una caja vacía o un rayo de sol perfecto. La comunidad colecciona sus excusas.",
+    traits: ["Impuntual", "Casco de pecera", "Optimista"], tokenomics: { supply: "1.000.000.000", distribution: [{ label: "Liquidez", pct: 80 }, { label: "Comunidad", pct: 15 }, { label: "Marketing", pct: 5 }] },
+    roadmap: [{ phase: "Fase 1", text: "Nace el meme y la comunidad." }, { phase: "Fase 2", text: "Concurso de excusas." }, { phase: "Fase 3", text: "Cómic colaborativo." }],
+    community: ["Excusa del día", "Stickers del casco"], logo_prompt: "cute orange cat astronaut with fishbowl helmet",
+    ai: { label: "Habla con Lunar", placeholder: "Pregúntale por qué llega tarde…", examples: ["¿Cuándo llegas a la luna?"], system: "Eres Lunar, un gato astronauta simpático que siempre tiene una excusa graciosa." },
+    brand: { bg: "#0b0a12", surface: "#15131f", text: "#f6f4ff", muted: "#a59fbf", accent: "#ffb020", accent2: "#7c5cff", fonts: "unbounded", radius: 18, mode: "dark" },
+    hero: { eyebrow: "MEME COIN", title: "El gato que siempre llega tarde a la luna", subtitle: "Un meme, una mascota y una comunidad.", cta: "Conoce a Lunar" },
+    faq: [{ q: "¿Se puede comprar?", a: "No: es un concepto." }, { q: "¿Quién lo creó?", a: "Kairo Factory." }, { q: "¿Tiene precio?", a: "No." }],
+    seo: { title: "Gato Lunar · meme coin conceptual", description: "Conoce a Lunar, el gato astronauta que siempre llega tarde a la luna: lore, tokenomics y comunidad.", keywords: ["meme coin"] },
+  });
   if (role === "product") return JSON.stringify({ go: !all.includes("[mock-rechazo]"), score: all.includes("[mock-rechazo]") ? 3 : 8, audience: "Traders y curiosos", value: "Datos reales sin ruido", risks: ["volatilidad"], monetization: ["afiliación", "plan pro"], why: "Hay demanda y datos públicos fiables." });
   if (role === "architect") return JSON.stringify({
     name: crypto ? "Radar Meme" : "Asistente IA", tagline: "Datos reales, decisiones más claras", archetype: crypto ? "terminal" : "spotlight",

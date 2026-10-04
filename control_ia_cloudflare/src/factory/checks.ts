@@ -30,6 +30,11 @@ export async function qaChecks(env: Env, spec: Spec, html: string): Promise<Chec
   add("perf.weight", html.length < 60_000, `HTML de ${(html.length / 1024).toFixed(1)} KB (< 60 KB)`);
   add("content.value", spec.widgets.length >= 1, `${spec.widgets.length} herramienta(s) funcional(es)`);
   add("content.copy", spec.features.length >= 3 && spec.faq.length >= 3, `${spec.features.length} funciones · ${spec.faq.length} preguntas`, false);
+  if (spec.coin) {
+    add("coin.logo", spec.coin.logo && has(html, /class="fx-coin-logo"/), "Logo propio generado (FLUX)");
+    add("coin.identity", /^[A-Z0-9]{2,8}$/.test(spec.coin.ticker) && spec.coin.lore.length >= 80 && spec.coin.distribution.length >= 2, `$${spec.coin.ticker}: lore de ${spec.coin.lore.length} caracteres, ${spec.coin.distribution.length} partidas de tokenomics`);
+    add("coin.honest", has(html, /class="fx-coin-state"/) && /no está desplegado/i.test(spec.disclaimer), "Avisa de que es un concepto (no on-chain, no inversión)");
+  }
   if (spec.widgets.some((w) => w.type === "ai-tool")) add("ai.config", !!spec.ai && spec.ai.system.length >= 40, "Herramienta de IA configurada con instrucciones");
   // Cada widget con datos: la fuente responde ahora mismo con datos válidos.
   const keys = [...new Set(spec.widgets.map((w) => WIDGET_DATA[w.type]).filter(Boolean) as string[])];

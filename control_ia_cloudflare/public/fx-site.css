@@ -189,3 +189,16 @@ textarea { resize: vertical; min-height: 110px; }
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
   .fx-reveal { opacity: 1; transform: none; }
 }
+
+/* ---- meme coins: logo, estado, lore, tokenomics */
+.fx-coin-logo { display: block; width: 168px; height: 168px; border-radius: 50%; object-fit: cover; margin-bottom: 20px; box-shadow: 0 0 0 4px var(--surface), 0 0 0 6px var(--accent), 0 24px 60px -20px var(--accent); }
+.a-spotlight .fx-coin-logo { margin-inline: auto; }
+.fx-coin-state { margin-top: 20px; padding: 12px 16px; border: 1px solid var(--accent); border-radius: var(--radius); background: var(--surface); color: var(--text); font-size: .95rem; max-width: 640px; }
+.fx-coin-grid { display: grid; gap: 32px; }
+@media (min-width: 860px) { .fx-coin-grid { grid-template-columns: 1.4fr 1fr; align-items: start; } }
+.fx-traits { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.fx-traits li { padding: 8px 14px; border-radius: 999px; background: var(--surface); border: 1px solid color-mix(in srgb, var(--text) 14%, transparent); }
+.fx-bar { display: flex; height: 18px; border-radius: 999px; overflow: hidden; margin: 18px 0 14px; background: var(--surface); }
+.fx-bar span { display: block; height: 100%; }
+.fx-legend { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+.fx-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 8px; vertical-align: middle; }

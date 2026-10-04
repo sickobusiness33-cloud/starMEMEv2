@@ -6,6 +6,7 @@
 //   POST /fx/ai/:slug       → herramienta de IA de esa web (con límites por IP y por día)
 
 import { generate } from "../ai/router";
+import { b64ToBytes } from "../b64";
 import { loads, one } from "../db";
 import type { Env } from "../env";
 import { getSubscription } from "../plans";
@@ -27,6 +28,13 @@ export async function handlePublic(req: Request, env: Env): Promise<Response | n
   try {
     if (path === "/s" || path === "/s/") return siteIndex(env);
     if (path === "/s/sitemap.xml") return sitemap(env);
+    const logo = path.match(/^\/s\/([a-z0-9-]{1,60})\/logo$/);
+    if (logo) {
+      await ensureFactorySchema(env.DB);
+      const a = await one<any>(env.DB, "SELECT a.mime, a.data_b64 FROM fx_assets a JOIN fx_projects p ON p.id = a.project_id WHERE p.slug = ? AND a.name = 'logo'", logo[1]);
+      if (!a || !/^image\/(png|jpeg|webp)$/.test(a.mime)) return new Response("Sin logo", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+      return new Response(b64ToBytes(a.data_b64), { headers: { "Content-Type": a.mime, "Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff", "Access-Control-Allow-Origin": "*", "Content-Security-Policy": "default-src 'none'; sandbox" } });
+    }
     const m = path.match(/^\/s\/([a-z0-9-]{1,60})(\/?)$/);
     if (m) {
       if (!m[2]) return Response.redirect(`${url.origin}/s/${m[1]}/`, 301);

@@ -26,9 +26,10 @@ def wait_live(api: Api, n: int, timeout: float = 90) -> list[dict]:
 
 def test_orden_crea_proyectos_reales_y_los_publica(api):
     mock_mode("ok")
-    r = api.post("/api/factory/command", json={"text": "Crea proyectos nuevos de meme coins"})
+    r = api.post("/api/factory/command", json={"text": "Hazme 2 webs de meme coins al día"})
     assert r.status_code == 200, r.text
-    assert r.json()["niche"] == "crypto" and r.json()["created"] >= 2
+    m = r.json()["mission"]
+    assert m["kind"] == "website" and m["niche"] == "crypto" and m["perDay"] == 2 and m["created"] == 2
     ps = wait_live(api, 2)
     live = [p for p in ps if p["stage"] == "live"]
     assert len(live) >= 2, [(p["name"], p["status"], p["errors"]) for p in ps]
@@ -71,7 +72,7 @@ def test_orden_crea_proyectos_reales_y_los_publica(api):
 
 def test_idea_mala_se_descarta_y_aislamiento(api):
     mock_mode("ok")
-    r = api.post("/api/factory/command", json={"text": "[mock-rechazo] meme coins", "niche": "crypto", "count": 1})
+    r = api.post("/api/factory/command", json={"text": "[mock-rechazo] webs de meme coins, 1 al día"})
     assert r.status_code == 200
     ps = wait_live(api, 1)
     assert any(p["status"] == "rejected" for p in ps)
@@ -90,3 +91,42 @@ def test_ajustes_y_pausa(api):
     assert s["daily_target"] == 34 and s["max_parallel"] == 4 and s["niches"][0]["weight"] == 9
     assert api.post("/api/factory/pause").status_code == 200
     assert api.get("/api/factory").json()["settings"]["enabled"] is False
+
+
+def test_mision_meme_coins_con_logo_y_parar(api):
+    mock_mode("ok")
+    r = api.post("/api/factory/command", json={"text": "Créame una criptomoneda", "per_day": 2})
+    assert r.status_code == 200, r.text
+    m = r.json()["mission"]
+    assert m["kind"] == "memecoin" and m["perDay"] == 2 and m["created"] == 2
+    ps = wait_live(api, 2)
+    live = [p for p in ps if p["stage"] == "live"]
+    assert len(live) == 2, [(p["name"], p["status"], p["errors"]) for p in ps]
+    p = live[0]
+    assert p["kind"] == "memecoin" and p["ticker"] and p["mission_id"] == m["id"]
+    d = api.get(f"/api/factory/projects/{p['id']}").json()
+    assert all(c["ok"] for c in d["checks"]["qa"] if c["required"]), d["checks"]["qa"]
+    assert {"coin.logo", "coin.identity", "coin.honest"} <= {c["id"] for c in d["checks"]["qa"]}
+    assert all(c["ok"] for c in d["checks"]["security"])
+    # Web de la moneda: logo propio, lore, tokenomics y aviso de que no está on-chain
+    w = httpx.get(f"{BASE}/s/{p['slug']}/")
+    assert w.status_code == 200 and 'class="fx-coin-logo"' in w.text and 'id="tokenomics"' in w.text
+    assert "no existe en ninguna blockchain" in w.text and f"${p['ticker']}" in w.text
+    logo = httpx.get(f"{BASE}/s/{p['slug']}/logo")
+    assert logo.status_code == 200 and logo.headers["content-type"].startswith("image/") and len(logo.content) > 50
+    assert httpx.get(f"{BASE}/s/no-existe/logo").status_code == 404
+
+    # Panel: la misión muestra su progreso del día
+    f = api.get("/api/factory").json()
+    mm = next(x for x in f["missions"] if x["id"] == m["id"])
+    assert mm["active"] == 1 and mm["made_today"] == 2 and mm["live_total"] == 2
+    # Parar / reanudar / cambiar cupo / aislamiento
+    other = register()
+    assert other.patch(f"/api/factory/missions/{m['id']}", json={"active": False}).status_code == 404
+    assert api.patch(f"/api/factory/missions/{m['id']}", json={"active": False, "per_day": 7}).status_code == 200
+    mm = next(x for x in api.get("/api/factory").json()["missions"] if x["id"] == m["id"])
+    assert mm["active"] == 0 and mm["per_day"] == 7
+    assert api.delete(f"/api/factory/missions/{m['id']}").status_code == 200
+    assert api.get("/api/factory").json()["missions"] == []
+    # Lo creado se conserva
+    assert httpx.get(f"{BASE}/s/{p['slug']}/").status_code == 200

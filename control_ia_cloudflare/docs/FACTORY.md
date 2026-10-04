@@ -54,3 +54,18 @@ El objetivo diario (`daily_target`) y el presupuesto de tokens (`token_budget_da
 1. Menú **Fábrica** → **Arrancar** (o escribe «Crea proyectos nuevos de meme coins» y **Ejecutar**).
 2. Ajustes: objetivo diario (p. ej. 34), en paralelo, presupuesto de tokens, nichos y prioridad, color de la pantalla, exportar a GitHub.
 3. Para el volumen alto: activa créditos de Claude y «Usar mi API» en Ajustes de Kairo.
+
+## Misiones (órdenes permanentes)
+
+Escribe una orden en la barra de la Fábrica y se convierte en una **misión diaria** que se repite sola, todos los días, hasta que pulses **Parar**:
+
+| Orden | Qué crea cada día |
+|---|---|
+| «Créame una criptomoneda» | 10 meme coins (por defecto): nombre, ticker, logo propio (FLUX.1 schnell), lore, rasgos de la mascota, tokenomics propuesta, roadmap, ideas de comunidad, chat con la mascota y web publicada en `/s/<slug>/`. |
+| «Hazme webs de deportes» | 5 webs (por defecto) del nicho, con el pipeline completo (research → build → QA → seguridad → deploy). |
+| «8 webs de IA al día» | El número de la orden fija el cupo diario (1–50). |
+
+- El cron (cada 5 min) rellena el cupo de cada misión en tandas de 3; varias misiones corren en paralelo.
+- Parar una misión pausa lo que estaba a medias; lo publicado sigue online. Borrarla conserva lo creado.
+- Modelos: Claude si hay créditos (plataforma o «Usar mi API»); si no, los más potentes gratuitos de Workers AI (gpt-oss-120b para razonar, Llama 3.3 70B, FLUX para logos).
+- **Las meme coins son conceptos**: no se despliega ningún token en una blockchain. La web lo dice claramente. Lanzarlo on-chain es una operación financiera que solo puede autorizar el dueño.

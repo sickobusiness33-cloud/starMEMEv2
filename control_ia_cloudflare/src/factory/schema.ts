@@ -59,11 +59,45 @@ export const FACTORY_SQL = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_fx_events_user ON fx_events(user_id, id DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_fx_events_project ON fx_events(project_id, id DESC)`,
+  // Misiones: órdenes permanentes («crea 10 meme coins al día») que se ejecutan solas cada día hasta que el dueño las para.
+  `CREATE TABLE IF NOT EXISTS fx_missions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'website',
+    niche TEXT NOT NULL DEFAULT 'other',
+    per_day INTEGER NOT NULL DEFAULT 10,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_at TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_fx_missions_user ON fx_missions(user_id, active)`,
+  // Imágenes generadas (logos de las meme coins), servidas en /s/<slug>/logo.
+  `CREATE TABLE IF NOT EXISTS fx_assets (
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    data_b64 TEXT NOT NULL,
+    model TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, name)
+  )`,
+];
+
+/** Columnas añadidas después de la primera versión (ALTER TABLE falla si ya existen: se ignora). */
+const FACTORY_ALTERS = [
+  "ALTER TABLE fx_projects ADD COLUMN mission_id INTEGER",
+  "ALTER TABLE fx_projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'website'",
 ];
 
 let ready: Promise<void> | null = null;
 /** Crea las tablas una vez por isolate (barato: IF NOT EXISTS en un batch). */
 export function ensureFactorySchema(db: D1Database): Promise<void> {
-  if (!ready) ready = db.batch(FACTORY_SQL.map((s) => db.prepare(s))).then(() => undefined).catch((e) => { ready = null; throw e; });
+  if (!ready) ready = db.batch(FACTORY_SQL.map((s) => db.prepare(s)))
+    .then(async () => { for (const a of FACTORY_ALTERS) await db.prepare(a).run().catch(() => undefined); })
+    .then(() => db.prepare("CREATE INDEX IF NOT EXISTS idx_fx_projects_mission ON fx_projects(mission_id, created_at)").run())
+    .then(() => undefined).catch((e) => { ready = null; throw e; });
   return ready;
 }
