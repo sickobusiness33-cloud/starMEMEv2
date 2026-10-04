@@ -8,6 +8,9 @@ import { CONNECTORS, connectorRoutes } from "./connectors";
 import { redact } from "./crypto";
 import { dashboardRoutes } from "./dashboard";
 import { autopilotRoutes } from "./autopilot/routes";
+import { factoryRoutes } from "./factory/routes";
+import { handlePublic } from "./factory/public";
+import { factoryTick, fxStep } from "./factory/engine";
 import { autopilotTick, runCycle, runTask } from "./autopilot/engine";
 import { type AppEnv, type Env, type RunMessage, publicSettings, settingsFrom } from "./env";
 import { processRun } from "./executor";
@@ -68,6 +71,7 @@ app.route("/workspace", workspaceRoutes);
 app.route("/firebase", firebaseRoutes);
 app.route("/billing", billingRoutes);
 app.route("/autopilot", autopilotRoutes);
+app.route("/factory", factoryRoutes);
 app.route("/", metricsRoutes);
 app.route("/", runRoutes);
 
@@ -107,7 +111,10 @@ async function checkSources(env: Env, repos: string[]) {
 }
 
 export default {
-  fetch: app.fetch,
+  // Webs de la fábrica y sus datos (públicos) antes que la API privada.
+  async fetch(req: Request, env: Env, ctx: ExecutionContext) {
+    return (await handlePublic(req, env)) ?? app.fetch(req, env, ctx);
+  },
   async queue(batch: MessageBatch<RunMessage>, env: Env) {
     const settings = settingsFrom(env);
     for (const msg of batch.messages) {
@@ -126,6 +133,7 @@ export default {
         else if ("sourceCheck" in body) await checkSources(env, body.sourceCheck);
         else if ("apCycle" in body) await runCycle(env, body.apCycle);
         else if ("apTask" in body) await runTask(env, body.apTask);
+        else if ("fxStep" in body) await fxStep(env, body.fxStep);
       } catch (err) {
         console.error("Fallo procesando el mensaje de la cola", JSON.stringify(body).slice(0, 200), redact(String(err)));
       }
@@ -135,5 +143,6 @@ export default {
   // Kairo Autopilot 24/7: el cron abre ciclos, recupera tareas caídas y reanuda las que esperaban cupo.
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(autopilotTick(env).catch((err) => console.error("autopilot tick", redact(String(err)))));
+    ctx.waitUntil(factoryTick(env).catch((err) => console.error("factory tick", redact(String(err)))));
   },
 } satisfies ExportedHandler<Env, RunMessage>;

@@ -52,7 +52,7 @@ export interface CallContext {
   env: Env;
   userId: number;
   plan: PlanId;
-  kind: "chat" | "agent" | "project" | "orchestrator" | "image" | "autopilot";
+  kind: "chat" | "agent" | "project" | "orchestrator" | "image" | "autopilot" | "factory";
   agentId?: string | null;
   agentRunId?: number | null;
   signal?: AbortSignal;

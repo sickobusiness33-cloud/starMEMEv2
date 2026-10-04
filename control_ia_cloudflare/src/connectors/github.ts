@@ -121,6 +121,26 @@ export class GitHubConnector extends Connector {
     return `Pull Request #${pr.number} abierto: ${pr.html_url} (rama ${branch}, ${files.length} archivo(s)). Revísalo y fusiónalo tú en GitHub.`;
   }
 
+  /** Escribe archivos en una rama propia de la fábrica (la crea si no existe). Nunca toca la rama principal. */
+  async commitToBranch(branch: string, message: string, files: { path: string; content: string }[]): Promise<string> {
+    if (!/^[A-Za-z0-9._\/-]{1,80}$/.test(branch)) throw new ConnectorError("Nombre de rama no válido.");
+    const repo = await this.api("");
+    if (branch === repo.default_branch) throw new ConnectorError("La fábrica no escribe en la rama principal.");
+    const head = await this.http(`${API}/repos/${this.config.repo}/git/ref/heads/${encodeURIComponent(branch)}`, { headers: this.headers() });
+    if (!head.ok) {
+      const base = await this.api(`/git/ref/heads/${encodeURIComponent(repo.default_branch)}`, {}, "la rama principal");
+      await this.api("/git/refs", { method: "POST", body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: base.object.sha }) }, "crear la rama");
+    }
+    for (const f of files) {
+      const path = f.path.replace(/^\/+/, "");
+      const enc = path.split("/").map(encodeURIComponent).join("/");
+      const existing = await this.http(`${API}/repos/${this.config.repo}/contents/${enc}?ref=${encodeURIComponent(branch)}`, { headers: this.headers() });
+      const sha = existing.ok ? ((await existing.json()) as any).sha : undefined;
+      await this.api(`/contents/${enc}`, { method: "PUT", body: JSON.stringify({ message: `${message}: ${path}`, content: b64Utf8(f.content), branch, sha }) }, `escribir ${path}`);
+    }
+    return `https://github.com/${this.config.repo}/tree/${branch}`;
+  }
+
   /** Resultado real de CI (GitHub Actions / checks) de una rama o commit. */
   async ciStatus(ref: string) {
     // Los tokens fine-grained no tienen permiso «Checks»: se usa Actions (Read-only) y, si no, check-runs.

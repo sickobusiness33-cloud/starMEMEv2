@@ -91,6 +91,10 @@ export async function workersText(call: TextCall): Promise<TextOut> {
     if (last.includes("[lento]")) await new Promise((r) => setTimeout(r, 1500));
     // El planificador del orquestador recibe una respuesta vacía en mock: usa su planificador por reglas.
     if (call.system.startsWith("[planner]")) return { text: "{}", input: 1, output: 1, estimated: true };
+    if (call.system.startsWith("[factory:")) {
+      const text = factoryMock(call.system, call.messages.map((m) => textOf(m.content)).join("\n"));
+      return { text, input: estimateTokens(JSON.stringify(messages)), output: estimateTokens(text), estimated: true };
+    }
     if (call.system.startsWith("[autopilot:")) {
       const text = autopilotMock(call.system, call.messages.map((m) => textOf(m.content)).join("\n"));
       return { text, input: estimateTokens(JSON.stringify(messages)), output: estimateTokens(text), estimated: true };
@@ -177,4 +181,30 @@ function autopilotMock(system: string, all: string): string {
   if (all.includes("[forzar-pr]")) return JSON.stringify({ thought: "Cambio pequeño", tool: "repo.propose_pr", args: { title: "Arreglo del formulario", description: "Cambio mínimo de prueba.", files: [{ path: "src/form.js", content: "export const ok = true;\n" }] } });
   if (all.includes("RESULTADO DE memory.write")) return JSON.stringify({ thought: "listo", final: "Hecho: guardé el hallazgo en memoria (mock)." });
   return JSON.stringify({ thought: "Guardo lo aprendido", tool: "memory.write", args: { kind: "knowledge", content: "Hallazgo de prueba del agente " + role } });
+}
+
+/** Respuestas deterministas de la fábrica en AI_MODE=mock (tests). */
+function factoryMock(system: string, all: string): string {
+  const role = system.slice(9, system.indexOf("]"));
+  const crypto = /Nicho: crypto|crypto-trending/.test(all);
+  if (role === "research") {
+    const tag = (all.match(/Indicación del dueño: ([^.]*)/)?.[1] ?? "").slice(0, 20);
+    return JSON.stringify({ ideas: [
+      { name: crypto ? `Radar Meme ${tag}`.trim() : `Asistente IA ${tag}`.trim(), idea: crypto ? "Detecta meme coins con liquidez real y alerta de riesgos para traders minoristas." : "Genera textos de producto para tiendas online en segundos.", widgets: crypto ? ["crypto-trending", "crypto-lookup"] : ["ai-tool"] },
+      { name: crypto ? `Pulso Solana ${tag}`.trim() : `Prompt Lab ${tag}`.trim(), idea: crypto ? "Panel de tokens nuevos en Solana con volumen y compras/ventas en vivo." : "Mejora prompts para modelos de IA con ejemplos y explicación." },
+    ] });
+  }
+  if (role === "product") return JSON.stringify({ go: !all.includes("[mock-rechazo]"), score: all.includes("[mock-rechazo]") ? 3 : 8, audience: "Traders y curiosos", value: "Datos reales sin ruido", risks: ["volatilidad"], monetization: ["afiliación", "plan pro"], why: "Hay demanda y datos públicos fiables." });
+  if (role === "architect") return JSON.stringify({
+    name: crypto ? "Radar Meme" : "Asistente IA", tagline: "Datos reales, decisiones más claras", archetype: crypto ? "terminal" : "spotlight",
+    widgets: crypto ? [{ type: "crypto-trending", title: "Tokens en tendencia" }, { type: "crypto-lookup", title: "Analiza un token" }, { type: "ai-tool", title: "Explícamelo" }] : [{ type: "ai-tool", title: "Pruébalo" }],
+    ai: { label: "Generar", placeholder: "Escribe tu producto…", examples: ["Zapatillas de running ligeras"], system: "Eres un redactor experto en fichas de producto claras, honestas y persuasivas para ecommerce en español." },
+    features: [{ title: "En vivo", text: "Datos de APIs públicas actualizados cada minuto." }, { title: "Claro", text: "Métricas clave sin ruido." }, { title: "Alertas", text: "Heurísticas de riesgo transparentes." }, { title: "Gratis", text: "Sin registro." }],
+    steps: [{ title: "Busca", text: "Escribe un token." }, { title: "Analiza", text: "Revisa liquidez y volumen." }, { title: "Decide", text: "Con información, no con hype." }],
+    faq: [{ q: "¿De dónde salen los datos?", a: "De DexScreener y CoinGecko." }, { q: "¿Es consejo financiero?", a: "No." }, { q: "¿Cada cuánto se actualiza?", a: "Cada minuto." }],
+    seo: { title: crypto ? "Radar Meme · tokens en vivo" : "Asistente IA para productos", description: "Herramienta gratuita con datos reales en vivo y análisis claro para tomar mejores decisiones cada día.", keywords: ["meme coins", "dexscreener"] },
+    disclaimer: "",
+  });
+  if (role === "uiux") return JSON.stringify({ brand: { bg: "#08080b", surface: "#121218", text: "#f4f4f6", muted: "#9a9aab", accent: "#c6ff3d", accent2: "#7c5cff", fonts: "unbounded", radius: 14, mode: "dark" }, hero: { eyebrow: "EN VIVO", title: "Encuentra señal entre el ruido", subtitle: "Liquidez, volumen y riesgo de cada token, en tiempo real.", cta: "Ver tokens" } });
+  return "{}";
 }

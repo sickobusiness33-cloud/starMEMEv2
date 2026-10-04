@@ -304,12 +304,12 @@ function renderAuth(allowSignup, mode = allowSignup ? "register" : "login") {
 // [clave, etiqueta, icono, visible en la barra inferior del móvil]
 const NAV = [
   ["lienzo", "Oficina", "canvas", true], ["home", "Command", "home", true], ["chat", "Kairo", "kairo", true], ["proyectos", "Proyectos", "projects", true],
-  ["mission", "Autopilot", "bolt", false], ["hub", "Agentes", "agents", false], ["panel", "Red global", "network", false], ["studio", "Estudio", "studio", false], ["notificaciones", "Avisos", "bell", true],
+  ["factory", "Fábrica", "grid", false], ["mission", "Autopilot", "bolt", false], ["hub", "Agentes", "agents", false], ["panel", "Red global", "network", false], ["studio", "Estudio", "studio", false], ["notificaciones", "Avisos", "bell", true],
   ["actividad", "Auditoría", "activity", false], ["conectores", "Conectores", "connectors", false],
   ["configuracion", "Ajustes", "settings", false], ["apariencia", "Apariencia", "brush", false],
 ];
 const SECTION_TITLE = {
-  home: "Command Center", p: "Project workspace", apariencia: "Apariencia", chat: "Kairo", hub: "Agent Hub", "hub-runs": "Agent Hub", studio: "Estudio", panel: "Red global", lienzo: "Oficina de robots", mission: "Mission Control", proyectos: "Proyectos", notificaciones: "Notificaciones",
+  home: "Command Center", p: "Project workspace", apariencia: "Apariencia", chat: "Kairo", hub: "Agent Hub", "hub-runs": "Agent Hub", studio: "Estudio", panel: "Red global", lienzo: "Oficina de robots", mission: "Mission Control", factory: "Kairo Factory", proyectos: "Proyectos", notificaciones: "Notificaciones",
   actividad: "Actividad", conectores: "Conectores", configuracion: "Ajustes", upgrade: "Control IA Pro", fuentes: "Modelos y licencias", metricas: "Métricas",
 };
 
@@ -405,7 +405,7 @@ function route() {
   // Compatibilidad: los enlaces antiguos a proyectos abren el nuevo espacio de trabajo.
   if (r.section === "proyectos" && r.id) { location.replace(`#/p/${r.id}/${r.tab === "archivos" ? "files" : r.tab === "ajustes" ? "settings" : r.tab === "ejecuciones" ? "tasks" : "overview"}`); return; }
   const views = { home: viewHome, p: viewWorkspace, apariencia: viewAppearance, chat: viewChat, hub: viewHub, "hub-runs": viewHubRuns, upgrade: viewUpgrade, fuentes: viewSources, metricas: viewMetrics,
-    studio: viewStudio, notificaciones: viewNotifications, lienzo: viewCanvas, mission: viewMission,
+    studio: viewStudio, notificaciones: viewNotifications, lienzo: viewCanvas, mission: viewMission, factory: viewFactory,
     panel: viewPanel, proyectos: viewProjectsOS, actividad: viewActivity, conectores: viewConnectors, configuracion: viewSettings };
   (views[r.section] || viewCanvas)(main, r).catch((err) => main.replaceChildren(h("div", { class: "alert" }, err.message)));
 }

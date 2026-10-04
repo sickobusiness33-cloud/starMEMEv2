@@ -5,7 +5,7 @@
 // - Secretos (`wrangler secret put`): ENCRYPTION_KEY. Nunca salen del Worker.
 
 /** Mensajes de la cola: tareas de proyecto, ejecuciones de agentes o verificación de fuentes. */
-export type RunMessage = { runId: number } | { agentRunId: number } | { chatRunId: number } | { sourceCheck: string[] } | { firebaseSync: { kind: "user" | "project" | "run" | "thread"; ids: number[] } } | { apCycle: number } | { apTask: number };
+export type RunMessage = { runId: number } | { agentRunId: number } | { chatRunId: number } | { sourceCheck: string[] } | { firebaseSync: { kind: "user" | "project" | "run" | "thread"; ids: number[] } } | { apCycle: number } | { apTask: number } | { fxStep: number };
 
 export interface Env {
   DB: D1Database;
