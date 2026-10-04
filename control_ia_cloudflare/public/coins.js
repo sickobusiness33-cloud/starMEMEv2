@@ -37,10 +37,11 @@ async function viewCoins(main) {
       h("button", { class: "cs-go", type: "submit" }, "Empezar a crear")),
     h("p", { class: "cs-hint" }, "Cada moneda sale con nombre, ticker, mascota, historia, tokenomics, roadmap, logo + 2 ilustraciones y su propia web de lanzamiento. Se repite sola cada día hasta que pulses Parar. Son conceptos: nada se lanza en una blockchain sin ti."));
   const missionsEl = h("section", { class: "cs-missions", "aria-label": "Producción en marcha" });
+  const banner = h("div", { class: "cs-banner", role: "status", hidden: true });
   const tabs = h("div", { class: "cs-tabs", role: "tablist" });
   const grid = h("div", { class: "cs-grid" });
   const feed = h("ol", { class: "cs-feed" });
-  root.append(head, h("div", { class: "cs-top" }, composer, h("aside", { class: "cs-panel" }, h("h3", {}, "Taller en vivo"), feed)), missionsEl,
+  root.append(head, banner, h("div", { class: "cs-top" }, composer, h("aside", { class: "cs-panel" }, h("h3", {}, "Taller en vivo"), feed)), missionsEl,
     h("section", { class: "cs-gal" }, h("div", { class: "cs-gal-h" }, h("h2", {}, "Tus monedas"), tabs), grid));
 
   const img = (c, name = "logo", cls = "") => (c.images || []).includes(name)
@@ -49,6 +50,13 @@ async function viewCoins(main) {
 
   function render() {
     const d = data, t = d.totals;
+    const failed = d.coins.filter((c) => c.status === "failed").length;
+    banner.hidden = d.free_quota !== false && !failed;
+    banner.replaceChildren(...(d.free_quota === false
+      ? [h("b", {}, "Cupo gratis de IA agotado por hoy."), " Las monedas pendientes siguen solas cuando se renueve (02:00, hora de España). Para no depender del cupo, añade créditos a tu clave de Claude u OpenAI en Ajustes."]
+      : failed ? [h("b", {}, `${failed} moneda(s) no se pudieron terminar.`), " ", h("button", { type: "button", class: "cs-btn", onclick: async () => {
+          for (const c of d.coins.filter((x) => x.status === "failed")) await api("POST", `/api/factory/projects/${c.id}/retry`).catch(() => {});
+          toast("Reintentando las monedas fallidas"); load(); } }, "Reintentar todas")] : []));
     head.replaceChildren(
       h("div", {}, h("p", { class: "cs-kicker" }, "Kairo · Coin Studio"), h("h1", {}, "Crea meme coins en piloto automático"),
         h("p", { class: "cs-sub" }, "Le dices una temática y el estudio se pasa el día creando monedas profesionales, cada una con su web lista para presentar.")),
@@ -91,6 +99,7 @@ async function viewCoins(main) {
         h("div", { class: "cs-tags" }, c.quality ? h("span", {}, `★ ${Number(c.quality).toFixed(0)}/10`) : null, c.style ? h("span", {}, c.style) : null, c.chain ? h("span", {}, c.chain) : null),
         h("div", { class: "cs-coin-a" },
           isLive ? h("a", { class: "cs-btn", href: c.url, target: "_blank", rel: "noopener" }, "Ver web ↗") : null,
+          c.status === "failed" ? h("button", { type: "button", class: "cs-btn", onclick: async () => { await api("POST", `/api/factory/projects/${c.id}/retry`); toast("Reintentando"); load(); } }, "Reintentar") : null,
           h("button", { type: "button", class: "cs-btn ghost", onclick: () => openCoin(c.id) }, "Detalles"))));
   }
 

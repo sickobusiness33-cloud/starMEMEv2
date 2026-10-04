@@ -7,6 +7,7 @@ import { all, dumps, loads, nowIso, one, run } from "../db";
 import type { AppEnv } from "../env";
 import { fail } from "../http";
 import { hit } from "../ratelimit";
+import { freeQuotaAvailable } from "../ai/router";
 import { FX_AGENTS, fxEmit, fxSettings, fxTokensToday, missionTick, STAGES } from "./engine";
 import { NICHES } from "./render";
 import { ensureFactorySchema } from "./schema";
@@ -38,7 +39,8 @@ async function createMission(c: any, text: string, perDay?: number, forceKind?: 
   const u = c.get("user");
   const parsed = parseCommand(text);
   if (forceKind === "memecoin") Object.assign(parsed, { kind: "memecoin", niche: "crypto", title: `Meme coins · ${text.slice(0, 48)}` });
-  const per = perDay ? int(perDay, 1, 50, parsed.perDay) : parsed.perDay;
+  const explicit = /\b\d{1,3}\b/.test(text);
+  const per = perDay && !explicit ? int(perDay, 1, 50, parsed.perDay) : parsed.perDay;
   const s = await fxSettings(c.env, u.id);
   const active = (await one<any>(c.env.DB, "SELECT COUNT(*) AS n FROM fx_missions WHERE user_id = ? AND active = 1", u.id))?.n ?? 0;
   if (active >= 8) fail(409, "Tienes 8 misiones activas: para alguna antes de crear otra.");
@@ -69,7 +71,7 @@ factoryRoutes.get("/", async (c) => {
   });
   const today = new Date().toISOString().slice(0, 10);
   const missions = await all<any>(db, `SELECT m.id, m.title, m.prompt, m.kind, m.niche, m.per_day, m.active, m.created_at, m.last_at,
-    (SELECT COUNT(*) FROM fx_projects p WHERE p.mission_id = m.id AND p.created_at >= ? AND p.status NOT IN ('rejected','failed')) AS made_today,
+    (SELECT COUNT(*) FROM fx_projects p WHERE p.mission_id = m.id AND p.created_at >= ?) AS made_today,
     (SELECT COUNT(*) FROM fx_projects p WHERE p.mission_id = m.id AND p.live_at >= ?) AS live_today,
     (SELECT COUNT(*) FROM fx_projects p WHERE p.mission_id = m.id AND p.stage IN ('live','maintenance')) AS live_total,
     (SELECT COUNT(*) FROM fx_projects p WHERE p.mission_id = m.id AND p.status = 'working') AS working
@@ -155,7 +157,7 @@ factoryRoutes.get("/coins", async (c) => {
   const db = c.env.DB;
   const today = new Date().toISOString().slice(0, 10);
   const missions = await all<any>(db, `SELECT m.id, m.title, m.prompt, m.per_day, m.active, m.created_at, m.last_at,
-    (SELECT COUNT(*) FROM fx_projects p WHERE p.mission_id = m.id AND p.created_at >= ? AND p.status NOT IN ('rejected','failed')) AS made_today,
+    (SELECT COUNT(*) FROM fx_projects p WHERE p.mission_id = m.id AND p.created_at >= ?) AS made_today,
     (SELECT COUNT(*) FROM fx_projects p WHERE p.mission_id = m.id AND p.stage IN ('live','maintenance')) AS live_total,
     (SELECT COUNT(*) FROM fx_projects p WHERE p.mission_id = m.id AND p.status = 'working') AS working
     FROM fx_missions m WHERE m.user_id = ? AND m.kind = 'memecoin' ORDER BY m.active DESC, m.id DESC`, today, u.id);
@@ -169,7 +171,7 @@ factoryRoutes.get("/coins", async (c) => {
     WHERE e.user_id = ? AND p.kind = 'memecoin' ORDER BY e.id DESC LIMIT 40`, u.id);
   const s = await fxSettings(c.env, u.id);
   return c.json({
-    enabled: s.enabled, missions, events,
+    enabled: s.enabled, missions, events, free_quota: await freeQuotaAvailable(c.env.DB),
     coins: coins.map((x) => ({ ...x, images: String(x.images ?? "").split(",").filter(Boolean) })),
     totals: { coins: coins.length, live: coins.filter((x) => x.stage === "live" || x.stage === "maintenance").length, today: coins.filter((x) => String(x.created_at) >= today).length, working: coins.filter((x) => x.status === "working").length, tokens_today: await fxTokensToday(c.env, u.id) },
   });

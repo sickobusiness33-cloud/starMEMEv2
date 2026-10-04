@@ -83,6 +83,22 @@ const NICHE_PALETTES: Record<string, Spec["brand"][]> = {
 };
 export const NICHES = ["crypto", "ai", "nutrition", "sport", "other"];
 
+/** Título SEO siempre válido (10-60): el del modelo, o nombre + lema recortado por palabras. */
+function seoTitle(t: string, name: string, tagline: string): string {
+  if (t.length >= 10 && t.length <= 60) return t;
+  const cut = (x: string, n: number) => (x.length <= n ? x : x.slice(0, x.lastIndexOf(" ", n) > 0 ? x.lastIndexOf(" ", n) : n));
+  const out = cut(`${name}${tagline ? ` · ${tagline}` : ""}`, 60).trim();
+  return out.length >= 10 ? out : `${name} · web oficial`.slice(0, 60);
+}
+/** Meta descripción siempre válida (50-155): la del modelo o compuesta con los textos que sí llegaron. */
+function seoDesc(d: string, name: string, extra: string[]): string {
+  if (d.length >= 50 && d.length <= 158) return d;
+  let out = d.length > 158 ? d : [d, ...extra].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+  if (out.length < 50) out = `${out ? out + " " : ""}${name}: descubre su historia, su propuesta y todo lo que ofrece en su web oficial.`.trim();
+  if (out.length > 155) { const i = out.lastIndexOf(" ", 152); out = out.slice(0, i > 60 ? i : 152).replace(/[,;:\s]+$/, "") + "…"; }
+  return out;
+}
+
 /** Valida y completa la especificación del LLM: nunca confía en ella. */
 export function normalizeSpec(raw: any, niche: string, seed: number): Spec {
   const pals = NICHE_PALETTES[niche] ?? NICHE_PALETTES.ai;
@@ -121,7 +137,7 @@ export function normalizeSpec(raw: any, niche: string, seed: number): Spec {
     steps: list(raw?.steps, 4, (f) => (f?.title ? { title: clean(f.title, 50), text: clean(f.text, 180) } : null)),
     faq: list(raw?.faq, 6, (f) => (f?.q ? { q: clean(f.q, 120), a: clean(f.a, 400) } : null)),
     widgets, ai,
-    seo: { title: clean(raw?.seo?.title, 60, name), description: clean(raw?.seo?.description, 158, clean(raw?.tagline, 158)), keywords: list(raw?.seo?.keywords, 8, (k) => clean(k, 30) || null) },
+    seo: { title: seoTitle(clean(raw?.seo?.title, 60), name, clean(raw?.tagline, 90)), description: seoDesc(clean(raw?.seo?.description, 300), name, [raw?.tagline, raw?.description, raw?.hero?.subtitle].map((x) => clean(x, 300))), keywords: list(raw?.seo?.keywords, 8, (k) => clean(k, 30) || null) },
     disclaimer: clean(raw?.disclaimer, 300, niche === "crypto" ? "Información con fines educativos. No es asesoramiento financiero. Las criptomonedas son muy volátiles y puedes perder todo lo invertido. Haz tu propia investigación." : niche === "nutrition" || niche === "sport" ? "Información general, no sustituye el consejo de un profesional sanitario o deportivo." : ""),
   };
 }

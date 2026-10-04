@@ -122,7 +122,7 @@ def test_mision_meme_coins_con_logo_y_parar(api):
     # Coin Studio: apartado propio, cualquier temática forzada a meme coin
     cs = api.get("/api/factory/coins").json()
     assert cs["totals"]["live"] == 2 and {"logo", "art", "meme"} <= set(cs["coins"][0]["images"])
-    assert cs["coins"][0]["quality"] == 9 and cs["missions"][0]["id"] == m["id"]
+    assert cs["missions"][0]["id"] == m["id"] and cs["free_quota"] is True
     r2 = api.post("/api/factory/command", json={"text": "webs de dinosaurios DJ", "kind": "memecoin", "per_day": 1})
     assert r2.json()["mission"]["kind"] == "memecoin"
     wait_live(api, 3)
@@ -141,3 +141,18 @@ def test_mision_meme_coins_con_logo_y_parar(api):
     assert all(x["id"] != m["id"] for x in api.get("/api/factory").json()["missions"])
     # Lo creado se conserva
     assert httpx.get(f"{BASE}/s/{p['slug']}/").status_code == 200
+
+
+def test_respuesta_cortada_se_repara_y_el_cupo_respeta_el_numero(api):
+    """Fallo real de producción: la IA devolvía el JSON cortado (límite de tokens) y todas las monedas fallaban."""
+    mock_mode("ok")
+    r = api.post("/api/factory/command", json={"text": "[mock-cortado] haz 2 cryptos de gatos", "kind": "memecoin", "per_day": 10})
+    m = r.json()["mission"]
+    assert m["perDay"] == 2, m  # el número escrito manda sobre el control deslizante
+    ps = wait_live(api, 2)
+    assert [p["stage"] for p in ps] == ["live", "live"], [(p["name"], p["status"], p["errors"]) for p in ps]
+    d = api.get(f"/api/factory/projects/{ps[0]['id']}").json()
+    assert d["spec"]["coin"]["lore"] and all(c["ok"] for c in d["checks"]["qa"] if c["required"])
+    # Con el cupo diario cumplido no se crean más (aunque fallaran)
+    cs = api.get("/api/factory/coins").json()
+    assert cs["missions"][0]["made_today"] == 2 and cs["totals"]["coins"] == 2

@@ -203,7 +203,8 @@ function factoryMock(system: string, all: string): string {
     const m = all.match(/BORRADOR:\n(\{[\s\S]*\})\n\nDevuelve/);
     try { return JSON.stringify({ ...JSON.parse(m?.[1] ?? "{}"), quality: 9, review: "Nombre más corto y eslóganes con más gancho." }); } catch { return "{}"; }
   }
-  if (role === "coin") return JSON.stringify({
+  if (role === "coin") {
+    const out = JSON.stringify({
     theme: "gatos astronautas", mascot: "Lunar", style: "sticker", chain: "Solana", taxes: "0% / 0%", slogans: ["Llegamos tarde, pero llegamos", "Excusa del día", "Miau a la luna"],
     art_prompt: "cat astronaut floating near the moon", meme_prompt: "cat astronaut oversleeping in a rocket",
     name: all.match(/Concepto: ([^($]+)/)?.[1]?.trim() || "Gato Lunar", tagline: "El gato que llega tarde a la luna", description: "Una meme coin conceptual sobre un gato astronauta impuntual.",
@@ -217,6 +218,10 @@ function factoryMock(system: string, all: string): string {
     faq: [{ q: "¿Se puede comprar?", a: "No: es un concepto." }, { q: "¿Quién lo creó?", a: "Kairo Factory." }, { q: "¿Tiene precio?", a: "No." }],
     seo: { title: "Gato Lunar · meme coin conceptual", description: "Conoce a Lunar, el gato astronauta que siempre llega tarde a la luna: lore, tokenomics y comunidad.", keywords: ["meme coin"] },
   });
+    // [mock-cortado] simula una respuesta truncada por el límite de tokens (fallo real de producción).
+    return all.includes("[mock-cortado]") ? out.slice(0, Math.floor(out.length * 0.72)) : out;
+  }
+
   if (role === "product") return JSON.stringify({ go: !all.includes("[mock-rechazo]"), score: all.includes("[mock-rechazo]") ? 3 : 8, audience: "Traders y curiosos", value: "Datos reales sin ruido", risks: ["volatilidad"], monetization: ["afiliación", "plan pro"], why: "Hay demanda y datos públicos fiables." });
   if (role === "architect") return JSON.stringify({
     name: crypto ? "Radar Meme" : "Asistente IA", tagline: "Datos reales, decisiones más claras", archetype: crypto ? "terminal" : "spotlight",

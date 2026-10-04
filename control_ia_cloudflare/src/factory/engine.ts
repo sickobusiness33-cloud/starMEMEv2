@@ -45,7 +45,7 @@ export const FX_AGENTS = [
 
 const MAX_ATTEMPTS = 3;
 const LEASE_MS = 8 * 60_000;
-const assetVersion = "202610043";
+const assetVersion = "202610044";
 const todayIso = () => new Date().toISOString().slice(0, 10);
 const origin = (env: Env) => (env.PUBLIC_URL || "http://127.0.0.1:8787").replace(/\/$/, "");
 export const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, " ").trim().slice(0, 80);
@@ -75,10 +75,35 @@ async function ctx(env: Env, userId: number, role: string, projectId: number): P
   const sub = await getSubscription(env.DB, userId);
   return { env, userId, plan: sub.plan, kind: "factory", agentId: `factory:${role}`, agentRunId: projectId };
 }
-function parseJson(text: string): any | null {
-  const m = text.match(/\{[\s\S]*\}/);
-  if (!m) return null;
-  try { return JSON.parse(m[0]); } catch { return null; }
+/** Extrae el JSON de la respuesta. Si llegó cortado (límite de tokens), lo repara cerrando
+ *  cadenas y llaves y descartando el último campo incompleto: se aprovecha todo lo válido. */
+export function parseJson(text: string): any | null {
+  const t = String(text ?? "").replace(/```(?:json)?/gi, "");
+  const start = t.indexOf("{");
+  if (start < 0) return null;
+  const end = t.lastIndexOf("}");
+  if (end > start) { try { return JSON.parse(t.slice(start, end + 1)); } catch { /* se intenta reparar */ } }
+  let cur = t.slice(start);
+  for (let i = 0; i < 60 && cur.length > 1; i++) {
+    try { const v = JSON.parse(closeJson(cur)); if (v && typeof v === "object") return v; } catch { /* recorta y reintenta */ }
+    const cut = cur.lastIndexOf(",");
+    if (cut <= 0) break;
+    cur = cur.slice(0, cut);
+  }
+  return null;
+}
+function closeJson(s: string): string {
+  const stack: string[] = [];
+  let inStr = false, esc = false;
+  for (const ch of s) {
+    if (inStr) { if (esc) esc = false; else if (ch === "\\") esc = true; else if (ch === '"') inStr = false; continue; }
+    if (ch === '"') inStr = true;
+    else if (ch === "{" || ch === "[") stack.push(ch === "{" ? "}" : "]");
+    else if (ch === "}" || ch === "]") stack.pop();
+  }
+  let out = s + (inStr ? '"' : "");
+  out = out.replace(/[\s,:]+$/, "").replace(/,\s*"[^"]*"\s*$/, "").replace(/\{\s*"[^"]*"\s*$/, "{");
+  return out + stack.reverse().join("");
 }
 const SAFE = "Nunca inventes métricas, cifras de usuarios, testimonios ni precios: si algo depende de datos, la web los cargará en vivo de APIs reales. Nada de promesas de rentabilidad.";
 
@@ -88,7 +113,18 @@ async function ask(env: Env, userId: number, role: string, projectId: number, sy
     messages: [{ role: "user", content: prompt }], maxTokens: opts.maxTokens ?? 1600,
     prefer: opts.premium ? "premium" : "free", allowFallback: true, capability: opts.capability ?? "chat", cheap: opts.cheap,
   });
-  return { json: parseJson(res.text), model: res.model, provider: res.provider };
+  let json = parseJson(res.text);
+  if (!json) {
+    // Segundo intento con un modelo sin razonamiento (no gasta tokens pensando) y petición de JSON compacto.
+    const again = await generate(await ctx(env, userId, role, projectId), {
+      system: `[factory:${role}] ${system}\n${SAFE}\nResponde SOLO con un JSON válido y compacto (sin markdown, sin comentarios, textos breves).`,
+      messages: [{ role: "user", content: prompt }], maxTokens: opts.maxTokens ?? 1600,
+      prefer: "free", allowFallback: true, capability: "chat",
+    });
+    json = parseJson(again.text);
+    if (json) return { json, model: again.model, provider: again.provider };
+  }
+  return { json, model: res.model, provider: res.provider };
 }
 
 // ------------------------------------------------------------------ ideas (Research)
@@ -157,7 +193,8 @@ export async function ideateCoins(env: Env, userId: number, prompt: string, coun
   return created;
 }
 
-const COIN_SCHEMA = `{"name":"nombre de marca (2-18 caracteres, pegadizo)","ticker":"3-6 letras","theme":"temática en 3-6 palabras","mascot":"nombre propio de la mascota","tagline":"≤90, frase vendedora","description":"2-3 frases que enganchen","lore":"historia del meme en 120-180 palabras, con conflicto, humor y un giro","traits":["4-5 rasgos cortos de la mascota"],"slogans":["4-6 frases cortas tipo grito de comunidad (≤40)"],"style":"sticker|neon|pastel|luxe (el que mejor encaje con la temática)","chain":"Solana|Base|Ethereum|BNB Chain|TON (la que mejor encaje)","taxes":"p. ej. 0% / 0%","tokenomics":{"supply":"p. ej. 1.000.000.000","distribution":[{"label":"...","pct":número}×3-5]},"roadmap":[{"phase":"nombre creativo de fase","text":"..."}×4],"community":["4-5 ideas concretas de memes, retos o contenido"],"logo_prompt":"EN INGLÉS: mascota para logo (especie/forma, colores exactos, accesorio, expresión)","art_prompt":"EN INGLÉS: escena ilustrada de la mascota contando su historia (lugar, acción, luz)","meme_prompt":"EN INGLÉS: situación graciosa de la mascota tipo meme","ai":{"label":"Habla con <mascota>","placeholder":"...","examples":["3 preguntas graciosas"],"system":"personalidad y forma de hablar de la mascota"},"brand":{"bg":"#hex","surface":"#hex","text":"#hex","muted":"#hex","accent":"#hex","accent2":"#hex","fonts":"unbounded|syne|bricolage|grotesk|sora|outfit|fraunces|archivo","radius":0-28,"mode":"dark|light"},"hero":{"eyebrow":"≤40","title":"≤70, titular potente","subtitle":"≤180","cta":"≤22"},"faq":[{"q":"...","a":"..."}×5],"seo":{"title":"10-60 caracteres","description":"50-155 caracteres","keywords":["..."]}}`;
+const COIN_SCHEMA = `{"name":"nombre de marca pegadizo (2-18 caracteres)","ticker":"GATO","theme":"temática en 3-6 palabras","mascot":"nombre propio de la mascota","tagline":"frase vendedora de máx. 90 caracteres","description":"2-3 frases que enganchen","lore":"historia del meme de 120-170 palabras con humor y un giro","traits":["rasgo 1","rasgo 2","rasgo 3","rasgo 4"],"slogans":["grito de comunidad 1","grito 2","grito 3","grito 4"],"style":"sticker","chain":"Solana","taxes":"0% / 0%","logo_prompt":"IN ENGLISH: mascot for the logo (species/shape, exact colors, accessory, expression)","art_prompt":"IN ENGLISH: illustrated scene of the mascot from its story","meme_prompt":"IN ENGLISH: funny meme situation of the mascot","tokenomics":{"supply":"1.000.000.000","distribution":[{"label":"Liquidez","pct":70},{"label":"Comunidad","pct":20},{"label":"Marketing","pct":10}]},"roadmap":[{"phase":"nombre creativo de la fase 1","text":"..."},{"phase":"fase 2","text":"..."},{"phase":"fase 3","text":"..."},{"phase":"fase 4","text":"..."}],"community":["idea concreta de meme o reto 1","idea 2","idea 3","idea 4"],"ai":{"label":"Habla con <mascota>","placeholder":"...","examples":["pregunta graciosa 1","pregunta 2","pregunta 3"],"system":"personalidad y forma de hablar de la mascota"},"brand":{"bg":"#0b0a12","surface":"#16131f","text":"#f6f4ff","muted":"#a59fbf","accent":"#ffb020","accent2":"#7c5cff","fonts":"unbounded","radius":18,"mode":"dark"},"hero":{"eyebrow":"máx. 40","title":"titular potente de máx. 70","subtitle":"máx. 180","cta":"máx. 22"},"faq":[{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."}],"seo":{"title":"10-60 caracteres","description":"50-155 caracteres","keywords":["...","..."]}}
+Reglas: "style" es uno de sticker|neon|pastel|luxe (el que mejor encaje con la temática); "chain" uno de Solana|Base|Ethereum|BNB Chain|TON; "fonts" uno de unbounded|syne|bricolage|grotesk|sora|outfit|fraunces|archivo; los colores son tuyos (los del ejemplo son solo formato) y deben encajar con la temática; los pct suman 100. Textos concisos: no repitas el esquema.`;
 
 /** Una imagen con FLUX (gratis en Workers AI). Devuelve false si falla (salvo cupo agotado: entonces lanza). */
 async function coinImage(env: Env, p: any, name: string, prompt: string): Promise<string | null> {
@@ -179,16 +216,22 @@ async function buildCoin(env: Env, p: any) {
   const draft = await ask(env, p.user_id, "coin", p.id,
     "Eres el director creativo de un estudio top de lanzamientos de meme coins (nivel agencia premium). Creas marcas memorables: nombre y ticker con gancho, mascota con personalidad, historia con humor y giro, frases de comunidad que se gritan, identidad visual coherente con la temática y textos que venden sin mentir. Escribes en español natural (nada de traducción literal). Prohibido prometer rentabilidad, precios, 'x100' u objetivos de mercado; prohibido usar marcas registradas o personas reales.",
     `Concepto: ${p.name} ($${r.ticker ?? ""}) — ${p.idea}\n${r.theme ? `Temática pedida por el dueño: ${r.theme}\n` : ""}${p.feedback ? `CORRIGE ESTO DEL INTENTO ANTERIOR: ${p.feedback}\n` : ""}JSON exacto: ${COIN_SCHEMA}`,
-    { capability: "reasoning", premium: true, maxTokens: 3200 });
-  if (!draft.json) throw new Error("El director creativo no devolvió un concepto válido.");
+    { capability: "reasoning", premium: true, maxTokens: 7000 });
+  if (!draft.json || !(draft.json.name || draft.json.lore)) throw new Error("El director creativo no devolvió un concepto válido.");
   // Editor: critica con criterios de marca y devuelve la versión mejorada (autocrítica, como un equipo real).
   await fxEmit(env, p.user_id, p.id, "building", "marketing", "tool", "Editor jefe: revisando nombre, historia, frases y coherencia visual.");
-  const ed = await ask(env, p.user_id, "editor", p.id,
+  // Con modelos gratuitos se omite (ahorra la mitad del cupo diario); con Claude/API propia se hace siempre.
+  const ed = draft.provider === "workers-ai" ? { json: null as any, model: "" } : await ask(env, p.user_id, "editor", p.id,
     "Eres el editor jefe del estudio. Puntúas el borrador (0-10) en: originalidad del nombre/ticker, gancho de la mascota, calidad y humor de la historia, fuerza de los eslóganes, coherencia visual con la temática y claridad comercial. Después REESCRIBES lo flojo para que todo quede a nivel 9+, manteniendo el mismo esquema JSON. Mismas prohibiciones: sin promesas de rentabilidad, sin marcas ni personas reales.",
     `BORRADOR:\n${JSON.stringify(draft.json).slice(0, 9000)}\n\nDevuelve el JSON completo mejorado con el mismo esquema, añadiendo "quality": nota final 0-10 y "review": "1 frase con lo que mejoraste".`,
-    { capability: "reasoning", premium: true, maxTokens: 3400 }).catch(() => ({ json: null, model: "" }));
+    { capability: "reasoning", premium: true, maxTokens: 7000 }).catch(() => ({ json: null as any, model: "" }));
   const json = ed.json && ed.json.name && ed.json.lore ? { ...draft.json, ...ed.json } : draft.json;
+  // Respuesta parcial: se completa con lo que sí llegó en vez de rechazar la moneda.
+  if (String(json.lore ?? "").length < 80) json.lore = [json.lore, json.description, p.idea].filter(Boolean).join(" ").trim();
+  if (String(json.lore ?? "").length < 80) json.lore = `${json.lore} ${json.name ?? p.name} nació como un chiste entre amigos y acabó convertido en una comunidad que celebra cada nuevo meme de su mascota.`.trim();
+  json.name = json.name || p.name;
   const quality = Number(json.quality) || null;
+  if (!ed.json) await fxEmit(env, p.user_id, p.id, "building", "marketing", "tool", "Concepto validado por el director creativo.");
   if (ed.json?.review) await fxEmit(env, p.user_id, p.id, "building", "marketing", "decision", `Editor (${quality ?? "?"}/10): ${String(ed.json.review).slice(0, 200)}`);
 
   const mascot = String(json.mascot ?? json.name ?? p.name).slice(0, 40);
@@ -222,7 +265,7 @@ export async function missionTick(env: Env, userId: number, onlyId?: number): Pr
   const ms = await all<any>(env.DB, `SELECT * FROM fx_missions WHERE user_id = ? AND active = 1${onlyId ? " AND id = ?" : ""} ORDER BY id`, userId, ...(onlyId ? [onlyId] : []));
   let total = 0;
   for (const m of ms) {
-    const made = (await one<any>(env.DB, "SELECT COUNT(*) AS n FROM fx_projects WHERE mission_id = ? AND created_at >= ? AND status NOT IN ('rejected','failed')", m.id, todayIso()))?.n ?? 0;
+    const made = (await one<any>(env.DB, "SELECT COUNT(*) AS n FROM fx_projects WHERE mission_id = ? AND created_at >= ?", m.id, todayIso()))?.n ?? 0;
     const open = (await one<any>(env.DB, "SELECT COUNT(*) AS n FROM fx_projects WHERE mission_id = ? AND stage NOT IN ('live','maintenance') AND status NOT IN ('failed','rejected','paused')", m.id))?.n ?? 0;
     if (made >= m.per_day || open >= 3) continue;
     const n = Math.min(3 - open, m.per_day - made);
