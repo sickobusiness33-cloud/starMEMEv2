@@ -303,7 +303,7 @@ function renderAuth(allowSignup, mode = allowSignup ? "register" : "login") {
 
 // [clave, etiqueta, icono, visible en la barra inferior del móvil]
 const NAV = [
-  ["lienzo", "Oficina", "canvas", true], ["home", "Command", "home", true], ["chat", "Kairo", "kairo", true], ["proyectos", "Proyectos", "projects", true],
+  ["lienzo", "Oficina", "canvas", true], ["home", "Chat", "kairo", true], ["proyectos", "Proyectos", "projects", true],
   ["coins", "Coin Studio", "coin", false], ["factory", "Fábrica", "grid", false], ["mission", "Autopilot", "bolt", false], ["hub", "Agentes", "agents", false], ["panel", "Red global", "network", false], ["studio", "Estudio", "studio", false], ["notificaciones", "Avisos", "bell", true],
   ["actividad", "Auditoría", "activity", false], ["conectores", "Conectores", "connectors", false],
   ["configuracion", "Ajustes", "settings", false], ["apariencia", "Apariencia", "brush", false],
@@ -322,6 +322,12 @@ function route() {
   clearTimers();
   const r = parseRoute();
   const main = h("main", { id: "main", tabindex: "-1", class: `sec-${r.section}` });
+  // Chat a pantalla completa (estilo ChatGPT/Claude): su propia barra lateral sustituye al menú y a la barra superior.
+  if (r.section === "home" || r.section === "chat") {
+    document.getElementById("app").replaceChildren(h("div", { class: "chat-shell" }, main));
+    viewChat(main, r).catch((err) => main.replaceChildren(h("div", { class: "alert" }, err.message)));
+    return;
+  }
   const pendingBadge = h("span", { class: "count", hidden: true });
   const planBadge = h("a", { class: "plan-badge", href: "#/upgrade", title: "Tu plan" }, "…");
   billing(true).then((b) => {
@@ -331,7 +337,7 @@ function route() {
     planBadge.classList.toggle("pro", b.subscription.plan === "pro");
   }).catch(() => { planBadge.textContent = "plan"; });
 
-  const isCurrent = (key) => r.section === key || (key === "hub" && ["hub-runs", "fuentes"].includes(r.section)) || (key === "proyectos" && r.section === "p");
+  const isCurrent = (key) => r.section === key || (key === "home" && r.section === "chat") || (key === "hub" && ["hub-runs", "fuentes"].includes(r.section)) || (key === "proyectos" && r.section === "p");
   const navLink = ([key, label, ic, primary]) => h("a", { href: `#/${key}`, class: primary ? "primary" : "secondary", title: label, "aria-current": isCurrent(key) ? "page" : null },
     h("span", { class: "nav-ico" }, icon(ic, 19)), h("span", { class: "nav-label" }, label), key === "actividad" ? pendingBadge : null);
   const moreSheet = h("div", { class: "more-sheet", hidden: true },
