@@ -8,6 +8,7 @@ import type { AppEnv } from "../env";
 import { fail } from "../http";
 import { hit } from "../ratelimit";
 import { AI_PINS, freeQuotaAvailable } from "../ai/router";
+import { EXT_MODELS } from "../ai/models";
 import { storedKey } from "../providers";
 import { asPin, FX_AGENTS, fxEmit, fxSettings, fxTokensToday, missionTick, STAGES } from "./engine";
 import { NICHES } from "./render";
@@ -161,7 +162,12 @@ async function aiStatus(c: any) {
   };
   const [ak, ok, gk, qk] = await Promise.all(["anthropic", "openai", "gemini", "groq"].map((x) => storedKey(env, uid, x)));
   const row = async (id: string, label: string, connected: boolean, coolKey: string) => {
-    const problem = connected ? await cool(coolKey) : null;
+    let problem = connected ? await cool(coolKey) : null;
+    if (connected && !problem && (id === "gemini" || id === "groq")) {
+      // Disponible si al menos uno de sus modelos no está apartado (cupo gratis por modelo).
+      const cools = await Promise.all(EXT_MODELS[id].map((mId) => cool(`model:${id}:${uid}:${mId}`)));
+      if (cools.every(Boolean)) problem = `Todos sus modelos sin cupo ahora: ${cools[0]}`;
+    }
     return { id, label, connected, available: connected && !problem, problem };
   };
   return Promise.all([

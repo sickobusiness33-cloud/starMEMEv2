@@ -319,8 +319,8 @@ async function advance(env: Env, p: any, stage: Stage, fields: Record<string, un
 
 async function fail(env: Env, p: any, agent: string, reason: string, quota: boolean) {
   if (quota) {
-    await run(env.DB, "UPDATE fx_projects SET status = 'waiting', errors = ?, lease_until = NULL, updated_at = ? WHERE id = ?", "Esperando cupo de IA", nowIso(), p.id);
-    await fxEmit(env, p.user_id, p.id, p.stage, agent, "limit", "Sin cupo de IA ahora mismo: continúa solo cuando haya.");
+    await run(env.DB, "UPDATE fx_projects SET status = 'waiting', errors = ?, lease_until = NULL, updated_at = ? WHERE id = ?", `Esperando una IA disponible · ${reason.replace(/^Ningún modelo pudo responder\. Último error: /, "").slice(0, 160)}`, nowIso(), p.id);
+    await fxEmit(env, p.user_id, p.id, p.stage, agent, "limit", "Ninguna IA disponible ahora mismo (sin saldo, sin cupo o saturada): sigue sola en cuanto haya una.");
     return;
   }
   const attempts = (p.attempts ?? 0) + 1;
@@ -478,7 +478,10 @@ export async function fxStep(env: Env, id: number) {
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return fail(env, p, agent, msg, err instanceof RouterError && (err.code === "free_quota" || isQuotaError(msg)));
+    // Sin saldo, sin cupo o IA saturada no es culpa del proyecto: espera y sigue solo cuando haya una IA disponible.
+    const transient = err instanceof RouterError && (err.code === "free_quota" || err.code === "all_failed" || err.code === "no_models")
+      || isQuotaError(msg) || /\b429\b|\b50[023]\b|quota|credit|billing|high demand|overloaded|rate limit|unavailable|no credits/i.test(msg);
+    return fail(env, p, agent, msg, transient);
   }
 }
 

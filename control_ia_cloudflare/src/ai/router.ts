@@ -114,7 +114,7 @@ async function externalFree(env: Env, userId: number): Promise<Candidate[]> {
     if (!key || !(await healthy(env.DB, byokKey(userId, `${vendor}-byok`)))) continue;
     for (const id of EXT_MODELS[vendor]) {
       const m = MODEL_MAP.get(id);
-      if (m && (await healthy(env.DB, modelKey(`${vendor}:${id}`)))) out.push({ provider: `${vendor}-byok`, model: m, modelId: id, apiKey: key, baseUrl: extBase(env, vendor), vendor });
+      if (m && (await healthy(env.DB, modelKey(`${vendor}:${userId}:${id}`)))) out.push({ provider: `${vendor}-byok`, model: m, modelId: id, apiKey: key, baseUrl: extBase(env, vendor), vendor });
     }
   }
   return out;
@@ -392,16 +392,22 @@ export async function generate(ctx: CallContext, req: GenerateRequest): Promise<
       const raw = err instanceof Error ? err.message : String(err);
       await recordUsage(ctx, c.provider, c.modelId, i > 0, false, raw, ms);
       const more = i + 1 < list.length;
-      if (c.provider === "claude-byok" || c.provider === "openai-byok" || c.provider === "gemini-byok" || c.provider === "groq-byok") {
+      const ext = c.provider === "gemini-byok" || c.provider === "groq-byok";
+      if (c.provider === "claude-byok" || c.provider === "openai-byok") {
         const cd = byokFailure(raw);
         if (cd) await coolDown(ctx.env.DB, byokKey(ctx.userId, c.provider), cd, raw);
       }
-      if ((c.provider === "gemini-byok" || c.provider === "groq-byok") && /\b404\b|not found|does not exist|decommissioned/i.test(raw)) {
-        await coolDown(ctx.env.DB, modelKey(`${c.vendor}:${c.modelId}`), 6 * 3600, raw);
-      }
-      if (c.provider === "gemini-byok" || c.provider === "groq-byok") {
-        // Clave inválida o sin cupo: el resto de modelos de ese proveedor tampoco responderá ahora.
-        if (byokFailure(raw) >= 30 * 60) list.splice(i + 1, list.length, ...list.slice(i + 1).filter((x) => x.provider !== c.provider));
+      if (ext) {
+        // Gemini/Groq: el cupo gratis y la saturación son POR MODELO → se aparta solo ese modelo y se prueba el siguiente.
+        // Solo una clave inválida aparta todo el proveedor.
+        const mk = modelKey(`${c.vendor}:${ctx.userId}:${c.modelId}`);
+        if (/\b404\b|not found|no longer available|does not exist|decommissioned/i.test(raw)) await coolDown(ctx.env.DB, mk, 6 * 3600, raw);
+        else if (/\b429\b|quota|rate limit|too many|resource_exhausted/i.test(raw)) await coolDown(ctx.env.DB, mk, /quota|resource_exhausted/i.test(raw) ? 20 * 60 : 60, raw);
+        else if (/\b50[03]\b|high demand|overloaded|unavailable/i.test(raw)) await coolDown(ctx.env.DB, mk, 120, raw);
+        else if (/\b401\b|\b403\b|api key not valid|invalid api key|unauthorized|permission/i.test(raw)) {
+          await coolDown(ctx.env.DB, byokKey(ctx.userId, c.provider), 60 * 60, raw);
+          list.splice(i + 1, list.length, ...list.slice(i + 1).filter((x) => x.provider !== c.provider));
+        }
         if (more) notices.push(`${c.vendor === "gemini" ? "Gemini" : "Groq"} no respondió · probando otra IA`);
         lastError = redact(raw).slice(0, 200);
       } else if (c.provider === "claude" || c.provider === "claude-byok") {

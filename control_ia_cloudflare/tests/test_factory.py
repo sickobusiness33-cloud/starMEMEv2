@@ -177,7 +177,7 @@ def test_gemini_y_groq_respaldo_y_cambio_de_ia(api):
     ps = wait_live(api, 1)
     assert ps[0]["stage"] == "live", ps
     ext = httpx.get(MOCK_URL).json()["ext"]
-    assert any(e["vendor"] == "gemini" and e["model"] == "gemini-2.5-flash" and e["auth"].startswith("Bearer AIza") for e in ext), ext
+    assert any(e["vendor"] == "gemini" and e["model"] == "gemini-3.8-flash" and e["auth"].startswith("Bearer AIza") for e in ext), ext
     cs = api.get("/api/factory/coins").json()
     assert cs["coins"][0]["last_ai"].startswith("gemini-byok")
     assert {a["id"]: a["available"] for a in cs["ais"]}["gemini"] is True
