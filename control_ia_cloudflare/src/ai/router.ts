@@ -157,7 +157,9 @@ export async function freeQuotaAvailable(db: D1Database): Promise<boolean> {
   return healthy(db, QUOTA_KEY);
 }
 async function markQuotaExhausted(db: D1Database, raw: string, mock = false) {
-  await coolDown(db, QUOTA_KEY, mock ? 3 : secondsToUtcMidnight(), raw); // en tests (mock) solo 3 s
+  // Pausa corta (30 min, o hasta la renovación si es antes) y se vuelve a probar: Cloudflare no siempre
+  // renueva el cupo justo a las 00:00 UTC y un bloqueo hasta la medianoche siguiente paraba la fábrica un día entero.
+  await coolDown(db, QUOTA_KEY, mock ? 3 : Math.min(30 * 60, secondsToUtcMidnight()), raw); // en tests (mock) solo 3 s
 }
 
 // --- cadena de candidatos ------------------------------------------------------------------
