@@ -13,6 +13,8 @@ import { notify } from "../notify";
 import { AnthropicProvider } from "./anthropic";
 import { type Provider, ProviderError, ProviderNotConfigured } from "./base";
 import { DemoProvider } from "./demo";
+import { GeminiProvider } from "./gemini";
+import { GroqProvider } from "./groq";
 import { OpenAIProvider } from "./openai";
 
 export { ProviderError, ProviderNotConfigured };
@@ -21,6 +23,8 @@ type ProviderClass = new (settings: Settings, apiKey?: string) => Provider;
 export const PROVIDERS: Record<string, ProviderClass> = {
   anthropic: AnthropicProvider,
   openai: OpenAIProvider,
+  gemini: GeminiProvider,
+  groq: GroqProvider,
   demo: DemoProvider,
 };
 
@@ -107,7 +111,7 @@ providerRoutes.put("/:id/key", async (c) => {
   );
   modelsCache.delete(`${u.id}:${id}`);
   await record(c.env.DB, { actor: u.email, userId: u.id, action: "ia.conectar_clave", target: id });
-  await notify(c.env, u.id, { category: "seguridad", title: `API key de ${id} guardada`, body: "Se guarda cifrada y nunca se muestra. Actívala en Ajustes → Usar mi API.", link: "#/configuracion" });
+  await notify(c.env, u.id, { category: "seguridad", title: `API key de ${id} guardada`, body: id === "gemini" || id === "groq" ? "Se guarda cifrada y nunca se muestra. Se usa sola como respaldo gratuito." : "Se guarda cifrada y nunca se muestra. Actívala en Ajustes → Usar mi API.", link: "#/configuracion" });
   return c.json(await statusRow(c.env, s, u.id, id));
 });
 

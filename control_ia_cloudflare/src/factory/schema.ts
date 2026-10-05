@@ -90,6 +90,9 @@ export const FACTORY_SQL = [
 const FACTORY_ALTERS = [
   "ALTER TABLE fx_projects ADD COLUMN mission_id INTEGER",
   "ALTER TABLE fx_projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'website'",
+  // IA elegida (auto | claude | openai | gemini | groq | cloudflare): por misión y por proyecto, cambiable en cualquier momento.
+  "ALTER TABLE fx_projects ADD COLUMN ai_pref TEXT",
+  "ALTER TABLE fx_missions ADD COLUMN ai_pref TEXT",
 ];
 
 let ready: Promise<void> | null = null;
@@ -98,6 +101,7 @@ export function ensureFactorySchema(db: D1Database): Promise<void> {
   if (!ready) ready = db.batch(FACTORY_SQL.map((s) => db.prepare(s)))
     .then(async () => { for (const a of FACTORY_ALTERS) await db.prepare(a).run().catch(() => undefined); })
     .then(() => db.prepare("CREATE INDEX IF NOT EXISTS idx_fx_projects_mission ON fx_projects(mission_id, created_at)").run())
+    .then(() => db.prepare("CREATE INDEX IF NOT EXISTS idx_usage_factory_run ON usage_events(kind, agent_run_id)").run().catch(() => undefined))
     .then(() => undefined).catch((e) => { ready = null; throw e; });
   return ready;
 }

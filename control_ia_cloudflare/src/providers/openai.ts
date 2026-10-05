@@ -18,6 +18,11 @@ export class OpenAIProvider extends Provider {
   description = "Modelos GPT con tu propia API key.";
   keyHelp = "Crea una API key en platform.openai.com → API keys y pégala aquí.";
 
+  /** URL base de la API (compatible con OpenAI). Gemini y Groq la sobrescriben. */
+  protected baseUrl(): string {
+    return this.settings.openaiBaseUrl;
+  }
+
   suggestedModels() {
     return [];
   }
@@ -29,7 +34,7 @@ export class OpenAIProvider extends Provider {
     for (let i = 0; i < attempts; i++) {
       try {
         const timeout = AbortSignal.timeout(this.settings.providerTimeoutSeconds * 1000);
-        const resp = await fetch(this.settings.openaiBaseUrl + path, {
+        const resp = await fetch(this.baseUrl() + path, {
           method,
           headers: { Authorization: `Bearer ${this.apiKey}`, "Content-Type": "application/json" },
           body: payload ? JSON.stringify(payload) : undefined,
@@ -44,14 +49,14 @@ export class OpenAIProvider extends Provider {
           /* sin cuerpo JSON */
         }
         const code = resp.status;
-        if (code === 401) last = new ProviderError("OpenAI rechazó tu API key (401): no es válida o fue revocada.");
-        else if (code === 404) last = new ProviderError(`OpenAI: modelo o ruta no encontrada (404). ${detail}`);
-        else if (code === 429) last = new ProviderError("Límite de uso de OpenAI alcanzado (429). Reintenta más tarde.", true);
-        else if (code >= 500) last = new ProviderError(`Error del servidor de OpenAI (${code}).`, true);
-        else last = new ProviderError(`OpenAI rechazó la petición (${code}): ${detail}`);
+        if (code === 401) last = new ProviderError(`${this.name} rechazó tu API key (401): no es válida o fue revocada.`);
+        else if (code === 404) last = new ProviderError(`${this.name}: modelo o ruta no encontrada (404). ${detail}`);
+        else if (code === 429) last = new ProviderError(`Límite de uso de ${this.name} alcanzado (429). Reintenta más tarde.`, true);
+        else if (code >= 500) last = new ProviderError(`Error del servidor de ${this.name} (${code}).`, true);
+        else last = new ProviderError(`${this.name} rechazó la petición (${code}): ${detail}`);
       } catch (err: any) {
         if (signal?.aborted) throw new ProviderError("Llamada cancelada.");
-        last = new ProviderError(err?.name === "TimeoutError" ? "OpenAI no respondió a tiempo." : "No se pudo conectar con OpenAI.", true);
+        last = new ProviderError(err?.name === "TimeoutError" ? `${this.name} no respondió a tiempo.` : `No se pudo conectar con ${this.name}.`, true);
       }
       if (!last.retryable || i === attempts - 1) break;
       await new Promise((r) => setTimeout(r, Math.min(2 ** i * 1000, 8000)));

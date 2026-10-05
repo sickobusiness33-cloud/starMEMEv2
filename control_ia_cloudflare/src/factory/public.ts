@@ -32,7 +32,7 @@ export async function handlePublic(req: Request, env: Env): Promise<Response | n
     if (logo) {
       await ensureFactorySchema(env.DB);
       const a = await one<any>(env.DB, "SELECT a.mime, a.data_b64 FROM fx_assets a JOIN fx_projects p ON p.id = a.project_id WHERE p.slug = ? AND a.name = ?", logo[1], logo[2]);
-      if (!a || !/^image\/(png|jpeg|webp)$/.test(a.mime)) return new Response("Sin logo", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+      if (!a || !/^image\/(png|jpeg|webp|svg\+xml)$/.test(a.mime)) return new Response("Sin logo", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
       return new Response(b64ToBytes(a.data_b64), { headers: { "Content-Type": a.mime, "Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff", "Access-Control-Allow-Origin": "*", "Content-Security-Policy": "default-src 'none'; sandbox" } });
     }
     const m = path.match(/^\/s\/([a-z0-9-]{1,60})(\/?)$/);

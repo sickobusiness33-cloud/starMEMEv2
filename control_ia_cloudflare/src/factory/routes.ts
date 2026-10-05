@@ -7,8 +7,9 @@ import { all, dumps, loads, nowIso, one, run } from "../db";
 import type { AppEnv } from "../env";
 import { fail } from "../http";
 import { hit } from "../ratelimit";
-import { freeQuotaAvailable } from "../ai/router";
-import { FX_AGENTS, fxEmit, fxSettings, fxTokensToday, missionTick, STAGES } from "./engine";
+import { AI_PINS, freeQuotaAvailable } from "../ai/router";
+import { storedKey } from "../providers";
+import { asPin, FX_AGENTS, fxEmit, fxSettings, fxTokensToday, missionTick, STAGES } from "./engine";
 import { NICHES } from "./render";
 import { ensureFactorySchema } from "./schema";
 
@@ -35,7 +36,7 @@ export function parseCommand(text: string): { kind: "memecoin" | "website"; nich
 }
 
 /** Crea una misión permanente y lanza ya la primera tanda. */
-async function createMission(c: any, text: string, perDay?: number, forceKind?: string) {
+async function createMission(c: any, text: string, perDay?: number, forceKind?: string, aiPref?: unknown) {
   const u = c.get("user");
   const parsed = parseCommand(text);
   if (forceKind === "memecoin") Object.assign(parsed, { kind: "memecoin", niche: "crypto", title: `Meme coins · ${text.slice(0, 48)}` });
@@ -44,8 +45,8 @@ async function createMission(c: any, text: string, perDay?: number, forceKind?: 
   const s = await fxSettings(c.env, u.id);
   const active = (await one<any>(c.env.DB, "SELECT COUNT(*) AS n FROM fx_missions WHERE user_id = ? AND active = 1", u.id))?.n ?? 0;
   if (active >= 8) fail(409, "Tienes 8 misiones activas: para alguna antes de crear otra.");
-  const ins = await c.env.DB.prepare("INSERT INTO fx_missions (user_id, title, prompt, kind, niche, per_day, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)")
-    .bind(u.id, parsed.title, text, parsed.kind, parsed.niche, per, nowIso(), nowIso()).run();
+  const ins = await c.env.DB.prepare("INSERT INTO fx_missions (user_id, title, prompt, kind, niche, per_day, active, ai_pref, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)")
+    .bind(u.id, parsed.title, text, parsed.kind, parsed.niche, per, asPin(aiPref), nowIso(), nowIso()).run();
   const id = Number(ins.meta.last_row_id);
   await run(c.env.DB, "UPDATE fx_settings SET enabled = 1, max_parallel = MAX(max_parallel, ?), updated_at = ? WHERE user_id = ?", Math.min(6, active + 3), nowIso(), s.user_id);
   await fxEmit(c.env, u.id, null, "backlog", "devops", "decision", `Nueva misión «${parsed.title}»: ${per} al día, todos los días, hasta que la pares.`);
@@ -58,7 +59,7 @@ factoryRoutes.get("/", async (c) => {
   const u = c.get("user");
   const db = c.env.DB;
   const s = await fxSettings(c.env, u.id);
-  const projects = await all<any>(db, `SELECT id, slug, name, niche, idea, kind, mission_id, json_extract(research_json, '$.ticker') AS ticker, stage, status, priority, attempts, apis_json, stack, url, repo, version, errors, created_at, updated_at, live_at, last_audit_at,
+  const projects = await all<any>(db, `SELECT id, slug, name, niche, idea, kind, mission_id, ai_pref, ${LAST_AI.replace(/p\.id/g, "fx_projects.id")} AS last_ai, json_extract(research_json, '$.ticker') AS ticker, stage, status, priority, attempts, apis_json, stack, url, repo, version, errors, created_at, updated_at, live_at, last_audit_at,
     json_extract(research_json, '$.score') AS score, json_extract(spec_json, '$.tagline') AS tagline, json_extract(spec_json, '$.brand.accent') AS accent, json_extract(spec_json, '$.brand.bg') AS bg
     FROM fx_projects WHERE user_id = ? ORDER BY CASE WHEN status = 'working' THEN 0 ELSE 1 END, updated_at DESC LIMIT 300`, u.id);
   const since = new Date(Date.now() - 3 * 60_000).toISOString();
@@ -103,7 +104,7 @@ factoryRoutes.get("/", async (c) => {
 });
 
 factoryRoutes.get("/projects/:id", async (c) => {
-  const p = await one<any>(c.env.DB, "SELECT * FROM fx_projects WHERE id = ? AND user_id = ?", Number(c.req.param("id")), c.get("user").id);
+  const p = await one<any>(c.env.DB, `SELECT *, ${LAST_AI.replace(/p\.id/g, "fx_projects.id")} AS last_ai FROM fx_projects WHERE id = ? AND user_id = ?`, Number(c.req.param("id")), c.get("user").id);
   if (!p) fail(404, "Ese proyecto no existe.");
   const events = await all<any>(c.env.DB, "SELECT stage, agent, kind, message, created_at FROM fx_events WHERE project_id = ? ORDER BY id DESC LIMIT 60", p.id);
   return c.json({ ...p, html: undefined, prev_html: undefined, html_kb: p.html ? Math.round(p.html.length / 1024) : 0, research: loads(p.research_json, {}), spec: loads(p.spec_json, {}), checks: loads(p.checks_json, {}), apis: loads(p.apis_json, []), events, research_json: undefined, spec_json: undefined, checks_json: undefined, apis_json: undefined });
@@ -148,7 +149,48 @@ factoryRoutes.post("/command", async (c) => {
   const b = await c.req.json<any>().catch(() => ({}));
   const text = String(b.text ?? "").replace(/[<>]/g, "").trim().slice(0, 300);
   if (text.length < 3) fail(400, "Escribe qué quieres que haga la fábrica.");
-  return c.json({ ok: true, mission: await createMission(c, text, b.per_day, b.kind) });
+  return c.json({ ok: true, mission: await createMission(c, text, b.per_day, b.kind, b.ai_pref) });
+});
+
+/** Estado de cada IA para este usuario: conectada y disponible ahora (sin secretos). */
+async function aiStatus(c: any) {
+  const env = c.env, uid = c.get("user").id;
+  const cool = async (key: string) => {
+    const r = await one<any>(env.DB, "SELECT available_after, last_error FROM provider_health WHERE provider = ?", key);
+    return r?.available_after && new Date(r.available_after).getTime() > Date.now() ? String(r.last_error ?? "en pausa").slice(0, 140) : null;
+  };
+  const [ak, ok, gk, qk] = await Promise.all(["anthropic", "openai", "gemini", "groq"].map((x) => storedKey(env, uid, x)));
+  const row = async (id: string, label: string, connected: boolean, coolKey: string) => {
+    const problem = connected ? await cool(coolKey) : null;
+    return { id, label, connected, available: connected && !problem, problem };
+  };
+  return Promise.all([
+    row("claude", "Claude", Boolean(env.ANTHROPIC_API_KEY || ak), env.ANTHROPIC_API_KEY ? "claude-platform" : `byok:${uid}:claude-byok`),
+    row("openai", "OpenAI", Boolean(ok), `byok:${uid}:openai-byok`),
+    row("gemini", "Gemini", Boolean(gk), `byok:${uid}:gemini-byok`),
+    row("groq", "Groq", Boolean(qk), `byok:${uid}:groq-byok`),
+    row("cloudflare", "Cloudflare (gratis)", Boolean(env.AI), "workers-ai:daily-quota"),
+  ]);
+}
+const LAST_AI = "(SELECT provider || ' · ' || model FROM usage_events WHERE kind = 'factory' AND agent_run_id = p.id AND ok = 1 AND agent_id != 'factory:logo' ORDER BY id DESC LIMIT 1)";
+
+factoryRoutes.get("/ai", async (c) => c.json({ ais: await aiStatus(c), pins: AI_PINS }));
+
+/** Cambia la IA de un proyecto. Si estaba parado o esperando, sigue ya con la nueva. */
+factoryRoutes.post("/projects/:id/ai", async (c) => {
+  await limit(c);
+  const u = c.get("user");
+  const p = await one<any>(c.env.DB, "SELECT * FROM fx_projects WHERE id = ? AND user_id = ?", Number(c.req.param("id")), u.id);
+  if (!p) fail(404, "Ese proyecto no existe.");
+  const b = await c.req.json<any>().catch(() => ({}));
+  const pin = asPin(b.ai_pref);
+  await run(c.env.DB, "UPDATE fx_projects SET ai_pref = ?, updated_at = ? WHERE id = ?", pin, nowIso(), p.id);
+  if (b.resume && ["paused", "waiting", "failed"].includes(p.status) && !["live", "maintenance"].includes(p.stage)) {
+    await run(c.env.DB, "UPDATE fx_projects SET status = 'queued', attempts = 0, errors = NULL, lease_until = NULL WHERE id = ?", p.id);
+    await c.env.RUNS.send({ fxStep: p.id });
+  }
+  await fxEmit(c.env, u.id, p.id, p.stage, "devops", "decision", `IA cambiada a ${pin ?? "automático"}${b.resume ? " · continúa con ella" : ""}.`);
+  return c.json({ ok: true, ai_pref: pin });
 });
 
 /** Coin Studio: solo meme coins (misiones, monedas con su arte y la actividad del taller). */
@@ -156,12 +198,12 @@ factoryRoutes.get("/coins", async (c) => {
   const u = c.get("user");
   const db = c.env.DB;
   const today = new Date().toISOString().slice(0, 10);
-  const missions = await all<any>(db, `SELECT m.id, m.title, m.prompt, m.per_day, m.active, m.created_at, m.last_at,
+  const missions = await all<any>(db, `SELECT m.id, m.title, m.prompt, m.per_day, m.active, m.created_at, m.last_at, m.ai_pref,
     (SELECT COUNT(*) FROM fx_projects p WHERE p.mission_id = m.id AND p.created_at >= ?) AS made_today,
     (SELECT COUNT(*) FROM fx_projects p WHERE p.mission_id = m.id AND p.stage IN ('live','maintenance')) AS live_total,
     (SELECT COUNT(*) FROM fx_projects p WHERE p.mission_id = m.id AND p.status = 'working') AS working
     FROM fx_missions m WHERE m.user_id = ? AND m.kind = 'memecoin' ORDER BY m.active DESC, m.id DESC`, today, u.id);
-  const coins = await all<any>(db, `SELECT p.id, p.slug, p.name, p.idea, p.stage, p.status, p.url, p.version, p.mission_id, p.created_at, p.live_at, p.errors,
+  const coins = await all<any>(db, `SELECT p.id, p.slug, p.name, p.idea, p.stage, p.status, p.url, p.version, p.mission_id, p.created_at, p.live_at, p.errors, p.ai_pref, ${LAST_AI} AS last_ai,
     json_extract(p.research_json, '$.ticker') AS ticker, json_extract(p.research_json, '$.theme') AS theme, json_extract(p.research_json, '$.quality') AS quality,
     json_extract(p.spec_json, '$.tagline') AS tagline, json_extract(p.spec_json, '$.coin.style') AS style, json_extract(p.spec_json, '$.coin.chain') AS chain,
     json_extract(p.spec_json, '$.brand.accent') AS accent, json_extract(p.spec_json, '$.brand.bg') AS bg, json_extract(p.spec_json, '$.coin.mascot') AS mascot,
@@ -171,7 +213,7 @@ factoryRoutes.get("/coins", async (c) => {
     WHERE e.user_id = ? AND p.kind = 'memecoin' ORDER BY e.id DESC LIMIT 40`, u.id);
   const s = await fxSettings(c.env, u.id);
   return c.json({
-    enabled: s.enabled, missions, events, free_quota: await freeQuotaAvailable(c.env.DB),
+    enabled: s.enabled, missions, events, free_quota: await freeQuotaAvailable(c.env.DB), ais: await aiStatus(c),
     coins: coins.map((x) => ({ ...x, images: String(x.images ?? "").split(",").filter(Boolean) })),
     totals: { coins: coins.length, live: coins.filter((x) => x.stage === "live" || x.stage === "maintenance").length, today: coins.filter((x) => String(x.created_at) >= today).length, working: coins.filter((x) => x.status === "working").length, tokens_today: await fxTokensToday(c.env, u.id) },
   });
@@ -184,7 +226,15 @@ factoryRoutes.patch("/missions/:id", async (c) => {
   if (!m) fail(404, "Esa misión no existe.");
   const b = await c.req.json<any>().catch(() => ({}));
   const active = b.active === undefined ? m.active : b.active ? 1 : 0;
-  await run(c.env.DB, "UPDATE fx_missions SET active = ?, per_day = ?, updated_at = ? WHERE id = ?", active, int(b.per_day, 1, 50, m.per_day), nowIso(), m.id);
+  const pin = b.ai_pref === undefined ? asPin(m.ai_pref) : asPin(b.ai_pref);
+  await run(c.env.DB, "UPDATE fx_missions SET active = ?, per_day = ?, ai_pref = ?, updated_at = ? WHERE id = ?", active, int(b.per_day, 1, 50, m.per_day), pin, nowIso(), m.id);
+  if (b.ai_pref !== undefined) {
+    // Cambiar la IA de la misión también pasa el trabajo pendiente a la nueva IA (lo que ya está publicado no se toca).
+    await run(c.env.DB, "UPDATE fx_projects SET ai_pref = ? WHERE mission_id = ? AND stage NOT IN ('live','maintenance')", pin, m.id);
+    const stuck = await all<any>(c.env.DB, "UPDATE fx_projects SET status = 'queued', attempts = 0, errors = NULL WHERE mission_id = ? AND status IN ('waiting','failed') AND stage NOT IN ('live','maintenance') RETURNING id", m.id);
+    for (const x of stuck) await c.env.RUNS.send({ fxStep: x.id });
+    await fxEmit(c.env, c.get("user").id, null, "backlog", "devops", "decision", `Misión «${m.title}»: IA cambiada a ${pin ?? "automático"}.`);
+  }
   if (!active && m.active) {
     // Parar: lo que estaba a medias se queda en pausa (lo publicado sigue online).
     await run(c.env.DB, "UPDATE fx_projects SET status = 'paused', updated_at = ? WHERE mission_id = ? AND stage NOT IN ('live','maintenance') AND status IN ('queued','waiting')", nowIso(), m.id);

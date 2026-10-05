@@ -25,6 +25,8 @@ export interface Env {
   MAX_FILE_BYTES: string;
   ENABLE_DEMO_PROVIDER: string;
   OPENAI_BASE_URL: string;
+  GEMINI_BASE_URL?: string; // API compatible con OpenAI de Google Gemini (opcional: para tests)
+  GROQ_BASE_URL?: string; // API compatible con OpenAI de Groq (opcional: para tests)
   // --- Plataforma de IA ---
   AI?: Ai; // Cloudflare Workers AI (modelos gratuitos)
   ANTHROPIC_API_KEY?: string; // SECRETO: créditos Claude de la plataforma (Pro)
@@ -60,6 +62,8 @@ export interface Settings {
   maxFileBytes: number;
   enableDemoProvider: boolean;
   openaiBaseUrl: string;
+  geminiBaseUrl: string;
+  groqBaseUrl: string;
 }
 
 const bool = (v: string | undefined, d: boolean) =>
@@ -86,6 +90,8 @@ export function settingsFrom(env: Env): Settings {
     maxFileBytes: int(env.MAX_FILE_BYTES, 256 * 1024),
     enableDemoProvider: bool(env.ENABLE_DEMO_PROVIDER, true),
     openaiBaseUrl: (env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, ""),
+    geminiBaseUrl: (env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai").replace(/\/$/, ""),
+    groqBaseUrl: (env.GROQ_BASE_URL || "https://api.groq.com/openai/v1").replace(/\/$/, ""),
   };
 }
 

@@ -93,6 +93,7 @@ async function viewFactory(main) {
         h("header", {}, h("span", { class: "fx-mk" }, m.kind === "memecoin" ? "Meme coins" : FX_NICHE[m.niche] || m.niche), h("span", { class: "fx-state" + (m.active ? " on" : "") }, m.active ? (m.working ? "● trabajando" : "● activa") : "○ parada")),
         h("h3", {}, m.title), h("p", { class: "fx-small" }, `«${trunc(m.prompt, 90)}»`),
         h("div", { class: "fx-prog", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": m.per_day, "aria-valuenow": m.made_today }, h("i", { style: `width:${pct}%` })),
+        h("label", { class: "fx-mrow" }, "Trabaja con ", csAiSelect(m.ai_pref, async (v) => { await api("PATCH", `/api/factory/missions/${m.id}`, { ai_pref: v }); toast("IA de la producción cambiada: lo pendiente sigue con ella"); load(); })),
         h("p", { class: "fx-mrow" }, h("span", {}, h("b", {}, `${m.made_today}/${m.per_day}`), " hoy"), h("span", {}, h("b", {}, String(m.live_total)), " publicadas"), h("label", { class: "fx-per" }, per, " al día")),
         h("div", { class: "fx-acts" },
           h("button", { class: "fx-go small" + (m.active ? " ghost" : ""), type: "button", onclick: async () => { await api("PATCH", `/api/factory/missions/${m.id}`, { active: !m.active }); load(); } }, m.active ? "Parar" : "Reanudar"),
@@ -157,6 +158,9 @@ async function viewFactory(main) {
       p.kind === "memecoin" ? h("img", { class: "fx-dlogo", src: `/s/${p.slug}/logo`, alt: `Logo de ${p.name}`, width: 120, height: 120 }) : null,
       h("p", {}, p.spec.tagline || p.idea),
       h("div", { class: "fx-meta" }, ...[["Etapa", FX_STAGE_LABEL[p.stage]], ["Estado", FX_STATUS[p.status] || p.status], ["Puntuación", p.research.score ? `${p.research.score}/10` : "—"], ["Stack", p.stack], ["APIs", p.apis.join(", ") || "—"], ["Peso", `${p.html_kb} KB`], ["Repositorio", p.repo || "—"]].map(([k, v]) => h("div", {}, h("span", {}, k), h("b", {}, v)))),
+      h("label", { class: "fx-mrow" }, "IA de este proyecto ", csAiSelect(p.ai_pref, async (v) => {
+        await api("POST", `/api/factory/projects/${id}/ai`, { ai_pref: v, resume: true }); toast("El proyecto sigue con la IA elegida"); drawer?.remove(); drawer = null; load();
+      }), p.last_ai ? h("small", {}, ` · última: ${csAiLabel(p.last_ai)}`) : null),
       p.url && p.version ? h("div", { class: "fx-prev" }, h("iframe", { src: p.url, title: `Vista previa de ${p.name}`, sandbox: "allow-scripts allow-popups", loading: "lazy" }), h("a", { class: "fx-link", href: p.url, target: "_blank", rel: "noopener" }, `${p.url} ↗`)) : null,
       p.errors ? h("p", { class: "fx-err" }, p.errors) : null,
       h("div", { class: "fx-acts" }, act("retry", "Reintentar"), act("rebuild", "Reconstruir"), p.version > 1 ? act("rollback", "Volver a la versión anterior") : null, act("pause", "Pausar", "ghost"), act("delete", "Borrar", "ghost")),

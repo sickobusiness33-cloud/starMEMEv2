@@ -5,6 +5,14 @@
 "use strict";
 
 const CS_STAGE = { backlog: "En cola", research: "Idea", building: "Diseñando", testing: "Probando", security: "Seguridad", deploying: "Publicando", live: "Publicada", maintenance: "Publicada" };
+const CS_AI = [["auto", "IA automática"], ["claude", "Claude"], ["openai", "OpenAI"], ["gemini", "Gemini"], ["groq", "Groq"], ["cloudflare", "Cloudflare (gratis)"]];
+const CS_PROVIDER = { "claude": "Claude", "claude-byok": "Claude", "openai-byok": "OpenAI", "gemini-byok": "Gemini", "groq-byok": "Groq", "workers-ai": "Cloudflare" };
+const csAiLabel = (last) => { if (!last) return null; const [prov, model] = String(last).split(" · "); return `${CS_PROVIDER[prov] || prov} · ${String(model || "").replace(/^@cf\/[^/]+\//, "")}`; };
+function csAiSelect(value, onChange, label = "IA") {
+  const sel = h("select", { class: "cs-ai-sel", "aria-label": label }, CS_AI.map(([v, l]) => h("option", { value: v, selected: (value || "auto") === v ? true : null }, l)));
+  sel.addEventListener("change", () => onChange(sel.value));
+  return sel;
+}
 const CS_THEMES = ["Gatos samuráis", "Fútbol callejero", "Comida española", "Una IA rebelde", "Dinosaurios DJ", "Astronautas perezosos", "Ranas millonarias", "Vikingos del espacio"];
 
 async function viewCoins(main) {
@@ -38,10 +46,11 @@ async function viewCoins(main) {
     h("p", { class: "cs-hint" }, "Cada moneda sale con nombre, ticker, mascota, historia, tokenomics, roadmap, logo + 2 ilustraciones y su propia web de lanzamiento. Se repite sola cada día hasta que pulses Parar. Son conceptos: nada se lanza en una blockchain sin ti."));
   const missionsEl = h("section", { class: "cs-missions", "aria-label": "Producción en marcha" });
   const banner = h("div", { class: "cs-banner", role: "status", hidden: true });
+  const aiStrip = h("div", { class: "cs-ais", "aria-label": "Estado de las IAs" });
   const tabs = h("div", { class: "cs-tabs", role: "tablist" });
   const grid = h("div", { class: "cs-grid" });
   const feed = h("ol", { class: "cs-feed" });
-  root.append(head, banner, h("div", { class: "cs-top" }, composer, h("aside", { class: "cs-panel" }, h("h3", {}, "Taller en vivo"), feed)), missionsEl,
+  root.append(head, aiStrip, banner, h("div", { class: "cs-top" }, composer, h("aside", { class: "cs-panel" }, h("h3", {}, "Taller en vivo"), feed)), missionsEl,
     h("section", { class: "cs-gal" }, h("div", { class: "cs-gal-h" }, h("h2", {}, "Tus monedas"), tabs), grid));
 
   const img = (c, name = "logo", cls = "") => (c.images || []).includes(name)
@@ -50,9 +59,15 @@ async function viewCoins(main) {
 
   function render() {
     const d = data, t = d.totals;
+    aiStrip.replaceChildren(h("span", { class: "cs-ais-t" }, "IAs"), ...(d.ais || []).map((a) => h("span", { class: "cs-ai" + (a.available ? " on" : a.connected ? " warn" : ""), title: a.problem || (a.connected ? "Disponible" : "Sin conectar") },
+      h("i", { "aria-hidden": "true" }), a.label, h("small", {}, a.available ? "lista" : a.connected ? "sin saldo / en pausa" : "sin conectar"))),
+      h("a", { class: "cs-ai-link", href: "#/configuracion" }, "Conectar IAs →"));
+    const anyAi = (d.ais || []).some((a) => a.available);
     const failed = d.coins.filter((c) => c.status === "failed").length;
-    banner.hidden = d.free_quota !== false && !failed;
-    banner.replaceChildren(...(d.free_quota === false
+    banner.hidden = anyAi && !failed;
+    banner.replaceChildren(...(!anyAi
+      ? [h("b", {}, "Ninguna IA tiene saldo ahora mismo."), " Conecta tu clave gratuita de Gemini o Groq en Ajustes (o añade saldo a Claude/OpenAI) y la producción sigue sola en menos de 5 minutos."]
+      : d.free_quota === false && !failed
       ? [h("b", {}, "Cupo gratis de IA agotado por hoy."), " Las monedas pendientes siguen solas cuando se renueve (02:00, hora de España). Para no depender del cupo, añade créditos a tu clave de Claude u OpenAI en Ajustes."]
       : failed ? [h("b", {}, `${failed} moneda(s) no se pudieron terminar.`), " ", h("button", { type: "button", class: "cs-btn", onclick: async () => {
           for (const c of d.coins.filter((x) => x.status === "failed")) await api("POST", `/api/factory/projects/${c.id}/retry`).catch(() => {});
@@ -80,6 +95,7 @@ async function viewCoins(main) {
         h("p", { class: "cs-mstate" }, m.active ? (m.working ? "● Creando ahora" : "● Activa todos los días") : "○ Parada"),
         h("h3", {}, trunc(m.prompt, 70)),
         h("p", { class: "cs-msmall" }, `${m.live_total} publicadas en total`),
+        h("label", { class: "cs-ai-row" }, h("span", {}, "Trabaja con"), csAiSelect(m.ai_pref, async (v) => { await api("PATCH", `/api/factory/missions/${m.id}`, { ai_pref: v }); toast(`Producción pasada a ${CS_AI.find((x) => x[0] === v)[1]}: lo pendiente sigue con ella`); load(); })),
         h("div", { class: "cs-macts" },
           h("button", { type: "button", class: "cs-btn" + (m.active ? " ghost" : ""), onclick: async () => { await api("PATCH", `/api/factory/missions/${m.id}`, { active: !m.active }); toast(m.active ? "Producción parada" : "Producción reanudada"); load(); } }, m.active ? "Parar" : "Reanudar"),
           h("button", { type: "button", class: "cs-btn ghost", onclick: async () => {
@@ -96,6 +112,7 @@ async function viewCoins(main) {
       h("div", { class: "cs-coin-b" },
         h("div", { class: "cs-coin-t" }, h("h3", {}, c.name), c.ticker ? h("span", { class: "cs-tk" }, `$${c.ticker}`) : null),
         h("p", {}, trunc(c.tagline || c.idea, 96)),
+        c.last_ai || c.ai_pref ? h("p", { class: "cs-coin-ai" }, c.ai_pref && c.ai_pref !== "auto" ? `IA fijada: ${CS_AI.find((x) => x[0] === c.ai_pref)?.[1] || c.ai_pref}` : "IA automática", c.last_ai ? ` · última: ${csAiLabel(c.last_ai)}` : "") : null,
         h("div", { class: "cs-tags" }, c.quality ? h("span", {}, `★ ${Number(c.quality).toFixed(0)}/10`) : null, c.style ? h("span", {}, c.style) : null, c.chain ? h("span", {}, c.chain) : null),
         h("div", { class: "cs-coin-a" },
           isLive ? h("a", { class: "cs-btn", href: c.url, target: "_blank", rel: "noopener" }, "Ver web ↗") : null,
@@ -121,7 +138,17 @@ async function viewCoins(main) {
       coin.lore ? h("details", { class: "cs-det", open: true }, h("summary", {}, "Historia"), h("p", {}, coin.lore)) : null,
       p.url && p.version ? h("div", { class: "cs-prev" }, h("iframe", { src: p.url, title: `Web de ${p.name}`, sandbox: "allow-scripts allow-popups", loading: "lazy" }), h("a", { class: "cs-btn", href: p.url, target: "_blank", rel: "noopener" }, "Abrir la web ↗")) : null,
       p.errors ? h("p", { class: "cs-err" }, p.errors) : null,
-      h("div", { class: "cs-macts" }, act("rebuild", "Rehacer mejor"), p.status === "failed" ? act("retry", "Reintentar") : null, act("delete", "Borrar", "ghost")),
+      h("div", { class: "cs-aibox" },
+        h("b", {}, "Inteligencia artificial"),
+        h("p", { class: "cs-msmall" }, c.last_ai ? `Último paso hecho con ${csAiLabel(c.last_ai)}.` : "Todavía no ha trabajado ninguna IA en esta moneda."),
+        h("label", { class: "cs-ai-row" }, h("span", {}, "Continuar con"), csAiSelect(p.ai_pref, async (v) => {
+          await api("POST", `/api/factory/projects/${id}/ai`, { ai_pref: v, resume: true });
+          toast(`Esta moneda sigue con ${CS_AI.find((x) => x[0] === v)[1]}`); drawer?.remove(); drawer = null; load();
+        })),
+        h("p", { class: "cs-msmall" }, "Si la IA elegida falla o no tiene saldo, la moneda sigue sola con la siguiente disponible.")),
+      h("div", { class: "cs-macts" },
+        ["live", "maintenance"].includes(p.stage) ? null : p.status === "paused" ? act("retry", "Continuar") : act("pause", "Pausar", "ghost"),
+        act("rebuild", "Rehacer mejor"), p.status === "failed" ? act("retry", "Reintentar") : null, act("delete", "Borrar", "ghost")),
       h("details", { class: "cs-det" }, h("summary", {}, "Cómo se hizo"), h("ol", { class: "cs-feed" }, p.events.map((e) => h("li", { class: `k-${e.kind}` }, h("time", {}, fmtTime(e.created_at)), h("b", {}, e.agent), " ", e.message)))));
     root.append(drawer);
   }

@@ -21,12 +21,16 @@ import { openaiImage, openaiText } from "./adapters/openai";
 import { hasImages, type ChatMsg, type ImageCall, type TextOut } from "./adapters/types";
 import { workersImage, workersText } from "./adapters/workersai";
 import { RouterError } from "./errors";
-import { FREE_CHAINS, MODEL_MAP, type Capability, type ModelInfo } from "./models";
+import { EXT_MODELS, FREE_CHAINS, MODEL_MAP, type Capability, type ModelInfo } from "./models";
 
 export { RouterError };
 export type { ChatMsg };
 
-export type ProviderKind = "claude" | "claude-byok" | "openai-byok" | "workers-ai";
+export type ProviderKind = "claude" | "claude-byok" | "openai-byok" | "gemini-byok" | "groq-byok" | "workers-ai";
+/** IA preferida para una tarea (misión o proyecto). «auto» = orden normal con respaldo. */
+export type AiPin = "auto" | "claude" | "openai" | "gemini" | "groq" | "cloudflare";
+export const AI_PINS: AiPin[] = ["auto", "claude", "openai", "gemini", "groq", "cloudflare"];
+const PIN_PROVIDERS: Record<Exclude<AiPin, "auto">, ProviderKind[]> = { claude: ["claude", "claude-byok"], openai: ["openai-byok"], gemini: ["gemini-byok"], groq: ["groq-byok"], cloudflare: ["workers-ai"] };
 export type Source = "platform" | "user_api" | "free";
 export const DEFAULT_PRIORITY: Source[] = ["platform", "user_api", "free"];
 
@@ -46,6 +50,8 @@ export interface GenerateRequest {
   model?: string;
   /** Tarea interna ligera (planificar, revisar): usa primero el modelo gratuito más barato. */
   cheap?: boolean;
+  /** IA fijada para esta tarea: va primera; si falla, se sigue con las demás (nunca se queda parada). */
+  pin?: AiPin | null;
 }
 
 export interface CallContext {
@@ -84,6 +90,41 @@ interface Candidate {
   model: ModelInfo;
   modelId: string;
   apiKey?: string;
+  baseUrl?: string;
+  vendor?: "openai" | "gemini" | "groq";
+}
+
+// Claves propias que fallan por saldo o clave inválida se apartan un rato (no se pierde tiempo en cada llamada).
+const byokKey = (userId: number, provider: string) => `byok:${userId}:${provider}`;
+function byokFailure(raw: string): number {
+  const low = raw.toLowerCase();
+  if (/credit|billing|balance|insufficient|quota|exceeded your current|no credits/.test(low)) return 30 * 60;
+  if (/\b401\b|\b403\b|invalid api key|api key not valid|unauthorized|permission/.test(low)) return 60 * 60;
+  if (/\b429\b|rate limit|too many/.test(low)) return 60;
+  return 0;
+}
+const extBase = (env: Env, vendor: "gemini" | "groq") =>
+  (vendor === "gemini" ? env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai" : env.GROQ_BASE_URL || "https://api.groq.com/openai/v1").replace(/\/$/, "");
+
+/** Gemini y Groq (claves gratuitas): se usan siempre que estén guardadas, sin necesidad de «Usar mi API». */
+async function externalFree(env: Env, userId: number): Promise<Candidate[]> {
+  const out: Candidate[] = [];
+  for (const vendor of ["gemini", "groq"] as const) {
+    const key = await storedKey(env, userId, vendor);
+    if (!key || !(await healthy(env.DB, byokKey(userId, `${vendor}-byok`)))) continue;
+    for (const id of EXT_MODELS[vendor]) {
+      const m = MODEL_MAP.get(id);
+      if (m && (await healthy(env.DB, modelKey(`${vendor}:${id}`)))) out.push({ provider: `${vendor}-byok`, model: m, modelId: id, apiKey: key, baseUrl: extBase(env, vendor), vendor });
+    }
+  }
+  return out;
+}
+
+/** La IA fijada va primera (estable); las demás quedan detrás como respaldo. */
+function applyPin(list: Candidate[], pin?: AiPin | null): Candidate[] {
+  if (!pin || pin === "auto") return list;
+  const want = PIN_PROVIDERS[pin] ?? [];
+  return [...list.filter((c) => want.includes(c.provider)), ...list.filter((c) => !want.includes(c.provider))];
 }
 
 // --- salud de proveedores -----------------------------------------------------------
@@ -183,11 +224,13 @@ async function buildCandidates(ctx: CallContext, req: GenerateRequest, notices: 
   const [anthropicKey, openaiKey] = settings.use_my_api
     ? await Promise.all([storedKey(env, ctx.userId, "anthropic"), storedKey(env, ctx.userId, "openai")])
     : ["", ""];
-  if (anthropicKey) user.push({ provider: "claude-byok", model: claudeInfo(claudeId), modelId: claudeId, apiKey: anthropicKey });
-  if (openaiKey) {
+  const okUser = async (prov: string) => healthy(env.DB, byokKey(ctx.userId, prov));
+  if (anthropicKey && (await okUser("claude-byok"))) user.push({ provider: "claude-byok", model: claudeInfo(claudeId), modelId: claudeId, apiKey: anthropicKey });
+  if (openaiKey && (await okUser("openai-byok"))) {
     const m = MODEL_MAP.get("gpt-5-mini")!;
     user.push({ provider: "openai-byok", model: m, modelId: m.id, apiKey: openaiKey });
   }
+  const ext = await externalFree(env, ctx.userId);
   const free: Candidate[] = [];
   const quotaOk = await freeQuotaAvailable(env.DB);
   const chain = req.cheap ? [env.FREE_MODEL_FALLBACK || "@cf/meta/llama-3.1-8b-instruct-fp8", ...(FREE_CHAINS[capability] ?? FREE_CHAINS.chat)] : FREE_CHAINS[capability] ?? FREE_CHAINS.chat;
@@ -195,13 +238,13 @@ async function buildCandidates(ctx: CallContext, req: GenerateRequest, notices: 
     // Cupo gratis agotado: si el usuario tiene claves guardadas se usan como respaldo (aunque «Usar mi API» esté apagado).
     if (!user.length) {
       const [ak, ok] = await Promise.all([storedKey(env, ctx.userId, "anthropic"), storedKey(env, ctx.userId, "openai")]);
-      if (ak) user.push({ provider: "claude-byok", model: claudeInfo(claudeId), modelId: claudeId, apiKey: ak });
-      if (ok) { const m = MODEL_MAP.get("gpt-5-mini")!; user.push({ provider: "openai-byok", model: m, modelId: m.id, apiKey: ok }); }
+      if (ak && (await okUser("claude-byok"))) user.push({ provider: "claude-byok", model: claudeInfo(claudeId), modelId: claudeId, apiKey: ak });
+      if (ok && (await okUser("openai-byok"))) { const m = MODEL_MAP.get("gpt-5-mini")!; user.push({ provider: "openai-byok", model: m, modelId: m.id, apiKey: ok }); }
       if (user.length) notices.push("Cupo gratuito de Cloudflare AI agotado por hoy · usando tu API");
     }
-    const list = [...platform, ...user];
+    const list = [...platform, ...user, ...ext];
     if (!list.length) throw new RouterError(QUOTA_MESSAGE, "free_quota");
-    return list;
+    return applyPin(list, req.pin);
   }
   for (const id of [...chain, ...FREE_CHAINS.chat]) {
     const m = MODEL_MAP.get(id);
@@ -216,7 +259,7 @@ async function buildCandidates(ctx: CallContext, req: GenerateRequest, notices: 
   // Orden de fuentes: el del usuario; «USE MY API» adelanta su API.
   // Orden de fuentes configurable por el usuario (por defecto: plataforma → su API → gratis).
   const order: Source[] = settings.priority;
-  const bySource: Record<Source, Candidate[]> = { platform, user_api: user, free };
+  const bySource: Record<Source, Candidate[]> = { platform, user_api: user, free: [...ext, ...free] };
   const premiumSources = order.filter((s) => s !== "free");
   const premium = premiumSources.flatMap((s) => bySource[s]);
 
@@ -241,8 +284,9 @@ async function buildCandidates(ctx: CallContext, req: GenerateRequest, notices: 
     list = req.allowFallback ? order.flatMap((s) => bySource[s]) : premium;
   } else {
     // La tarea prefiere modelos gratuitos: gratis primero, salvo que el usuario ponga su API delante.
-    list = order.indexOf("user_api") < order.indexOf("free") ? [...user, ...free] : [...free, ...user];
+    list = order.indexOf("user_api") < order.indexOf("free") ? [...user, ...ext, ...free] : [...ext, ...free, ...user];
   }
+  list = applyPin(list, req.pin);
 
   // Modelo pedido explícitamente (modo manual / manifiesto): primero, si es accesible.
   if (req.model) {
@@ -261,7 +305,7 @@ async function buildCandidates(ctx: CallContext, req: GenerateRequest, notices: 
 // --- llamadas ------------------------------------------------------------------------------
 
 async function callText(ctx: CallContext, c: Candidate, req: GenerateRequest): Promise<TextOut> {
-  const call = { env: ctx.env, model: c.model, modelId: c.modelId, system: req.system, messages: req.messages, maxTokens: req.maxTokens, apiKey: c.apiKey, signal: ctx.signal };
+  const call = { env: ctx.env, model: c.model, modelId: c.modelId, system: req.system, messages: req.messages, maxTokens: req.maxTokens, apiKey: c.apiKey, signal: ctx.signal, baseUrl: c.baseUrl, vendor: c.vendor };
   if (c.model.adapter === "anthropic") return anthropicText(call);
   if (c.model.adapter === "openai") return openaiText(call);
   return workersText(call);
@@ -348,7 +392,19 @@ export async function generate(ctx: CallContext, req: GenerateRequest): Promise<
       const raw = err instanceof Error ? err.message : String(err);
       await recordUsage(ctx, c.provider, c.modelId, i > 0, false, raw, ms);
       const more = i + 1 < list.length;
-      if (c.provider === "claude" || c.provider === "claude-byok") {
+      if (c.provider === "claude-byok" || c.provider === "openai-byok" || c.provider === "gemini-byok" || c.provider === "groq-byok") {
+        const cd = byokFailure(raw);
+        if (cd) await coolDown(ctx.env.DB, byokKey(ctx.userId, c.provider), cd, raw);
+      }
+      if ((c.provider === "gemini-byok" || c.provider === "groq-byok") && /\b404\b|not found|does not exist|decommissioned/i.test(raw)) {
+        await coolDown(ctx.env.DB, modelKey(`${c.vendor}:${c.modelId}`), 6 * 3600, raw);
+      }
+      if (c.provider === "gemini-byok" || c.provider === "groq-byok") {
+        // Clave inválida o sin cupo: el resto de modelos de ese proveedor tampoco responderá ahora.
+        if (byokFailure(raw) >= 30 * 60) list.splice(i + 1, list.length, ...list.slice(i + 1).filter((x) => x.provider !== c.provider));
+        if (more) notices.push(`${c.vendor === "gemini" ? "Gemini" : "Groq"} no respondió · probando otra IA`);
+        lastError = redact(raw).slice(0, 200);
+      } else if (c.provider === "claude" || c.provider === "claude-byok") {
         const f = claudeFailure(err);
         if (c.provider === "claude" && f.cooldown) await coolDown(ctx.env.DB, CLAUDE_HEALTH_KEY, f.cooldown, f.message);
         if (more) notices.push(c.provider === "claude" ? `${f.message} · usando modelo de respaldo` : `Tu clave de Claude falló (${f.message}) · usando respaldo`);

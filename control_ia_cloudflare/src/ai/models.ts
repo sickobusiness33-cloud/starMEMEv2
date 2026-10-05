@@ -45,6 +45,14 @@ export const MODELS: ModelInfo[] = [
   // --- Texto · OpenAI (solo con la API del usuario) ---
   { id: "gpt-5-mini", label: "GPT-5 mini (tu API)", adapter: "openai", kind: "text", capabilities: ["chat", "code", "reasoning", "vision"], license: "Servicio comercial (tu cuenta de OpenAI)", source: "user" },
 
+  // --- Texto · Google Gemini y Groq (claves gratuitas del usuario, API compatible con OpenAI) ---
+  { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (tu clave)", adapter: "openai", kind: "text", capabilities: ["chat", "code", "reasoning", "vision"], license: "Servicio comercial (tu cuenta de Google AI Studio)", source: "user" },
+  { id: "gemini-flash-latest", label: "Gemini Flash · última (tu clave)", adapter: "openai", kind: "text", capabilities: ["chat", "code", "reasoning", "vision"], license: "Servicio comercial (tu cuenta de Google AI Studio)", source: "user" },
+  { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash (tu clave)", adapter: "openai", kind: "text", capabilities: ["chat", "code", "reasoning", "vision"], license: "Servicio comercial (tu cuenta de Google AI Studio)", source: "user" },
+  { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B · Groq (tu clave)", adapter: "openai", kind: "text", capabilities: ["chat", "code", "reasoning"], license: "Llama 3.3 Community License (servicio de Groq)", source: "user" },
+  { id: "openai/gpt-oss-120b", label: "gpt-oss 120B · Groq (tu clave)", adapter: "openai", kind: "text", capabilities: ["chat", "code", "reasoning"], license: "Apache-2.0 (servicio de Groq)", source: "user" },
+  { id: "llama-3.1-8b-instant", label: "Llama 3.1 8B · Groq (tu clave)", adapter: "openai", kind: "text", capabilities: ["chat", "code"], license: "Llama 3.1 Community License (servicio de Groq)", source: "user" },
+
   // --- Imagen · Workers AI ---
   { id: "@cf/black-forest-labs/flux-1-schnell", label: "FLUX.1 [schnell]", adapter: "workers-ai", kind: "image", capabilities: ["t2i"], license: "Apache-2.0", attribution: "Black Forest Labs", source: "free", format: "flux", maxSize: 1024 },
   { id: "@cf/bytedance/stable-diffusion-xl-lightning", label: "SDXL Lightning", adapter: "workers-ai", kind: "image", capabilities: ["t2i"], license: "CreativeML Open RAIL++-M", attribution: "ByteDance · Stability AI", source: "free", format: "sd", maxSize: 1024, notes: "Licencia con restricciones de uso (OpenRAIL): prohibido usarla para fines dañinos o ilegales." },
@@ -56,6 +64,12 @@ export const MODELS: ModelInfo[] = [
 ];
 
 export const MODEL_MAP = new Map(MODELS.map((m) => [m.id, m]));
+
+/** Modelos de cada proveedor externo gratuito, en orden de preferencia (si uno no existe o falla, el siguiente). */
+export const EXT_MODELS: Record<"gemini" | "groq", string[]> = {
+  gemini: ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash"],
+  groq: ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "llama-3.1-8b-instant"],
+};
 
 /** Cadena de respaldo gratuita por capacidad (orden = preferencia). */
 export const FREE_CHAINS: Record<Capability, string[]> = {

@@ -7,7 +7,7 @@
 // Corre en la cola + cron de Cloudflare: funciona sin navegador abierto.
 
 import { RouterError } from "../ai/errors";
-import { generate, isQuotaError, routeImage, type CallContext } from "../ai/router";
+import { AI_PINS, generate, isQuotaError, routeImage, type AiPin, type CallContext } from "../ai/router";
 import { bytesToB64 } from "../b64";
 import { instantiate } from "../connectors";
 import type { GitHubConnector } from "../connectors/github";
@@ -107,8 +107,11 @@ function closeJson(s: string): string {
 }
 const SAFE = "Nunca inventes métricas, cifras de usuarios, testimonios ni precios: si algo depende de datos, la web los cargará en vivo de APIs reales. Nada de promesas de rentabilidad.";
 
-async function ask(env: Env, userId: number, role: string, projectId: number, system: string, prompt: string, opts: { maxTokens?: number; capability?: "chat" | "reasoning" | "code"; cheap?: boolean; premium?: boolean } = {}) {
-  const res = await generate(await ctx(env, userId, role, projectId), {
+export const asPin = (v: unknown): AiPin | null => (AI_PINS.includes(v as AiPin) && v !== "auto" ? (v as AiPin) : null);
+async function ask(env: Env, userId: number, role: string, projectId: number, system: string, prompt: string, opts: { maxTokens?: number; capability?: "chat" | "reasoning" | "code"; cheap?: boolean; premium?: boolean; pin?: AiPin | null } = {}) {
+  // IA elegida para este proyecto (se lee en cada paso: si la cambias a mitad, el siguiente paso ya usa la nueva).
+  const pin = opts.pin !== undefined ? opts.pin : projectId > 0 ? asPin((await one<any>(env.DB, "SELECT ai_pref FROM fx_projects WHERE id = ?", projectId))?.ai_pref) : null;
+  const res = await generate(await ctx(env, userId, role, projectId), { pin,
     system: `[factory:${role}] ${system}\n${SAFE}\nResponde SOLO con un JSON válido.`,
     messages: [{ role: "user", content: prompt }], maxTokens: opts.maxTokens ?? 1600,
     prefer: opts.premium ? "premium" : "free", allowFallback: true, capability: opts.capability ?? "chat", cheap: opts.cheap,
@@ -119,7 +122,7 @@ async function ask(env: Env, userId: number, role: string, projectId: number, sy
     const again = await generate(await ctx(env, userId, role, projectId), {
       system: `[factory:${role}] ${system}\n${SAFE}\nResponde SOLO con un JSON válido y compacto (sin markdown, sin comentarios, textos breves).`,
       messages: [{ role: "user", content: prompt }], maxTokens: opts.maxTokens ?? 1600,
-      prefer: "free", allowFallback: true, capability: "chat",
+      prefer: "free", allowFallback: true, capability: "chat", pin,
     });
     json = parseJson(again.text);
     if (json) return { json, model: again.model, provider: again.provider };
@@ -142,7 +145,7 @@ async function marketContext(env: Env, niche: string): Promise<string> {
   }
 }
 
-export async function ideate(env: Env, userId: number, niche: string, count: number, hint = "", missionId: number | null = null): Promise<number> {
+export async function ideate(env: Env, userId: number, niche: string, count: number, hint = "", missionId: number | null = null, pin: AiPin | null = null): Promise<number> {
   await ensureFactorySchema(env.DB);
   niche = NICHES.includes(niche) ? niche : "other";
   const existing = await all<any>(env.DB, "SELECT name FROM fx_projects WHERE user_id = ? AND niche = ? ORDER BY id DESC LIMIT 60", userId, niche);
@@ -152,7 +155,7 @@ export async function ideate(env: Env, userId: number, niche: string, count: num
     "Eres el agente Research de una fábrica de productos web. Propones micro-SaaS/herramientas web útiles, concretas y diferenciadas que se puedan construir con los widgets disponibles.",
     `Nicho: ${niche}. ${hint ? `Indicación del dueño: ${hint}.` : ""}\n${await marketContext(env, niche)}\nWidgets disponibles (la web DEBE basarse en ellos): ${widgets.join(", ")}.\nYa existen (no repitas): ${existing.map((e) => e.name).join(", ") || "ninguno"}.\n` +
     `Propón ${count} ideas distintas. JSON: {"ideas":[{"name":"nombre de marca corto y original","idea":"qué problema resuelve y para quién, 1-2 frases","widgets":["..."]}]}`,
-    { capability: "reasoning", premium: true, maxTokens: 1400 });
+    { capability: "reasoning", premium: true, maxTokens: 1400, pin });
   let created = 0;
   for (const it of (Array.isArray(json?.ideas) ? json.ideas : []).slice(0, count)) {
     const name = String(it?.name ?? "").replace(/[<>]/g, "").trim().slice(0, 40);
@@ -160,15 +163,15 @@ export async function ideate(env: Env, userId: number, niche: string, count: num
     if (name.length < 3 || idea.length < 10) continue;
     let slug = slugify(name);
     if (await one(env.DB, "SELECT 1 FROM fx_projects WHERE slug = ?", slug)) slug = `${slug}-${Date.now().toString(36).slice(-4)}`;
-    const ins = await env.DB.prepare("INSERT OR IGNORE INTO fx_projects (user_id, slug, name, niche, idea, dedupe_key, stage, status, priority, research_json, mission_id, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'backlog', 'queued', ?, ?, ?, 'website', ?, ?)")
-      .bind(userId, slug, name, niche, idea, norm(name), niche === "crypto" || niche === "ai" ? 8 : 5, dumps({ widgets: Array.isArray(it.widgets) ? it.widgets.slice(0, 4) : [] }), missionId, nowIso(), nowIso()).run();
+    const ins = await env.DB.prepare("INSERT OR IGNORE INTO fx_projects (user_id, slug, name, niche, idea, dedupe_key, stage, status, priority, research_json, mission_id, kind, ai_pref, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'backlog', 'queued', ?, ?, ?, 'website', ?, ?, ?)")
+      .bind(userId, slug, name, niche, idea, norm(name), niche === "crypto" || niche === "ai" ? 8 : 5, dumps({ widgets: Array.isArray(it.widgets) ? it.widgets.slice(0, 4) : [] }), missionId, pin, nowIso(), nowIso()).run();
     if (ins.meta.changes) { created++; await fxEmit(env, userId, Number(ins.meta.last_row_id), "backlog", "research", "idea", `Nueva idea: ${name} — ${idea.slice(0, 160)}`); }
   }
   return created;
 }
 
 // ------------------------------------------------------------------ meme coins (concepto + logo; nunca se despliega on-chain sin el dueño)
-export async function ideateCoins(env: Env, userId: number, prompt: string, count: number, missionId: number | null): Promise<number> {
+export async function ideateCoins(env: Env, userId: number, prompt: string, count: number, missionId: number | null, pin: AiPin | null = null): Promise<number> {
   await ensureFactorySchema(env.DB);
   const existing = await all<any>(env.DB, "SELECT name, json_extract(research_json, '$.ticker') AS ticker FROM fx_projects WHERE user_id = ? AND kind = 'memecoin' ORDER BY id DESC LIMIT 120", userId);
   await fxEmit(env, userId, null, "backlog", "research", "start", `Inventando ${count} meme coin(s) nuevas («${prompt.slice(0, 80)}»).`);
@@ -176,7 +179,7 @@ export async function ideateCoins(env: Env, userId: number, prompt: string, coun
     "Eres el director creativo de un estudio top de meme coins. Inventas conceptos muy originales, graciosos y con potencial viral sobre CUALQUIER temática que te pidan (animales, deportes, comida, IA, historia, cultura pop genérica…): una mascota con personalidad, un chiste central fácil de entender y algo que la comunidad quiera repetir. Nada de nombres genéricos ni copias de monedas existentes; sin marcas ni personas reales; sin prometer rentabilidad.",
     `Orden del dueño: ${prompt}\n${await marketContext(env, "crypto")}\nYa existen (no repitas nombre ni ticker): ${existing.map((e) => `${e.name} ($${e.ticker ?? "?"})`).join(", ") || "ninguna"}.\n` +
     `Propón ${count} meme coins distintas. JSON: {"coins":[{"name":"nombre corto y pegadizo","ticker":"3-6 letras","idea":"la mascota y el chiste en 1-2 frases"}]}`,
-    { capability: "reasoning", premium: true, maxTokens: 1200 });
+    { capability: "reasoning", premium: true, maxTokens: 1200, pin });
   let created = 0;
   for (const it of (Array.isArray(json?.coins) ? json.coins : []).slice(0, count)) {
     const name = String(it?.name ?? "").replace(/[<>]/g, "").trim().slice(0, 40);
@@ -186,8 +189,8 @@ export async function ideateCoins(env: Env, userId: number, prompt: string, coun
     if (existing.some((e) => String(e.ticker ?? "").toUpperCase() === ticker)) continue;
     let slug = slugify(`${name}-coin`);
     if (await one(env.DB, "SELECT 1 FROM fx_projects WHERE slug = ?", slug)) slug = `${slug}-${Date.now().toString(36).slice(-4)}`;
-    const ins = await env.DB.prepare("INSERT OR IGNORE INTO fx_projects (user_id, slug, name, niche, idea, dedupe_key, stage, status, priority, research_json, mission_id, kind, created_at, updated_at) VALUES (?, ?, ?, 'crypto', ?, ?, 'backlog', 'queued', 8, ?, ?, 'memecoin', ?, ?)")
-      .bind(userId, slug, name, idea, `coin ${norm(ticker)}`, dumps({ ticker, theme: prompt.slice(0, 160) }), missionId, nowIso(), nowIso()).run();
+    const ins = await env.DB.prepare("INSERT OR IGNORE INTO fx_projects (user_id, slug, name, niche, idea, dedupe_key, stage, status, priority, research_json, mission_id, kind, ai_pref, created_at, updated_at) VALUES (?, ?, ?, 'crypto', ?, ?, 'backlog', 'queued', 8, ?, ?, 'memecoin', ?, ?, ?)")
+      .bind(userId, slug, name, idea, `coin ${norm(ticker)}`, dumps({ ticker, theme: prompt.slice(0, 160) }), missionId, pin, nowIso(), nowIso()).run();
     if (ins.meta.changes) { created++; existing.push({ name, ticker }); await fxEmit(env, userId, Number(ins.meta.last_row_id), "backlog", "research", "idea", `Nueva meme coin: ${name} ($${ticker}) — ${idea.slice(0, 160)}`); }
   }
   return created;
@@ -197,16 +200,40 @@ const COIN_SCHEMA = `{"name":"nombre de marca pegadizo (2-18 caracteres)","ticke
 Reglas: "style" es uno de sticker|neon|pastel|luxe (el que mejor encaje con la temática); "chain" uno de Solana|Base|Ethereum|BNB Chain|TON; "fonts" uno de unbounded|syne|bricolage|grotesk|sora|outfit|fraunces|archivo; los colores son tuyos (los del ejemplo son solo formato) y deben encajar con la temática; los pct suman 100. Textos concisos: no repitas el esquema.`;
 
 /** Una imagen con FLUX (gratis en Workers AI). Devuelve false si falla (salvo cupo agotado: entonces lanza). */
-async function coinImage(env: Env, p: any, name: string, prompt: string): Promise<string | null> {
+async function coinImage(env: Env, p: any, name: string, prompt: string, brand?: { accent?: string; bg?: string; ticker?: string; name?: string }): Promise<string | null> {
+  const save = (mime: string, b64: string, model: string) =>
+    run(env.DB, "INSERT OR REPLACE INTO fx_assets (project_id, name, mime, data_b64, model, created_at) VALUES (?, ?, ?, ?, ?, ?)", p.id, name, mime, b64, model, nowIso());
+  let why = "";
   try {
     const img = await routeImage(await ctx(env, p.user_id, "logo", p.id), { mode: "t2i", width: 768, height: 768, prompt: prompt.slice(0, 1800) });
-    await run(env.DB, "INSERT OR REPLACE INTO fx_assets (project_id, name, mime, data_b64, model, created_at) VALUES (?, ?, ?, ?, ?, ?)", p.id, name, img.mime, bytesToB64(img.bytes), img.model, nowIso());
+    await save(img.mime, bytesToB64(img.bytes), img.model);
     return img.model;
-  } catch (err) {
-    if (name === "logo" || (err instanceof RouterError && err.code === "free_quota")) throw err;
-    await fxEmit(env, p.user_id, p.id, "building", "uiux", "error", `Imagen «${name}» no generada: ${(err as Error).message.slice(0, 160)}`);
-    return null;
+  } catch (err) { why = (err as Error).message; }
+  // Respaldo 1: Pollinations (FLUX, gratuito y sin clave) si Cloudflare no tiene cupo.
+  if (env.AI_MODE !== "mock") {
+    try {
+      const r = await fetch(`https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.slice(0, 700))}?width=768&height=768&nologo=true&model=flux&seed=${p.id * 7 + name.length}`, { signal: AbortSignal.timeout(60_000) });
+      const mime = (r.headers.get("content-type") || "").split(";")[0];
+      if (r.ok && /^image\/(png|jpeg|webp)$/.test(mime)) {
+        const bytes = new Uint8Array(await r.arrayBuffer());
+        if (bytes.length > 2000) { await save(mime, bytesToB64(bytes), "pollinations/flux"); return "pollinations/flux"; }
+      }
+    } catch { /* siguiente respaldo */ }
   }
+  // Respaldo 2 (solo logo): emblema vectorial con los colores de la marca. La moneda nunca se queda sin logo.
+  if (name === "logo") {
+    const esc = (x: string) => x.replace(/[&<>"']/g, "");
+    const accent = /^#[0-9a-f]{6}$/i.test(brand?.accent ?? "") ? brand!.accent! : "#ffb020";
+    const bg = /^#[0-9a-f]{6}$/i.test(brand?.bg ?? "") ? brand!.bg! : "#0b0a12";
+    const t = esc((brand?.ticker || p.name || "?").slice(0, 6).toUpperCase());
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><defs><radialGradient id="g" cx="35%" cy="30%" r="80%"><stop offset="0" stop-color="${accent}"/><stop offset="1" stop-color="${bg}"/></radialGradient></defs><rect width="512" height="512" fill="${bg}"/><circle cx="256" cy="256" r="236" fill="url(#g)"/><circle cx="256" cy="256" r="200" fill="none" stroke="${bg}" stroke-opacity=".35" stroke-width="10" stroke-dasharray="6 14"/><text x="256" y="${t.length > 4 ? 290 : 300}" text-anchor="middle" font-family="Arial Black,Arial,sans-serif" font-weight="900" font-size="${t.length > 4 ? 96 : 128}" fill="${bg}">$${t}</text></svg>`;
+    await save("image/svg+xml", btoa(unescape(encodeURIComponent(svg))), "emblema-svg");
+    await fxEmit(env, p.user_id, p.id, "building", "uiux", "error", `Sin IA de imagen disponible (${why.slice(0, 120)}): logo provisional generado. Pulsa «Rehacer» cuando haya cupo para dibujarlo.`);
+    return "emblema-svg";
+  }
+  if (why && /cupo|quota|4006/i.test(why)) return null;
+  await fxEmit(env, p.user_id, p.id, "building", "uiux", "error", `Imagen «${name}» no generada: ${why.slice(0, 160)}`);
+  return null;
 }
 
 /** Construye la meme coin como un estudio profesional: director creativo → editor crítico → arte (FLUX) → web de lanzamiento. */
@@ -237,7 +264,7 @@ async function buildCoin(env: Env, p: any) {
   const mascot = String(json.mascot ?? json.name ?? p.name).slice(0, 40);
   const look = (k: string, d: string) => String(json[k] ?? d).replace(/[\r\n]+/g, " ").slice(0, 600);
   await fxEmit(env, p.user_id, p.id, "building", "uiux", "start", "Ilustrador: logo, ilustración de la historia y meme (FLUX).");
-  const logoModel = await coinImage(env, p, "logo", `${look("logo_prompt", p.idea)}. Professional meme coin mascot logo, one character, centered, head and shoulders, inside a perfect round coin emblem with a thick rim, bold clean vector illustration, smooth shading, thick outlines, vibrant saturated colors, plain solid background, high contrast, iconic, sticker quality, no text, no letters, no watermark`);
+  const logoModel = await coinImage(env, p, "logo", `${look("logo_prompt", p.idea)}. Professional meme coin mascot logo, one character, centered, head and shoulders, inside a perfect round coin emblem with a thick rim, bold clean vector illustration, smooth shading, thick outlines, vibrant saturated colors, plain solid background, high contrast, iconic, sticker quality, no text, no letters, no watermark`, { accent: json.brand?.accent, bg: json.brand?.bg, ticker: json.ticker ?? r.ticker, name: json.name });
   const images = ["logo"];
   if (await coinImage(env, p, "art", `${look("art_prompt", `${mascot} adventure`)}. Featuring ${look("logo_prompt", mascot)}. Cinematic digital illustration, dynamic composition, rich colors, dramatic lighting, highly detailed, polished game key art style, no text, no watermark`)) images.push("art");
   if (await coinImage(env, p, "meme", `${look("meme_prompt", `${mascot} funny situation`)}. Featuring ${look("logo_prompt", mascot)}. Funny meme illustration, expressive exaggerated face, cartoon style, bold colors, clean background, internet meme vibe, no text, no letters, no watermark`)) images.push("meme");
@@ -270,7 +297,7 @@ export async function missionTick(env: Env, userId: number, onlyId?: number): Pr
     if (made >= m.per_day || open >= 3) continue;
     const n = Math.min(3 - open, m.per_day - made);
     try {
-      const created = m.kind === "memecoin" ? await ideateCoins(env, userId, m.prompt, n, m.id) : await ideate(env, userId, m.niche, n, m.prompt, m.id);
+      const created = m.kind === "memecoin" ? await ideateCoins(env, userId, m.prompt, n, m.id, asPin(m.ai_pref)) : await ideate(env, userId, m.niche, n, m.prompt, m.id, asPin(m.ai_pref));
       total += created;
       await run(env.DB, "UPDATE fx_missions SET last_at = ? WHERE id = ?", nowIso(), m.id);
       const q = await all<any>(env.DB, "SELECT id FROM fx_projects WHERE mission_id = ? AND stage = 'backlog' AND status = 'queued' ORDER BY id DESC LIMIT ?", m.id, Math.max(created, 1));

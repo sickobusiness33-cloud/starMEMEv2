@@ -1361,3 +1361,16 @@ body .plan-badge { border-radius: 999px; font-variant-numeric: tabular-nums; }
 body .topbar .btn.ghost { border: 0; }
 .cs-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 12px 16px; border-radius: 14px; border: 1px solid rgba(255,190,80,.35); background: rgba(255,190,80,.08); color: #ffe2b0; font-size: .92rem; text-wrap: pretty; }
 .cs-banner b { color: #fff3dc; }
+/* Coin Studio · IAs */
+.cs-ais { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.cs-ais-t { font: 600 .74rem var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--cs-m); margin-right: 4px; }
+.cs-ai { display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--cs-line); background: var(--cs-s); font: 600 .84rem var(--sans); color: var(--cs-t); }
+.cs-ai i { width: 8px; height: 8px; border-radius: 50%; background: #6b6680; }
+.cs-ai.on i { background: var(--cs-a); box-shadow: 0 0 0 3px rgba(198,255,61,.18); }
+.cs-ai.warn i { background: #ffb020; }
+.cs-ai small { font-weight: 500; color: var(--cs-m); }
+.cs-ai-link { color: var(--cs-t); font-size: .85rem; margin-left: 4px; }
+.cs-ai-row { display: flex; align-items: center; gap: 8px; font-size: .82rem; color: var(--cs-m); }
+.cs-ai-sel { min-height: 32px; padding: 0 8px; border-radius: 9px; border: 1px solid var(--cs-line); background: rgba(0,0,0,.3); color: var(--cs-t); font: 600 .84rem var(--sans); }
+.cs-coin-ai { font: 500 .76rem var(--sans) !important; color: var(--cs-m); }
+.cs-aibox { display: grid; gap: 8px; padding: 14px; border-radius: 14px; background: var(--cs-s); border: 1px solid var(--cs-line); }

@@ -7,9 +7,11 @@ function base(env: TextCall["env"]) {
   return (env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
 }
 
-async function errorOf(r: Response) {
+const VENDOR_NAME = { openai: "OpenAI", gemini: "Gemini", groq: "Groq" } as const;
+async function errorOf(r: Response, vendor: keyof typeof VENDOR_NAME = "openai") {
   const data: any = await r.json().catch(() => ({}));
-  return new Error(`OpenAI ${r.status}: ${data?.error?.message ?? r.statusText}`);
+  const msg = Array.isArray(data) ? data[0]?.error?.message : data?.error?.message;
+  return new Error(`${VENDOR_NAME[vendor]} ${r.status}: ${msg ?? r.statusText}`);
 }
 
 export async function openaiText(call: TextCall): Promise<TextOut> {
@@ -23,13 +25,22 @@ export async function openaiText(call: TextCall): Promise<TextOut> {
           : m.content.map((p) => (p.type === "text" ? { type: "text", text: p.text } : { type: "image_url", image_url: { url: `data:${p.mime};base64,${p.b64}` } })),
     })),
   ];
-  const r = await fetch(`${base(call.env)}/chat/completions`, {
+  const vendor = call.vendor ?? "openai";
+  const body: Record<string, unknown> = { model: call.modelId, messages };
+  if (vendor === "openai") body.max_completion_tokens = call.maxTokens;
+  else {
+    // Groq limita tokens por minuto en el plan gratuito: no se reservan más de 6.000 de salida.
+    body.max_tokens = vendor === "groq" ? Math.min(call.maxTokens, 6000) : call.maxTokens;
+    // Gemini 2.5+ «piensa» antes de responder: razonamiento bajo para que no se coma los tokens de la respuesta.
+    if (vendor === "gemini" && /2\.5|latest|-3/.test(call.modelId)) body.reasoning_effort = "low";
+  }
+  const r = await fetch(`${call.baseUrl ?? base(call.env)}/chat/completions`, {
     method: "POST",
     headers: { Authorization: `Bearer ${call.apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: call.modelId, messages, max_completion_tokens: call.maxTokens }),
+    body: JSON.stringify(body),
     signal: call.signal ?? AbortSignal.timeout(120_000),
   });
-  if (!r.ok) throw await errorOf(r);
+  if (!r.ok) throw await errorOf(r, vendor);
   const data: any = await r.json();
   return {
     text: data.choices?.[0]?.message?.content ?? "",

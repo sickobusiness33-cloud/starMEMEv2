@@ -156,3 +156,54 @@ def test_respuesta_cortada_se_repara_y_el_cupo_respeta_el_numero(api):
     # Con el cupo diario cumplido no se crean más (aunque fallaran)
     cs = api.get("/api/factory/coins").json()
     assert cs["missions"][0]["made_today"] == 2 and cs["totals"]["coins"] == 2
+
+
+MOCK_URL = "http://127.0.0.1:8799"
+
+
+def test_gemini_y_groq_respaldo_y_cambio_de_ia(api):
+    """Gemini y Groq (claves gratuitas) entran solas como respaldo; si una se queda sin cupo se pasa a la otra;
+    y se puede fijar/cambiar la IA de una producción o de un proyecto."""
+    mock_mode("ok")
+    for vid, key in (("gemini", "AIzaTestKey123456"), ("groq", "gsk_TestKey123456")):
+        r = api.put(f"/api/providers/{vid}/key", json={"api_key": key})
+        assert r.status_code == 200, r.text
+        assert api.post(f"/api/providers/{vid}/test").json()["ok"] is True
+    names = {p["id"]: p["name"] for p in api.get("/api/providers").json()}
+    assert names["gemini"] == "Google Gemini" and names["groq"] == "Groq"
+
+    # 1) Automático: Gemini responde primero (antes que el cupo de Cloudflare)
+    m = api.post("/api/factory/command", json={"text": "haz 1 crypto de nubes", "kind": "memecoin"}).json()["mission"]
+    ps = wait_live(api, 1)
+    assert ps[0]["stage"] == "live", ps
+    ext = httpx.get(MOCK_URL).json()["ext"]
+    assert any(e["vendor"] == "gemini" and e["model"] == "gemini-2.5-flash" and e["auth"].startswith("Bearer AIza") for e in ext), ext
+    cs = api.get("/api/factory/coins").json()
+    assert cs["coins"][0]["last_ai"].startswith("gemini-byok")
+    assert {a["id"]: a["available"] for a in cs["ais"]}["gemini"] is True
+
+    # 2) Gemini sin cupo → sigue solo con Groq, y Gemini queda apartado (sin cupo)
+    httpx.post(f"{MOCK_URL}/__mode", json={"mode": "ext-quota"})
+    api.post("/api/factory/command", json={"text": "haz 1 crypto de lluvia", "kind": "memecoin"})
+    ps = wait_live(api, 2)
+    assert all(p["stage"] == "live" for p in ps), ps
+    ext = httpx.get(MOCK_URL).json()["ext"]
+    assert any(e["vendor"] == "groq" for e in ext), ext
+    cs = api.get("/api/factory/coins").json()
+    assert {a["id"]: a["available"] for a in cs["ais"]}["gemini"] is False
+    assert any(c["last_ai"].startswith("groq-byok") for c in cs["coins"])
+
+    # 3) Fijar la IA: la producción y el proyecto pasan a Cloudflare
+    mock_mode("ok")
+    assert api.patch(f"/api/factory/missions/{m['id']}", json={"ai_pref": "cloudflare"}).status_code == 200
+    assert next(x for x in api.get("/api/factory/coins").json()["missions"] if x["id"] == m["id"])["ai_pref"] == "cloudflare"
+    pid = ps[0]["id"]
+    r = api.post(f"/api/factory/projects/{pid}/ai", json={"ai_pref": "groq"})
+    assert r.status_code == 200 and r.json()["ai_pref"] == "groq"
+    assert api.post(f"/api/factory/projects/{pid}/ai", json={"ai_pref": "nada-raro"}).json()["ai_pref"] is None
+    r = api.post("/api/factory/command", json={"text": "haz 1 crypto de volcanes", "kind": "memecoin", "ai_pref": "cloudflare"}).json()["mission"]
+    ps = wait_live(api, 3)
+    newest = max(ps, key=lambda p: p["id"])
+    assert newest["stage"] == "live"
+    cs = api.get("/api/factory/coins").json()
+    assert next(c for c in cs["coins"] if c["id"] == newest["id"])["last_ai"].startswith("workers-ai")

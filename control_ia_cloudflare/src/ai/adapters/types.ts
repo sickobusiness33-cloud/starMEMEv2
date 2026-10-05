@@ -21,6 +21,9 @@ export interface TextCall {
   maxTokens: number;
   apiKey?: string;
   signal?: AbortSignal;
+  /** API compatible con OpenAI de otro proveedor (Gemini, Groq). */
+  baseUrl?: string;
+  vendor?: "openai" | "gemini" | "groq";
 }
 
 export interface TextOut {
