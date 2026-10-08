@@ -5,11 +5,11 @@
 "use strict";
 
 const CS_STAGE = { backlog: "En cola", research: "Idea", building: "Diseñando", testing: "Probando", security: "Seguridad", deploying: "Publicando", live: "Publicada", maintenance: "Publicada" };
-const CS_AI = [["auto", "IA automática"], ["claude", "Claude"], ["openai", "OpenAI"], ["gemini", "Gemini"], ["groq", "Groq"], ["cloudflare", "Cloudflare (gratis)"]];
+const CS_AI = [["", "IA principal"], ["claude", "Claude"], ["gemini", "Gemini"], ["groq", "Groq"], ["openai", "OpenAI"], ["cloudflare", "Cloudflare (gratis)"], ["auto", "Automática (gratis primero)"]];
 const CS_PROVIDER = { "claude": "Claude", "claude-byok": "Claude", "openai-byok": "OpenAI", "gemini-byok": "Gemini", "groq-byok": "Groq", "workers-ai": "Cloudflare" };
 const csAiLabel = (last) => { if (!last) return null; const [prov, model] = String(last).split(" · "); return `${CS_PROVIDER[prov] || prov} · ${String(model || "").replace(/^@cf\/[^/]+\//, "")}`; };
 function csAiSelect(value, onChange, label = "IA") {
-  const sel = h("select", { class: "cs-ai-sel", "aria-label": label }, CS_AI.map(([v, l]) => h("option", { value: v, selected: (value || "auto") === v ? true : null }, l)));
+  const sel = h("select", { class: "cs-ai-sel", "aria-label": label }, CS_AI.map(([v, l]) => h("option", { value: v, selected: (value || "") === v ? true : null }, l)));
   sel.addEventListener("change", () => onChange(sel.value));
   return sel;
 }
@@ -59,7 +59,13 @@ async function viewCoins(main) {
 
   function render() {
     const d = data, t = d.totals;
-    aiStrip.replaceChildren(h("span", { class: "cs-ais-t" }, "IAs"), ...(d.ais || []).map((a) => h("span", { class: "cs-ai" + (a.available ? " on" : a.connected ? " warn" : ""), title: a.problem || (a.connected ? "Disponible" : "Sin conectar") },
+    aiStrip.replaceChildren(
+      h("label", { class: "cs-ai-row cs-ai-main" }, h("span", {}, "IA principal"), (() => {
+        const sel = h("select", { class: "cs-ai-sel", "aria-label": "IA principal" }, CS_AI.filter(([v]) => v).map(([v, l]) => h("option", { value: v, selected: (d.ai_default || "claude") === v ? true : null }, l)));
+        sel.addEventListener("change", async () => { await api("PUT", "/api/factory/settings", { ai_default: sel.value }); toast(`IA principal: ${sel.selectedOptions[0].textContent}. Si falla, sigue sola con las demás.`); load(); });
+        return sel;
+      })()),
+      h("span", { class: "cs-ais-t" }, "IAs"), ...(d.ais || []).map((a) => h("span", { class: "cs-ai" + (a.available ? " on" : a.connected ? " warn" : ""), title: a.problem || (a.connected ? "Disponible" : "Sin conectar") },
       h("i", { "aria-hidden": "true" }), a.label, h("small", {}, a.available ? "lista" : a.connected ? "sin saldo / en pausa" : "sin conectar"))),
       h("a", { class: "cs-ai-link", href: "#/configuracion" }, "Conectar IAs →"));
     const anyAi = (d.ais || []).some((a) => a.available);
@@ -95,7 +101,7 @@ async function viewCoins(main) {
         h("p", { class: "cs-mstate" }, m.active ? (m.working ? "● Creando ahora" : "● Activa todos los días") : "○ Parada"),
         h("h3", {}, trunc(m.prompt, 70)),
         h("p", { class: "cs-msmall" }, `${m.live_total} publicadas en total`),
-        h("label", { class: "cs-ai-row" }, h("span", {}, "Trabaja con"), csAiSelect(m.ai_pref, async (v) => { await api("PATCH", `/api/factory/missions/${m.id}`, { ai_pref: v }); toast(`Producción pasada a ${CS_AI.find((x) => x[0] === v)[1]}: lo pendiente sigue con ella`); load(); })),
+        h("label", { class: "cs-ai-row" }, h("span", {}, "Trabaja con"), csAiSelect(m.ai_pref, async (v) => { await api("PATCH", `/api/factory/missions/${m.id}`, { ai_pref: v }); toast(`Producción: ${CS_AI.find((x) => x[0] === v)[1]} · lo pendiente sigue con ella`); load(); })),
         h("div", { class: "cs-macts" },
           h("button", { type: "button", class: "cs-btn" + (m.active ? " ghost" : ""), onclick: async () => { await api("PATCH", `/api/factory/missions/${m.id}`, { active: !m.active }); toast(m.active ? "Producción parada" : "Producción reanudada"); load(); } }, m.active ? "Parar" : "Reanudar"),
           h("button", { type: "button", class: "cs-btn ghost", onclick: async () => {
@@ -112,7 +118,7 @@ async function viewCoins(main) {
       h("div", { class: "cs-coin-b" },
         h("div", { class: "cs-coin-t" }, h("h3", {}, c.name), c.ticker ? h("span", { class: "cs-tk" }, `$${c.ticker}`) : null),
         h("p", {}, trunc(c.tagline || c.idea, 96)),
-        c.last_ai || c.ai_pref ? h("p", { class: "cs-coin-ai" }, c.ai_pref && c.ai_pref !== "auto" ? `IA fijada: ${CS_AI.find((x) => x[0] === c.ai_pref)?.[1] || c.ai_pref}` : "IA automática", c.last_ai ? ` · última: ${csAiLabel(c.last_ai)}` : "") : null,
+        c.last_ai || c.ai_pref ? h("p", { class: "cs-coin-ai" }, c.ai_pref ? `IA fijada: ${CS_AI.find((x) => x[0] === c.ai_pref)?.[1] || c.ai_pref}` : "IA principal", c.last_ai ? ` · última: ${csAiLabel(c.last_ai)}` : "") : null,
         h("div", { class: "cs-tags" }, c.quality ? h("span", {}, `★ ${Number(c.quality).toFixed(0)}/10`) : null, c.style ? h("span", {}, c.style) : null, c.chain ? h("span", {}, c.chain) : null),
         h("div", { class: "cs-coin-a" },
           isLive ? h("a", { class: "cs-btn", href: c.url, target: "_blank", rel: "noopener" }, "Ver web ↗") : null,

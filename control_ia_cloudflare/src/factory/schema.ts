@@ -93,6 +93,8 @@ const FACTORY_ALTERS = [
   // IA elegida (auto | claude | openai | gemini | groq | cloudflare): por misión y por proyecto, cambiable en cualquier momento.
   "ALTER TABLE fx_projects ADD COLUMN ai_pref TEXT",
   "ALTER TABLE fx_missions ADD COLUMN ai_pref TEXT",
+  // IA principal de la fábrica para este usuario (por defecto Claude; si falla, respaldo automático).
+  "ALTER TABLE fx_settings ADD COLUMN ai_default TEXT NOT NULL DEFAULT 'claude'",
 ];
 
 let ready: Promise<void> | null = null;

@@ -58,6 +58,7 @@ class H(BaseHTTPRequestHandler):
             STATE["mode"] = body.get("mode", "ok")
             STATE["calls"] = 0
             STATE["ext"] = []
+            STATE["claude_roles"] = []
             return self._send(200, STATE)
         if self.path.endswith("/chat/completions"):
             vendor = self.path.strip("/").split("/")[0]
@@ -76,9 +77,14 @@ class H(BaseHTTPRequestHandler):
             return self._send(400, {"type": "error", "error": {"type": "invalid_request_error", "message": "Your credit balance is too low to access the Anthropic API."}})
         last = body["messages"][-1]["content"]
         text = last if isinstance(last, str) else json.dumps(last)
+        system = body.get("system", "")
+        if isinstance(system, list):
+            system = " ".join(b.get("text", "") for b in system if isinstance(b, dict))
+        STATE.setdefault("claude_roles", []).append(system[:24])
+        reply = ext_reply(system, text) if "[factory:coin" in system else f"[claude mock {body['model']}] {text[:300]}"
         return self._send(200, {
             "id": "msg_mock", "type": "message", "role": "assistant", "model": body["model"],
-            "content": [{"type": "text", "text": f"[claude mock {body['model']}] {text[:300]}"}],
+            "content": [{"type": "text", "text": reply}],
             "stop_reason": "end_turn", "stop_sequence": None, "usage": {"input_tokens": 12, "output_tokens": 8},
         })
 

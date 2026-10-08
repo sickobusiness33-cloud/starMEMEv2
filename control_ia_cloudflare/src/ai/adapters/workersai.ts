@@ -190,7 +190,7 @@ function factoryMock(system: string, all: string): string {
   if (role === "research") {
     const tag = (all.match(/Indicación del dueño: ([^.]*)/)?.[1] ?? "").slice(0, 20);
     return JSON.stringify({ ideas: [
-      { name: crypto ? `Radar Meme ${tag}`.trim() : `Asistente IA ${tag}`.trim(), idea: crypto ? "Detecta meme coins con liquidez real y alerta de riesgos para traders minoristas." : "Genera textos de producto para tiendas online en segundos.", widgets: crypto ? ["crypto-trending", "crypto-lookup"] : ["ai-tool"] },
+      { name: crypto ? `Radar Meme ${tag}`.trim() : `Asistente IA ${tag}`.trim(), inspired_by: crypto ? "DEXTools" : "Jasper", idea: crypto ? "Detecta meme coins con liquidez real y alerta de riesgos para traders minoristas." : "Genera textos de producto para tiendas online en segundos.", widgets: crypto ? ["crypto-trending", "crypto-lookup"] : ["ai-tool"] },
       { name: crypto ? `Pulso Solana ${tag}`.trim() : `Prompt Lab ${tag}`.trim(), idea: crypto ? "Panel de tokens nuevos en Solana con volumen y compras/ventas en vivo." : "Mejora prompts para modelos de IA con ejemplos y explicación." },
     ] });
   }

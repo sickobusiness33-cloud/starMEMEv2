@@ -45,7 +45,7 @@ export const FX_AGENTS = [
 
 const MAX_ATTEMPTS = 3;
 const LEASE_MS = 8 * 60_000;
-const assetVersion = "202610044";
+const assetVersion = "202610081";
 const todayIso = () => new Date().toISOString().slice(0, 10);
 const origin = (env: Env) => (env.PUBLIC_URL || "http://127.0.0.1:8787").replace(/\/$/, "");
 export const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, " ").trim().slice(0, 80);
@@ -63,7 +63,7 @@ export async function fxSettings(env: Env, userId: number) {
       dumps([{ id: "crypto", weight: 5, enabled: true }, { id: "ai", weight: 5, enabled: true }, { id: "nutrition", weight: 1, enabled: true }, { id: "sport", weight: 1, enabled: true }]), nowIso());
     s = await one<any>(env.DB, "SELECT * FROM fx_settings WHERE user_id = ?", userId);
   }
-  return { ...s, enabled: Boolean(s.enabled), auto_ideas: Boolean(s.auto_ideas), niches: loads<any[]>(s.niches_json, []) };
+  return { ...s, ai_default: s.ai_default ?? "claude", enabled: Boolean(s.enabled), auto_ideas: Boolean(s.auto_ideas), niches: loads<any[]>(s.niches_json, []) };
 }
 
 export async function fxTokensToday(env: Env, userId: number): Promise<number> {
@@ -107,10 +107,13 @@ function closeJson(s: string): string {
 }
 const SAFE = "Nunca inventes métricas, cifras de usuarios, testimonios ni precios: si algo depende de datos, la web los cargará en vivo de APIs reales. Nada de promesas de rentabilidad.";
 
-export const asPin = (v: unknown): AiPin | null => (AI_PINS.includes(v as AiPin) && v !== "auto" ? (v as AiPin) : null);
+/** IA elegida válida («auto» incluido) o null si no hay elección (entonces manda la IA principal del usuario). */
+export const asPin = (v: unknown): AiPin | null => (AI_PINS.includes(v as AiPin) ? (v as AiPin) : null);
 async function ask(env: Env, userId: number, role: string, projectId: number, system: string, prompt: string, opts: { maxTokens?: number; capability?: "chat" | "reasoning" | "code"; cheap?: boolean; premium?: boolean; pin?: AiPin | null } = {}) {
   // IA elegida para este proyecto (se lee en cada paso: si la cambias a mitad, el siguiente paso ya usa la nueva).
-  const pin = opts.pin !== undefined ? opts.pin : projectId > 0 ? asPin((await one<any>(env.DB, "SELECT ai_pref FROM fx_projects WHERE id = ?", projectId))?.ai_pref) : null;
+  // Orden: IA elegida para la tarea → la del proyecto → la IA principal del usuario (Claude por defecto).
+  let pin = opts.pin ?? (projectId > 0 ? asPin((await one<any>(env.DB, "SELECT ai_pref FROM fx_projects WHERE id = ?", projectId))?.ai_pref) : null);
+  if (!pin) pin = asPin((await one<any>(env.DB, "SELECT ai_default FROM fx_settings WHERE user_id = ?", userId))?.ai_default) ?? "claude";
   const res = await generate(await ctx(env, userId, role, projectId), { pin,
     system: `[factory:${role}] ${system}\n${SAFE}\nResponde SOLO con un JSON válido.`,
     messages: [{ role: "user", content: prompt }], maxTokens: opts.maxTokens ?? 1600,
@@ -152,19 +155,21 @@ export async function ideate(env: Env, userId: number, niche: string, count: num
   const widgets = WIDGETS.filter((w) => (niche === "crypto" ? w.startsWith("crypto") || w === "ai-tool" : niche === "nutrition" ? ["calc-tdee", "calc-macros", "ai-tool"].includes(w) : niche === "sport" ? ["calc-1rm", "calc-pace", "calc-hrzones", "ai-tool"].includes(w) : w === "ai-tool"));
   await fxEmit(env, userId, null, "backlog", "research", "start", `Buscando ${count} ideas de ${niche}${hint ? ` («${hint.slice(0, 80)}»)` : ""}.`);
   const { json } = await ask(env, userId, "research", 0,
-    "Eres el agente Research de una fábrica de productos web. Propones micro-SaaS/herramientas web útiles, concretas y diferenciadas que se puedan construir con los widgets disponibles.",
+    "Eres el agente Research de una fábrica de productos web. Cada idea es una «copia original»: tomas como referente una web o app real que ya funciona y tiene éxito en el nicho (por su utilidad probada) y propones una versión PROPIA, funcional y mejorada, con nombre de marca nuevo e inventado, enfoque diferenciado y construible con los widgets disponibles. Nunca uses el nombre, logo, textos ni marca registrada del referente.",
     `Nicho: ${niche}. ${hint ? `Indicación del dueño: ${hint}.` : ""}\n${await marketContext(env, niche)}\nWidgets disponibles (la web DEBE basarse en ellos): ${widgets.join(", ")}.\nYa existen (no repitas): ${existing.map((e) => e.name).join(", ") || "ninguno"}.\n` +
-    `Propón ${count} ideas distintas. JSON: {"ideas":[{"name":"nombre de marca corto y original","idea":"qué problema resuelve y para quién, 1-2 frases","widgets":["..."]}]}`,
+    `Propón ${count} ideas distintas. JSON: {"ideas":[{"name":"nombre de marca nuevo, corto y original (que no se parezca al del referente)","inspired_by":"web/app real de éxito que sirve de referente","idea":"qué hace, para quién y en qué mejora al referente, 1-2 frases","widgets":["..."]}]}`,
     { capability: "reasoning", premium: true, maxTokens: 1400, pin });
   let created = 0;
   for (const it of (Array.isArray(json?.ideas) ? json.ideas : []).slice(0, count)) {
     const name = String(it?.name ?? "").replace(/[<>]/g, "").trim().slice(0, 40);
     const idea = String(it?.idea ?? "").replace(/[<>]/g, "").trim().slice(0, 400);
     if (name.length < 3 || idea.length < 10) continue;
+    const ref = norm(String(it?.inspired_by ?? ""));
+    if (ref && (norm(name).includes(ref) || ref.includes(norm(name)))) continue; // nombre propio, nunca el del referente
     let slug = slugify(name);
     if (await one(env.DB, "SELECT 1 FROM fx_projects WHERE slug = ?", slug)) slug = `${slug}-${Date.now().toString(36).slice(-4)}`;
     const ins = await env.DB.prepare("INSERT OR IGNORE INTO fx_projects (user_id, slug, name, niche, idea, dedupe_key, stage, status, priority, research_json, mission_id, kind, ai_pref, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'backlog', 'queued', ?, ?, ?, 'website', ?, ?, ?)")
-      .bind(userId, slug, name, niche, idea, norm(name), niche === "crypto" || niche === "ai" ? 8 : 5, dumps({ widgets: Array.isArray(it.widgets) ? it.widgets.slice(0, 4) : [] }), missionId, pin, nowIso(), nowIso()).run();
+      .bind(userId, slug, name, niche, idea, norm(name), niche === "crypto" || niche === "ai" ? 8 : 5, dumps({ widgets: Array.isArray(it.widgets) ? it.widgets.slice(0, 4) : [], inspired_by: String(it.inspired_by ?? "").replace(/[<>]/g, "").trim().slice(0, 80) || null }), missionId, pin, nowIso(), nowIso()).run();
     if (ins.meta.changes) { created++; await fxEmit(env, userId, Number(ins.meta.last_row_id), "backlog", "research", "idea", `Nueva idea: ${name} — ${idea.slice(0, 160)}`); }
   }
   return created;
@@ -176,7 +181,7 @@ export async function ideateCoins(env: Env, userId: number, prompt: string, coun
   const existing = await all<any>(env.DB, "SELECT name, json_extract(research_json, '$.ticker') AS ticker FROM fx_projects WHERE user_id = ? AND kind = 'memecoin' ORDER BY id DESC LIMIT 120", userId);
   await fxEmit(env, userId, null, "backlog", "research", "start", `Inventando ${count} meme coin(s) nuevas («${prompt.slice(0, 80)}»).`);
   const { json } = await ask(env, userId, "coins", 0,
-    "Eres el director creativo de un estudio top de meme coins. Inventas conceptos muy originales, graciosos y con potencial viral sobre CUALQUIER temática que te pidan (animales, deportes, comida, IA, historia, cultura pop genérica…): una mascota con personalidad, un chiste central fácil de entender y algo que la comunidad quiera repetir. Nada de nombres genéricos ni copias de monedas existentes; sin marcas ni personas reales; sin prometer rentabilidad.",
+    "Eres el director creativo de un estudio top de meme coins. Te inspiras en lo que hace triunfar a las meme coins de éxito (mascota icónica, chiste simple, comunidad), pero cada nombre y ticker es PROPIO y nuevo: nunca copies uno existente. Inventas conceptos muy originales, graciosos y con potencial viral sobre CUALQUIER temática que te pidan (animales, deportes, comida, IA, historia, cultura pop genérica…): una mascota con personalidad, un chiste central fácil de entender y algo que la comunidad quiera repetir. Nada de nombres genéricos ni copias de monedas existentes; sin marcas ni personas reales; sin prometer rentabilidad.",
     `Orden del dueño: ${prompt}\n${await marketContext(env, "crypto")}\nYa existen (no repitas nombre ni ticker): ${existing.map((e) => `${e.name} ($${e.ticker ?? "?"})`).join(", ") || "ninguna"}.\n` +
     `Propón ${count} meme coins distintas. JSON: {"coins":[{"name":"nombre corto y pegadizo","ticker":"3-6 letras","idea":"la mascota y el chiste en 1-2 frases"}]}`,
     { capability: "reasoning", premium: true, maxTokens: 1200, pin });
@@ -387,7 +392,7 @@ export async function fxStep(env: Env, id: number) {
         await fxEmit(env, p.user_id, id, "building", "architect", "start", "Definiendo arquitectura, widgets y fuentes de datos.");
         const product = await ask(env, p.user_id, "architect", id,
           "Eres el agente Architecture + Marketing. Diseñas el producto web: estructura, herramientas funcionales (widgets) y todo el copy en español, claro y persuasivo sin exagerar.",
-          `Producto: ${p.name} — ${p.idea}\nPúblico: ${research.audience ?? "?"} · Valor: ${research.value ?? "?"}\nWidgets permitidos: ${allowed.join(", ")} (crypto-* usan datos reales de DexScreener/CoinGecko; ai-tool llama a un modelo de IA con tu "system"; calc-* son calculadoras con fórmulas publicadas).\n${p.feedback ? `CORRIGE ESTO DEL INTENTO ANTERIOR: ${p.feedback}\n` : ""}` +
+          `Producto: ${p.name} — ${p.idea}\nPúblico: ${research.audience ?? "?"} · Valor: ${research.value ?? "?"}\n${research.inspired_by ? `Referente de éxito (solo como inspiración de funcionalidad y estructura; NO menciones su nombre ni copies sus textos): ${research.inspired_by}. Haz una versión propia, funcional y mejor, con la marca «${p.name}».\n` : ""}Widgets permitidos: ${allowed.join(", ")} (crypto-* usan datos reales de DexScreener/CoinGecko; ai-tool llama a un modelo de IA con tu "system"; calc-* son calculadoras con fórmulas publicadas).\n${p.feedback ? `CORRIGE ESTO DEL INTENTO ANTERIOR: ${p.feedback}\n` : ""}` +
           `JSON: {"name":"...","tagline":"≤90","archetype":"terminal|editorial|bento|spotlight|split","widgets":[{"type":"...","title":"...","note":"..."}],"ai":{"label":"...","placeholder":"...","examples":["..."],"system":"instrucciones detalladas de la herramienta de IA"},"features":[{"title":"...","text":"..."}×4-6],"steps":[{"title":"...","text":"..."}×3],"faq":[{"q":"...","a":"..."}×4-5],"seo":{"title":"10-60 caracteres","description":"50-155 caracteres","keywords":["..."]},"disclaimer":"..."}`,
           { capability: "reasoning", premium: true, maxTokens: 2600 });
         if (!product.json) throw new Error("Architecture no devolvió una especificación válida.");
@@ -412,7 +417,7 @@ export async function fxStep(env: Env, id: number) {
       case "testing": {
         agent = "qa";
         const spec = loads<Spec>(p.spec_json, null as any);
-        const checks = await qaChecks(env, spec, p.html ?? "");
+        const checks = await qaChecks(env, spec, p.html ?? "", { inspiredBy: loads<any>(p.research_json, {}).inspired_by });
         await run(env.DB, "UPDATE fx_projects SET checks_json = ? WHERE id = ?", dumps({ ...loads(p.checks_json, {}), qa: checks, qa_at: nowIso() }), id);
         const bad = failures(checks);
         await fxEmit(env, p.user_id, id, "testing", "testing", "tool", `${checks.filter((c) => c.ok).length}/${checks.length} pruebas superadas.`);
@@ -462,7 +467,7 @@ export async function fxStep(env: Env, id: number) {
       case "maintenance": {
         agent = "monitor";
         const spec = loads<Spec>(p.spec_json, null as any);
-        const checks = [...(await qaChecks(env, spec, p.html ?? "")), ...securityChecks(p.html ?? "")];
+        const checks = [...(await qaChecks(env, spec, p.html ?? "", { inspiredBy: loads<any>(p.research_json, {}).inspired_by })), ...securityChecks(p.html ?? "")];
         await run(env.DB, "UPDATE fx_projects SET checks_json = ?, last_audit_at = ? WHERE id = ?", dumps({ ...loads(p.checks_json, {}), audit: checks, audit_at: nowIso() }), nowIso(), id);
         if (passed(checks)) {
           await advance(env, p, "live");

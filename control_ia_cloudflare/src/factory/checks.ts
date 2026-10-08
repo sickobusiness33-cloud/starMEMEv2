@@ -10,9 +10,16 @@ export interface Check { id: string; ok: boolean; detail: string; required: bool
 const has = (html: string, re: RegExp) => re.test(html);
 
 /** QA funcional, accesibilidad, SEO y rendimiento. */
-export async function qaChecks(env: Env, spec: Spec, html: string): Promise<Check[]> {
+export async function qaChecks(env: Env, spec: Spec, html: string, opts: { inspiredBy?: string | null } = {}): Promise<Check[]> {
   const out: Check[] = [];
   const add = (id: string, ok: boolean, detail: string, required = true) => out.push({ id, ok, detail, required });
+  // «Copia original»: la web nunca muestra el nombre de la marca que sirvió de referente.
+  const ref = String(opts.inspiredBy ?? "").trim();
+  // Las fuentes de datos citadas (DexScreener, CoinGecko…) no cuentan: citarlas es atribución, no copia.
+  if (ref.length >= 3 && !/dexscreener|coingecko|geckoterminal/i.test(ref)) {
+    const text = html.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<p class="fx-src">[\s\S]*?<\/p>/gi, " ").replace(/<[^>]+>/g, " ").toLowerCase();
+    add("brand.original", !text.includes(ref.toLowerCase()), `Marca propia: no aparece «${ref}» (referente)`);
+  }
   add("html.doctype", html.startsWith("<!doctype html>"), "Doctype HTML5");
   add("html.lang", has(html, /<html lang="[a-z]{2}"/), "Idioma declarado");
   add("html.viewport", has(html, /name="viewport"/), "Viewport móvil (mobile-first)");

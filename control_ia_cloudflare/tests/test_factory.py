@@ -207,3 +207,32 @@ def test_gemini_y_groq_respaldo_y_cambio_de_ia(api):
     assert newest["stage"] == "live"
     cs = api.get("/api/factory/coins").json()
     assert next(c for c in cs["coins"] if c["id"] == newest["id"])["last_ai"].startswith("workers-ai")
+
+
+def test_claude_es_la_ia_principal_y_webs_con_marca_propia(api):
+    """Claude va primero en la fábrica aunque «Usar mi API» esté apagado; las webs son «copias originales»
+    (referente real, marca propia) y la QA impide que aparezca el nombre del referente."""
+    mock_mode("ok")
+    assert api.put("/api/providers/anthropic/key", json={"api_key": "sk-ant-test-key-123456"}).status_code == 200
+    assert api.get("/api/factory/coins").json()["ai_default"] == "claude"
+    api.post("/api/factory/command", json={"text": "haz 1 crypto de pingüinos", "kind": "memecoin"})
+    ps = wait_live(api, 1)
+    assert ps[0]["stage"] == "live", ps
+    roles = httpx.get(MOCK_URL).json().get("claude_roles", [])
+    assert any(r.startswith("[factory:coins]") for r in roles) and any(r.startswith("[factory:coin]") for r in roles), roles
+    cs = api.get("/api/factory/coins").json()
+    assert cs["coins"][0]["last_ai"].startswith("claude-byok")
+    # Cambiar la IA principal
+    assert api.put("/api/factory/settings", json={"ai_default": "cloudflare"}).status_code == 200
+    assert api.get("/api/factory/coins").json()["ai_default"] == "cloudflare"
+
+    # Web «copia original»: referente guardado y marca propia verificada
+    r = api.post("/api/factory/command", json={"text": "Hazme 1 web de inteligencia artificial al día"})
+    assert r.status_code == 200
+    ps = wait_live(api, 2)
+    web = next(p for p in ps if p["kind"] == "website" and p["stage"] == "live")
+    d = api.get(f"/api/factory/projects/{web['id']}").json()
+    assert d["research"]["inspired_by"] == "Jasper"
+    chk = {c["id"]: c for c in d["checks"]["qa"]}
+    assert chk["brand.original"]["ok"] and chk["brand.original"]["required"]
+    assert "jasper" not in httpx.get(f"{BASE}/s/{web['slug']}/").text.lower()

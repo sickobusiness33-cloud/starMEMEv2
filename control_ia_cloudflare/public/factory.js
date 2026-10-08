@@ -165,7 +165,7 @@ async function viewFactory(main) {
       p.errors ? h("p", { class: "fx-err" }, p.errors) : null,
       h("div", { class: "fx-acts" }, act("retry", "Reintentar"), act("rebuild", "Reconstruir"), p.version > 1 ? act("rollback", "Volver a la versión anterior") : null, act("pause", "Pausar", "ghost"), act("delete", "Borrar", "ghost")),
       checks.length ? h("details", { class: "fx-det", open: true }, h("summary", {}, `Pruebas y seguridad · ${checks.filter((c) => c.ok).length}/${checks.length}`), h("ul", { class: "fx-checks" }, checks.map((c) => h("li", { class: c.ok ? "ok" : c.required ? "bad" : "warn" }, c.ok ? "✓ " : "✕ ", c.detail)))) : null,
-      p.research.audience ? h("details", { class: "fx-det" }, h("summary", {}, "Investigación"), h("p", {}, `Público: ${p.research.audience}`), h("p", {}, `Valor: ${p.research.value || "—"}`), h("p", {}, `Monetización: ${(p.research.monetization || []).join(", ")}`), h("p", {}, `Riesgos: ${(p.research.risks || []).join(", ")}`)) : null,
+      p.research.audience ? h("details", { class: "fx-det" }, h("summary", {}, "Investigación"), p.research.inspired_by ? h("p", {}, `Copia original inspirada en: ${p.research.inspired_by} (con marca y textos propios)`) : null, h("p", {}, `Público: ${p.research.audience}`), h("p", {}, `Valor: ${p.research.value || "—"}`), h("p", {}, `Monetización: ${(p.research.monetization || []).join(", ")}`), h("p", {}, `Riesgos: ${(p.research.risks || []).join(", ")}`)) : null,
       h("details", { class: "fx-det", open: true }, h("summary", {}, "Historial de agentes"), h("ol", { class: "fx-feed" }, p.events.map((e) => h("li", { class: `k-${e.kind}` }, h("time", {}, fmtTime(e.created_at)), h("b", {}, e.agent), " ", e.message)))));
     root.append(drawer);
   }

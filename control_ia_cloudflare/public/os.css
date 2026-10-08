@@ -1374,3 +1374,4 @@ body .topbar .btn.ghost { border: 0; }
 .cs-ai-sel { min-height: 32px; padding: 0 8px; border-radius: 9px; border: 1px solid var(--cs-line); background: rgba(0,0,0,.3); color: var(--cs-t); font: 600 .84rem var(--sans); }
 .cs-coin-ai { font: 500 .76rem var(--sans) !important; color: var(--cs-m); }
 .cs-aibox { display: grid; gap: 8px; padding: 14px; border-radius: 14px; background: var(--cs-s); border: 1px solid var(--cs-line); }
+.cs-ai-main { padding: 6px 6px 6px 12px; border-radius: 999px; border: 1px solid rgba(198,255,61,.35); background: var(--cs-s); color: var(--cs-t); font-weight: 600; margin-right: 6px; }

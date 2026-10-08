@@ -221,9 +221,11 @@ async function buildCandidates(ctx: CallContext, req: GenerateRequest, notices: 
   }
   // La API del usuario solo se usa con «USE MY API» activado; si no, configuración de la plataforma.
   const user: Candidate[] = [];
-  const [anthropicKey, openaiKey] = settings.use_my_api
-    ? await Promise.all([storedKey(env, ctx.userId, "anthropic"), storedKey(env, ctx.userId, "openai")])
-    : ["", ""];
+  // Con «Usar mi API» se usan siempre; si la tarea fija Claude u OpenAI, también (aunque esté apagado).
+  const [anthropicKey, openaiKey] = await Promise.all([
+    settings.use_my_api || req.pin === "claude" ? storedKey(env, ctx.userId, "anthropic") : "",
+    settings.use_my_api || req.pin === "openai" ? storedKey(env, ctx.userId, "openai") : "",
+  ]);
   const okUser = async (prov: string) => healthy(env.DB, byokKey(ctx.userId, prov));
   if (anthropicKey && (await okUser("claude-byok"))) user.push({ provider: "claude-byok", model: claudeInfo(claudeId), modelId: claudeId, apiKey: anthropicKey });
   if (openaiKey && (await okUser("openai-byok"))) {

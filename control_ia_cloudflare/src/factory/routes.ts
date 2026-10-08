@@ -122,6 +122,7 @@ factoryRoutes.put("/settings", async (c) => {
   if (b.github_connector_id !== undefined) {
     gh = b.github_connector_id ? (await one<any>(c.env.DB, "SELECT id FROM connectors WHERE id = ? AND owner_id = ? AND type = 'github'", Number(b.github_connector_id), u.id))?.id ?? null : null;
   }
+  if (b.ai_default !== undefined) await run(c.env.DB, "UPDATE fx_settings SET ai_default = ? WHERE user_id = ?", asPin(b.ai_default) ?? "claude", u.id);
   await run(c.env.DB, "UPDATE fx_settings SET daily_target = ?, max_parallel = ?, token_budget_day = ?, auto_ideas = ?, niches_json = ?, github_connector_id = ?, theme = ?, updated_at = ? WHERE user_id = ?",
     int(b.daily_target, 1, 50, s.daily_target), int(b.max_parallel, 1, 6, s.max_parallel), int(b.token_budget_day, 20000, 5_000_000, s.token_budget_day),
     b.auto_ideas === undefined ? (s.auto_ideas ? 1 : 0) : b.auto_ideas ? 1 : 0, dumps(niches), gh, ["cobalt", "emerald", "crimson", "graphite", "violet"].includes(b.theme) ? b.theme : s.theme, nowIso(), u.id);
@@ -219,7 +220,7 @@ factoryRoutes.get("/coins", async (c) => {
     WHERE e.user_id = ? AND p.kind = 'memecoin' ORDER BY e.id DESC LIMIT 40`, u.id);
   const s = await fxSettings(c.env, u.id);
   return c.json({
-    enabled: s.enabled, missions, events, free_quota: await freeQuotaAvailable(c.env.DB), ais: await aiStatus(c),
+    enabled: s.enabled, ai_default: s.ai_default, missions, events, free_quota: await freeQuotaAvailable(c.env.DB), ais: await aiStatus(c),
     coins: coins.map((x) => ({ ...x, images: String(x.images ?? "").split(",").filter(Boolean) })),
     totals: { coins: coins.length, live: coins.filter((x) => x.stage === "live" || x.stage === "maintenance").length, today: coins.filter((x) => String(x.created_at) >= today).length, working: coins.filter((x) => x.status === "working").length, tokens_today: await fxTokensToday(c.env, u.id) },
   });
