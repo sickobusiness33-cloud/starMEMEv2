@@ -1,0 +1,43 @@
+# CI real: typecheck + sintaxis del frontend + tests de integración contra wrangler dev (AI_MODE=mock).
+# El agente Testing del Autopilot lee el resultado de estos checks en cada Pull Request.
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit --noUnusedLocals
+      - name: Sintaxis del frontend
+        run: for f in public/*.js; do node --check "$f"; done
+      - name: Entorno de pruebas (sin secretos reales)
+        run: |
+          {
+            echo "ENCRYPTION_KEY=$(openssl rand -base64 32)"
+            echo "COOKIE_SECURE=false"
+            echo "AI_MODE=mock"
+            echo "ADMIN_EMAILS=admin-tests@example.com"
+            echo "ANTHROPIC_API_KEY=test-key"
+            echo "ANTHROPIC_BASE_URL=http://127.0.0.1:8799"
+          } > .dev.vars
+          pip install -q pytest httpx
+          npx wrangler d1 migrations apply DB --local
+      - name: Tests
+        run: |
+          python3 tests/mock_anthropic.py &
+          npx wrangler dev --local --port 8787 > wrangler.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8787/api/auth/status >/dev/null && break; sleep 2; done
+          python3 -m pytest tests -q
+      - if: failure()
+        run: tail -100 wrangler.log || true
