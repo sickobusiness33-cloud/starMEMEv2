@@ -236,3 +236,14 @@ def test_claude_es_la_ia_principal_y_webs_con_marca_propia(api):
     chk = {c["id"]: c for c in d["checks"]["qa"]}
     assert chk["brand.original"]["ok"] and chk["brand.original"]["required"]
     assert "jasper" not in httpx.get(f"{BASE}/s/{web['slug']}/").text.lower()
+
+
+def test_modo_abierto_entrada_directa_sin_login(api):
+    """Con OPEN_ACCESS activo, /api/auth/status devuelve siempre la cuenta de dueño (admin + Pro)
+    sin registrarse ni iniciar sesión, y dos navegadores distintos entran a la MISMA cuenta.
+    En los tests OPEN_ACCESS=false, así que aquí solo se comprueba que apagado NO auto-inicia sesión."""
+    import httpx as _hx
+    anon = _hx.Client(base_url=BASE, timeout=30, headers={"CF-Connecting-IP": "9.8.7.6"})
+    st = anon.get("/api/auth/status").json()
+    # OPEN_ACCESS=false en el entorno de tests → sin sesión automática
+    assert st["user"] is None

@@ -65,9 +65,40 @@ async function startSession(c: Context<AppEnv>, userId: number): Promise<string>
   return csrf;
 }
 
+/** Cuenta de dueño de la plataforma: la de menor id con rol admin; si no hay, la de menor id;
+ *  y si la base está vacía, se crea una. En modo abierto todos entran a esta cuenta. */
+async function ownerUser(c: Context<AppEnv>): Promise<User> {
+  let u = await one<User>(c.env.DB, "SELECT * FROM users WHERE role = 'admin' ORDER BY id LIMIT 1");
+  if (!u) u = await one<User>(c.env.DB, "SELECT * FROM users ORDER BY id LIMIT 1");
+  if (!u) {
+    const ins = await c.env.DB.prepare("INSERT INTO users (email, name, password_hash, role, created_at) VALUES (?, ?, ?, 'admin', ?)")
+      .bind("dueno@control-ia.local", "Dueño", await hashPassword(randomToken(24)), nowIso()).run();
+    const id = Number(ins.meta.last_row_id);
+    await run(c.env.DB, "INSERT OR IGNORE INTO subscriptions (user_id, plan, subscription_status, provider, updated_at) VALUES (?, 'pro', 'manual', 'manual', ?)", id, nowIso());
+    return (await one<User>(c.env.DB, "SELECT * FROM users WHERE id = ?", id))!;
+  }
+  if (u.role !== "admin") {
+    await run(c.env.DB, "UPDATE users SET role = 'admin' WHERE id = ?", u.id);
+    u = (await one<User>(c.env.DB, "SELECT * FROM users WHERE id = ?", u.id))!;
+  }
+  await run(c.env.DB, "INSERT OR IGNORE INTO subscriptions (user_id, plan, subscription_status, provider, updated_at) VALUES (?, 'pro', 'manual', 'manual', ?)", u.id, nowIso());
+  return u;
+}
+
+/** Sesión actual; en modo abierto la crea automáticamente para la cuenta de dueño.
+ *  El navegador la recuerda por su cookie (ligada a la IP que la abrió); no hay pantalla de acceso. */
+async function sessionOrAuto(c: Context<AppEnv>): Promise<User | null> {
+  const existing = await sessionFor(c);
+  if (existing) return existing;
+  if (!c.get("settings").openAccess) return null;
+  const owner = await ownerUser(c);
+  const csrf = await startSession(c, owner.id);
+  return { ...owner, csrf_token: csrf };
+}
+
 /** Middleware: exige sesión y, en escrituras, el token CSRF. */
 export const requireUser: MiddlewareHandler<AppEnv> = async (c, next) => {
-  const user = await sessionFor(c);
+  const user = await sessionOrAuto(c);
   if (!user) return fail(401, "Sesión no iniciada o caducada. Vuelve a entrar.");
   if (!SAFE.has(c.req.method)) {
     const sent = c.req.header("X-CSRF-Token") || "";
@@ -85,7 +116,7 @@ export const requireAdmin: MiddlewareHandler<AppEnv> = async (c, next) => {
 export const authRoutes = new Hono<AppEnv>();
 
 authRoutes.get("/status", async (c) => {
-  const user = await sessionFor(c);
+  const user = await sessionOrAuto(c);
   return c.json({
     allow_signup: c.get("settings").allowSignup,
     user: user ? publicUser(user) : null,

@@ -43,6 +43,8 @@
   // Configuración pública. Los secretos van con `wrangler secret put` (ver README).
   "vars": {
     "ALLOW_SIGNUP": "true",
+    // Entrada directa sin login: cada navegador entra a la cuenta de dueño y se recuerda por su cookie.
+    "OPEN_ACCESS": "true",
     "ADMIN_EMAILS": "",
     "COOKIE_SECURE": "true",
     "SESSION_HOURS": "72",

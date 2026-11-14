@@ -14,6 +14,7 @@ export interface Env {
   // Secreto: 32 bytes en base64 para AES-GCM (credenciales cifradas).
   ENCRYPTION_KEY: string;
   ALLOW_SIGNUP: string;
+  OPEN_ACCESS: string; // true: sin login, entrada directa a la cuenta de dueño recordada por IP
   ADMIN_EMAILS: string;
   COOKIE_SECURE: string;
   SESSION_HOURS: string;
@@ -51,6 +52,7 @@ export interface Env {
 
 export interface Settings {
   allowSignup: boolean;
+  openAccess: boolean;
   adminEmails: string[];
   cookieSecure: boolean;
   sessionHours: number;
@@ -76,6 +78,7 @@ const int = (v: string | undefined, d: number) => {
 export function settingsFrom(env: Env): Settings {
   return {
     allowSignup: bool(env.ALLOW_SIGNUP, true),
+    openAccess: bool(env.OPEN_ACCESS, true),
     adminEmails: (env.ADMIN_EMAILS || "")
       .split(",")
       .map((e) => e.trim().toLowerCase())
