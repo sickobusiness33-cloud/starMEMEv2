@@ -115,13 +115,14 @@ def test_mision_meme_coins_con_logo_y_parar(api):
     logo = httpx.get(f"{BASE}/s/{p['slug']}/logo")
     assert logo.status_code == 200 and logo.headers["content-type"].startswith("image/") and len(logo.content) > 50
     assert httpx.get(f"{BASE}/s/no-existe/logo").status_code == 404
+    # Solo se guarda el logo en D1 (las ilustraciones extra inflaban la base de datos).
     for n in ("art", "meme"):
-        assert httpx.get(f"{BASE}/s/{p['slug']}/{n}").status_code == 200
+        assert httpx.get(f"{BASE}/s/{p['slug']}/{n}").status_code == 404
     assert 'class="cx-donut"' in w.text and 'id="roadmap"' in w.text and "cx-marquee" in w.text
 
     # Coin Studio: apartado propio, cualquier temática forzada a meme coin
     cs = api.get("/api/factory/coins").json()
-    assert cs["totals"]["live"] == 2 and {"logo", "art", "meme"} <= set(cs["coins"][0]["images"])
+    assert cs["totals"]["live"] == 2 and cs["coins"][0]["images"] == ["logo"]
     assert cs["missions"][0]["id"] == m["id"] and cs["free_quota"] is True
     r2 = api.post("/api/factory/command", json={"text": "webs de dinosaurios DJ", "kind": "memecoin", "per_day": 1})
     assert r2.json()["mission"]["kind"] == "memecoin"

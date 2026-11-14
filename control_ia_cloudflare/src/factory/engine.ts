@@ -270,9 +270,8 @@ async function buildCoin(env: Env, p: any) {
   const look = (k: string, d: string) => String(json[k] ?? d).replace(/[\r\n]+/g, " ").slice(0, 600);
   await fxEmit(env, p.user_id, p.id, "building", "uiux", "start", "Ilustrador: logo, ilustración de la historia y meme (FLUX).");
   const logoModel = await coinImage(env, p, "logo", `${look("logo_prompt", p.idea)}. Professional meme coin mascot logo, one character, centered, head and shoulders, inside a perfect round coin emblem with a thick rim, bold clean vector illustration, smooth shading, thick outlines, vibrant saturated colors, plain solid background, high contrast, iconic, sticker quality, no text, no letters, no watermark`, { accent: json.brand?.accent, bg: json.brand?.bg, ticker: json.ticker ?? r.ticker, name: json.name });
+  // Solo se guarda el logo en la base de datos (D1 tiene 500 MB): las ilustraciones extra inflaban la base.
   const images = ["logo"];
-  if (await coinImage(env, p, "art", `${look("art_prompt", `${mascot} adventure`)}. Featuring ${look("logo_prompt", mascot)}. Cinematic digital illustration, dynamic composition, rich colors, dramatic lighting, highly detailed, polished game key art style, no text, no watermark`)) images.push("art");
-  if (await coinImage(env, p, "meme", `${look("meme_prompt", `${mascot} funny situation`)}. Featuring ${look("logo_prompt", mascot)}. Funny meme illustration, expressive exaggerated face, cartoon style, bold colors, clean background, internet meme vibe, no text, no letters, no watermark`)) images.push("meme");
 
   const ticker = String(json.ticker ?? r.ticker ?? "").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 8) || r.ticker;
   const raw = {
@@ -539,6 +538,9 @@ export async function factoryTick(env: Env) {
   const now = nowIso();
   // Leases caducados → vuelven a la cola
   await run(env.DB, "UPDATE fx_projects SET status = 'queued', lease_until = NULL WHERE status = 'working' AND lease_until < ?", now);
+  // Autolimpieza: D1 tiene 500 MB y las imágenes lo llenan. Se conservan solo los logos de los 200 proyectos
+  // más recientes; los más antiguos pierden el logo (su web sigue online). Evita que la base se llene y bloquee el login.
+  await run(env.DB, "DELETE FROM fx_assets WHERE project_id <= COALESCE((SELECT max(project_id) FROM fx_assets), 0) - 200").catch(() => undefined);
   const users = await all<any>(env.DB, "SELECT * FROM fx_settings WHERE enabled = 1");
   for (const u of users) {
     const s = await fxSettings(env, u.user_id);
