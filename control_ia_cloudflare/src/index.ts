@@ -1,6 +1,7 @@
 // Punto de entrada del Worker: API (/api/*) + consumidor de la cola de tareas.
 // La interfaz (public/) la sirve Workers Static Assets.
 
+import { applyAccountReset } from "./accountReset";
 import { Hono } from "hono";
 import { listEntries } from "./audit";
 import { authRoutes, requireUser } from "./auth";
@@ -144,5 +145,6 @@ export default {
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(autopilotTick(env).catch((err) => console.error("autopilot tick", redact(String(err)))));
     ctx.waitUntil(factoryTick(env).catch((err) => console.error("factory tick", redact(String(err)))));
+    ctx.waitUntil(applyAccountReset(env).catch((err) => console.error("account reset", redact(String(err)))));
   },
 } satisfies ExportedHandler<Env, RunMessage>;

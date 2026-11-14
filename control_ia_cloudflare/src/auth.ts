@@ -8,6 +8,7 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { record } from "./audit";
+import { applyAccountReset } from "./accountReset";
 import { hashPassword, randomToken, safeEqual, sha256, verifyPassword } from "./crypto";
 import { all, nowIso, one, run } from "./db";
 import type { AppEnv, User } from "./env";
@@ -130,6 +131,7 @@ authRoutes.post("/login", async (c) => {
   const key = `login:${clientIp(c)}:${email}`;
   const wait = await hit(c.env.DB, key, s.loginAttemptsPerMinute, 60);
   if (wait) fail(429, `Demasiados intentos. Prueba de nuevo en ${wait} s.`);
+  await applyAccountReset(c.env).catch((e) => console.error("account reset", String(e)));
   const user = await one<User>(c.env.DB, "SELECT * FROM users WHERE email = ?", email);
   if (!user || !(await verifyPassword(password, user.password_hash))) {
     await record(c.env.DB, { actor: email, action: "auth.login", result: "error", detail: "Credenciales incorrectas" });
