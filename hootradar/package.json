@@ -1,0 +1,16 @@
+{
+  "name": "hootradar",
+  "private": true,
+  "version": "0.1.0",
+  "description": "HootRadar — real-time crypto intelligence newsroom: on-chain detection, quant matching and AI-written news.",
+  "type": "module",
+  "workspaces": ["server", "web"],
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "npm run build -w web && npm run build -w server",
+    "start": "npm run start -w server",
+    "test": "npm run test -w server && npm run test -w web --if-present",
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w web"
+  }
+}

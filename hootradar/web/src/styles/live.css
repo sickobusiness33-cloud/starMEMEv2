@@ -1,0 +1,1485 @@
+/* LIVE: feed + right rail, news cards, the inline article, rail panels. */
+
+/* ───────────── layout ───────────── */
+
+.live {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
+}
+
+.live__feed {
+  min-width: 0;
+}
+
+.live__rail {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+  align-content: start;
+  min-width: 0;
+}
+
+/* Desktop: rail on the right, pinned under the header; the tape absorbs the free height. */
+@media (min-width: 1100px) {
+  .live {
+    grid-template-columns: minmax(0, 1fr) var(--rail-w);
+    gap: 24px;
+    align-items: start;
+  }
+  .live__rail {
+    position: sticky;
+    top: calc(var(--header-h) + 20px);
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100dvh - var(--header-h) - 40px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+  }
+  .live__rail::-webkit-scrollbar {
+    display: none;
+  }
+  .live__rail > .tape {
+    flex: 1 1 auto;
+    min-height: 240px;
+  }
+  .live__rail > :not(.tape) {
+    flex: none;
+  }
+}
+
+/* ───────────── toolbar ───────────── */
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.toolbar__group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* ───────────── feed ───────────── */
+
+.feed {
+  position: relative;
+}
+
+.feed__list {
+  display: grid;
+}
+
+/* spacing lives on the item so Virtuoso (which cannot use gap) measures the same layout */
+.feed__item {
+  padding-bottom: 10px;
+}
+
+.feed__footer {
+  display: flex;
+  justify-content: center;
+  padding: 10px 0 28px;
+}
+
+/* a story opened directly that is older than the loaded range: never imply continuity */
+.feed__gap {
+  margin: 4px 0 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line-2);
+}
+
+.feed-empty__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* "↑ N new": new stories wait here instead of shifting what the reader is looking at */
+.new-pill__anchor {
+  position: sticky;
+  top: calc(var(--header-h) + 12px);
+  z-index: 6;
+  display: flex;
+  justify-content: center;
+  height: 0;
+  pointer-events: none;
+}
+
+.new-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px 0 10px;
+  border-radius: 999px;
+  background: var(--green);
+  box-shadow: var(--shadow-pill);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--on-green);
+  opacity: 0;
+  transform: translateY(-8px);
+  pointer-events: none;
+  transition:
+    opacity var(--dur-ui) var(--ease-out),
+    transform var(--dur-ui) var(--ease-out);
+}
+
+.new-pill[data-show] {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.new-pill[data-show]:active {
+  transform: scale(0.97);
+  transition-duration: var(--dur-press);
+}
+
+/* empty / skeleton */
+
+.feed-empty__chains {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  max-width: 420px;
+  margin-top: 2px;
+}
+
+/* fixed status / time columns so the four rows line up as a table */
+.feed-empty__chains li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 9ch 9ch;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.feed-empty__chains .mono {
+  font-size: 11.5px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.feed-empty__name {
+  color: var(--text);
+}
+
+.card--skel {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.card__skel-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.card__skel-meta {
+  margin-left: auto;
+}
+
+/* ───────────── news card ───────────── */
+
+.card {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  transition:
+    transform var(--dur-press) var(--ease-out),
+    opacity var(--dur-enter) var(--ease-out),
+    border-color var(--dur-hover) ease;
+}
+
+.card[data-sev='BREAKING'] {
+  box-shadow: inset 2px 0 0 var(--green);
+}
+
+.card[data-expanded] {
+  border-color: var(--line-2);
+}
+
+/* Press feedback on the collapsed card. 0.98 rather than 0.97: on a surface this wide
+   the same ratio reads as a lurch; the expanded article (often 1000px+) does not scale.
+   [data-pressed] is set from pointer events on the summary and dropped the moment the
+   pointer travels (a drag is a text selection: the card holds still under it);
+   :active on the toggle covers the gaps between rows and a keyboard Space press. */
+.card:not([data-expanded])[data-pressed],
+.card:not([data-expanded]):has(> .card__summary > .card__toggle:active) {
+  transform: scale(0.98);
+}
+
+/* New arrival: prevent a jarring insert. Transition (not keyframes) so a rapid
+   second arrival retargets instead of restarting. */
+.card[data-enter] {
+  transition:
+    transform var(--dur-enter) var(--ease-out) var(--enter-delay, 0ms),
+    opacity var(--dur-enter) var(--ease-out) var(--enter-delay, 0ms),
+    border-color var(--dur-hover) ease;
+}
+
+/* A press during the entrance window answers at press speed, not entrance speed + stagger delay. */
+.card[data-enter]:not([data-expanded])[data-pressed],
+.card[data-enter]:not([data-expanded]):has(> .card__summary > .card__toggle:active),
+.tape__item[data-enter] .tape__row:active {
+  transition-duration: var(--dur-press);
+  transition-delay: 0ms;
+}
+
+@starting-style {
+  .card[data-enter] {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+/* BREAKING arrival: a one-shot green inset glow that fades (state indication). */
+.card[data-glow]::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 0 1px var(--green-glow),
+    inset 0 0 28px var(--green-glow-soft);
+  opacity: 0;
+  animation: card-glow 1.2s var(--ease-out);
+}
+
+@keyframes card-glow {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* The collapsed card: content (selectable), with the toggle button stretched underneath. */
+.card__summary {
+  position: relative;
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background-color var(--dur-hover) ease;
+}
+
+/* rows paint above the button so they take their own clicks (and text selection) */
+.card__summary > :not(.card__toggle) {
+  position: relative;
+  min-width: 0;
+}
+
+.card__toggle {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  color: inherit;
+}
+
+.card__toggle:focus-visible {
+  outline-offset: -2px;
+}
+
+.card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.card__id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.card__ticker {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.card__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.card__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.card__chain {
+  color: var(--text-2);
+}
+
+.card__metrics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 18px;
+}
+
+.metric {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.metric__label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+.metric__value {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.metric--bs {
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  column-gap: 6px;
+  row-gap: 3px;
+}
+
+.metric--bs .bsbar {
+  grid-column: 2;
+}
+
+/* 2px buy/sell split: green over a red track, both at 70% */
+.bsbar {
+  position: relative;
+  display: block;
+  height: 2px;
+  border-radius: 1px;
+  overflow: hidden;
+  background: var(--red-bar);
+}
+
+.bsbar__buy {
+  position: absolute;
+  inset: 0;
+  background: var(--green-bar);
+  transform-origin: left center;
+}
+
+.card__quant {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.card__quant-score {
+  flex: none;
+  color: var(--cyan);
+}
+
+.card__quant-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-3);
+}
+
+.qmeter {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+}
+
+.qmeter i {
+  width: 5px;
+  height: 10px;
+  border-radius: 1px;
+  background: var(--line-2);
+}
+
+.qmeter i[data-on] {
+  background: var(--cyan);
+}
+
+.card__ai {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.card__ai .tag {
+  margin-top: 1px;
+}
+
+.card__ai-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-width: 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+
+/* accordion: grid-template-rows 0fr → 1fr, the one sanctioned layout animation */
+.card__detail {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--dur-enter) var(--ease-out);
+}
+
+.card[data-expanded] .card__detail {
+  grid-template-rows: 1fr;
+}
+
+.card__detail-inner {
+  min-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity var(--dur-enter) var(--ease-out);
+}
+
+.card[data-expanded] .card__detail-inner {
+  opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .tape__row:hover {
+    background: var(--bg-3);
+    color: var(--text);
+  }
+  .card:hover {
+    border-color: var(--line-2);
+  }
+  .card__summary:hover {
+    background: var(--hover-veil);
+  }
+}
+
+/* chain + time: full words by default; on phones the short forms make room for the token name */
+.card__chain-short,
+.ago__short {
+  display: none;
+}
+
+@media (max-width: 719.98px) {
+  .card__summary {
+    padding: 13px 14px;
+  }
+  .card__head {
+    gap: 10px;
+  }
+  .card__metrics {
+    gap: 6px 14px;
+  }
+  .card__chain-short,
+  .ago__short {
+    display: inline;
+  }
+  /* visually hidden, still read: screen readers keep "Solana · 4 min ago" */
+  .card__chain-full,
+  .ago__long {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+
+/* ───────────── shared small pieces ───────────── */
+
+/* WATCH | ALERT | BREAKING at the default thresholds: the band is the headline, not a bar out of 100 */
+.sevbands {
+  display: grid;
+  gap: 6px;
+}
+
+.sevbands__track {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.sevband {
+  --band: var(--text-3);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+.sevband[data-sev='WATCH'] {
+  --band: var(--text-2);
+}
+
+.sevband[data-sev='ALERT'] {
+  --band: var(--cyan);
+}
+
+.sevband[data-sev='BREAKING'] {
+  --band: var(--green);
+}
+
+.sevband__bar {
+  position: relative;
+  grid-column: 1 / -1;
+  height: 6px;
+  border: 1px solid var(--line-2);
+  border-radius: 2px;
+}
+
+.sevband[data-on] .sevband__bar {
+  border-color: var(--band);
+  background: var(--band);
+}
+
+/* the score reached this band but the severity was held below it (a cap) */
+.sevband[data-capped] .sevband__bar {
+  border: 1px dashed var(--amber);
+  background: var(--amber-dim);
+}
+
+.sevband__tick {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--text);
+  box-shadow: 0 0 0 1px var(--bg-1); /* panel surface: cuts the tick out of a filled band */
+  transform: translateX(-50%);
+}
+
+.sevband__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sevband[data-current] .sevband__label {
+  font-weight: 600;
+  color: var(--band);
+}
+
+.sevband[data-capped] .sevband__label {
+  color: var(--amber);
+}
+
+.sevband__min {
+  font-variant-numeric: tabular-nums;
+}
+
+.sevbands__note {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+/* severity caps: amber, the same voice as the dashed band they explain */
+.cap-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cap-chip {
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius-sm);
+  background: var(--amber-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--amber);
+  overflow-wrap: anywhere;
+}
+
+/* feed card: one line per cap, the full reason stays in the title and in the expanded article */
+.card__caps {
+  min-width: 0;
+}
+
+.cap-chips--compact .cap-chip {
+  min-width: 0;
+  padding: 1px 6px;
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+}
+
+.score-note {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+
+.chain-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.engine-line {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+.token-img {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+  border-radius: 50%;
+  background: var(--bg-3);
+}
+
+.token-img img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.token-img__letter {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+/* copy → check: a crossfade masked with a little blur so it reads as one morph */
+.copy-btn__icons {
+  display: inline-grid;
+}
+
+.copy-btn__icons > svg {
+  grid-area: 1 / 1;
+  transition:
+    opacity 160ms var(--ease-out),
+    transform 160ms var(--ease-out),
+    filter 160ms var(--ease-out);
+}
+
+.copy-btn__check {
+  opacity: 0;
+  transform: scale(0.95);
+  filter: blur(2px);
+}
+
+.copy-btn[data-done] .copy-btn__copy {
+  opacity: 0;
+  transform: scale(0.95);
+  filter: blur(2px);
+}
+
+.copy-btn[data-done] .copy-btn__check {
+  opacity: 1;
+  transform: none;
+  filter: none;
+}
+
+/* ───────────── article (expanded card) ───────────── */
+
+.detail {
+  container-type: inline-size;
+  display: grid;
+  gap: 20px;
+  margin: 0 16px;
+  padding: 16px 0 16px;
+  border-top: 1px solid var(--line);
+}
+
+.detail__headline {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  text-wrap: balance;
+}
+
+.detail__lede {
+  max-width: 72ch;
+  margin-top: 6px;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+
+.detail__sec {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  min-width: 0;
+}
+
+.detail__text {
+  max-width: 76ch;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+
+.detail__split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+@container (max-width: 560px) {
+  .detail__split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.bullets {
+  display: grid;
+  gap: 6px;
+}
+
+.bullets li {
+  position: relative;
+  padding-left: 16px;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+
+.bullets li::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 0.72em;
+  width: 6px;
+  height: 1px;
+  background: var(--text-3);
+}
+
+.disclaimer {
+  max-width: 80ch;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+
+/* outlook trio */
+
+.outlook {
+  container-type: inline-size;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@container (max-width: 520px) {
+  .outlook {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@supports not (container-type: inline-size) {
+  @media (max-width: 719.98px) {
+    .outlook {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+}
+
+.outlook__col {
+  --c: var(--text-3);
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-top: 2px solid var(--c);
+  border-radius: var(--radius-sm);
+  background: var(--bg-1);
+}
+
+.outlook__col[data-kind='bull'] {
+  --c: var(--green);
+}
+
+.outlook__col[data-kind='risk'] {
+  --c: var(--red);
+}
+
+.outlook__label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--c);
+}
+
+.outlook__col[data-kind='neutral'] .outlook__label {
+  color: var(--text-2);
+}
+
+.outlook__col p {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+
+/* quant matches */
+
+.matches {
+  display: grid;
+  gap: 12px;
+}
+
+.match__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 6px;
+}
+
+.match__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.match__score {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--cyan);
+}
+
+.match__foot {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.match__foot .mono {
+  flex: none;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.match__why {
+  min-width: 0;
+  color: var(--text-2);
+}
+
+/* narrow panels (Radar side column): rationale gets the full width, coverage follows it */
+@container (max-width: 520px) {
+  .match__foot {
+    flex-direction: column;
+    gap: 3px;
+  }
+  .match__why {
+    order: -1;
+  }
+}
+
+/* signals & flags */
+
+.signals {
+  display: grid;
+  gap: 4px;
+}
+
+.signal {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-1);
+  font-size: 13px;
+}
+
+.signal__label {
+  min-width: 0;
+  color: var(--text-2);
+}
+
+.signal__weight {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--green);
+}
+
+.signal[data-zero] .signal__label,
+.signal[data-zero] .signal__weight {
+  color: var(--text-3);
+}
+
+.flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.flags .tag {
+  height: auto;
+  min-height: 20px;
+  padding: 3px 7px;
+  line-height: 1.3;
+  white-space: normal;
+}
+
+/* pipeline strip */
+
+.pipe-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-1);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.pipe-strip__step,
+.pipe-strip__total {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.pipe-strip__arrow {
+  color: var(--text-3);
+}
+
+.pipe-strip__label {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.pipe-strip__value {
+  color: var(--text);
+}
+
+.pipe-strip__total {
+  margin-left: auto;
+  padding-left: 10px;
+  border-left: 1px solid var(--line-2);
+}
+
+.pipe-strip__total .pipe-strip__value {
+  color: var(--green);
+}
+
+/* links */
+
+.detail__links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.link-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* distribution */
+
+.dist__reload {
+  margin-left: auto;
+}
+
+.dist-grid {
+  display: grid;
+  /* four channels: a 2 × 2 block, never 3 + an orphan */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@container (max-width: 560px) {
+  .dist-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.dist {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-1);
+}
+
+.dist--skel {
+  min-height: 104px;
+}
+
+.dist__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dist__channel {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.dist__count {
+  font-size: 10.5px;
+}
+
+.dist__spacer {
+  flex: 1;
+}
+
+.dist__payload {
+  max-height: 168px;
+  margin: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.dist__foot {
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.dist__error {
+  color: var(--text-2);
+}
+
+.related {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.related__list {
+  display: grid;
+  gap: 4px;
+}
+
+.related__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.related__row > :not(.truncate) {
+  flex: none;
+  white-space: nowrap;
+}
+
+.detail__foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  min-width: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+}
+
+.detail__foot .truncate {
+  max-width: 100%;
+}
+
+@media (max-width: 719.98px) {
+  .detail {
+    margin: 0 14px;
+  }
+  .pipe-strip__total {
+    margin-left: 0;
+  }
+}
+
+/* ───────────── rail panels ───────────── */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.panel__head .label {
+  white-space: nowrap;
+}
+
+/* signal tape */
+
+/* Below 1100px the tape sits above the feed in a full-width column: it grows in place
+   ("All") and never becomes a nested scroller that traps a page swipe. Only inside the
+   sticky desktop rail does it scroll on its own. */
+.tape__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 4px 0;
+}
+
+@media (min-width: 1100px) {
+  .tape__list {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+  }
+}
+
+.live__tape {
+  margin-bottom: 12px;
+}
+
+.tape__toggle {
+  height: 24px;
+  margin-right: -6px;
+  padding: 0 8px;
+}
+
+.tape__row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, auto) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  transition:
+    transform var(--dur-press) var(--ease-out),
+    background-color var(--dur-hover) ease;
+}
+
+.tape__row:active {
+  transform: scale(0.98);
+  background: var(--bg-3);
+}
+
+.tape__row:focus-visible {
+  outline-offset: -2px;
+}
+
+.tape__time {
+  color: var(--text-3);
+}
+
+.tape__sym {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 11ch;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tape__sev {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+.tape__row[data-sev='ALERT'] .tape__sev {
+  color: var(--cyan);
+}
+
+.tape__row[data-sev='BREAKING'] .tape__sev {
+  color: var(--green);
+}
+
+.tape__score {
+  color: var(--text-2);
+}
+
+.tape__sig {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+
+.tape__item[data-enter] .tape__row {
+  transition:
+    opacity var(--dur-enter) var(--ease-out),
+    transform var(--dur-enter) var(--ease-out),
+    background-color var(--dur-hover) ease;
+}
+
+@starting-style {
+  .tape__item[data-enter] .tape__row {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.tape__skel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+}
+
+/* pipeline */
+
+.pipe__rows {
+  display: grid;
+  gap: 7px;
+  padding: 12px 14px;
+}
+
+.pipe__row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) 70px;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.pipe__label {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.pipe__value {
+  text-align: right;
+  font-size: 11px;
+  color: var(--text);
+}
+
+.pipe__row--total {
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
+}
+
+.pipe__row--total .pipe__value {
+  color: var(--green);
+}
+
+.pipe__which {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* chains */
+
+.chains__list {
+  display: grid;
+  padding: 2px 0;
+}
+
+.chains__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 2px 12px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+}
+
+.chains__row:first-child {
+  border-top: 0;
+}
+
+.chains__name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text);
+}
+
+.chains__status {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.chains__since,
+.chains__tokens {
+  min-width: 5ch;
+  text-align: right;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.chains__error {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+/* Single-column grids: explicit minmax(0, 1fr) tracks so a nowrap/ellipsized child
+   (a long methodology name, an address) truncates instead of widening the track. */
+.detail,
+.detail__sec,
+.matches,
+.bullets,
+.signals,
+.related,
+.related__list,
+.dist,
+.feed__list,
+.pipe__rows,
+.chains__list {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* ───────────── reduced motion: keep fades, drop movement ───────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .card[data-enter] {
+    transition:
+      opacity var(--dur-enter) ease,
+      border-color var(--dur-hover) ease;
+  }
+  .card:not([data-expanded])[data-pressed],
+  .card:not([data-expanded]):has(> .card__summary > .card__toggle:active),
+  .tape__row:active,
+  .new-pill[data-show]:active {
+    transform: none;
+  }
+  @starting-style {
+    .card[data-enter] {
+      opacity: 0;
+      transform: none;
+    }
+    .tape__item[data-enter] .tape__row {
+      opacity: 0;
+      transform: none;
+    }
+  }
+  .card__detail {
+    transition: none;
+  }
+  .new-pill {
+    transform: none;
+    transition: opacity var(--dur-ui) ease;
+  }
+  .tape__row,
+  .tape__item[data-enter] .tape__row {
+    transition:
+      opacity var(--dur-enter) ease,
+      background-color var(--dur-hover) ease;
+  }
+  .copy-btn__icons > svg,
+  .copy-btn__check,
+  .copy-btn[data-done] .copy-btn__copy {
+    transform: none;
+    filter: none;
+    transition: opacity 160ms ease;
+  }
+}
