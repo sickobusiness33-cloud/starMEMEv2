@@ -1,0 +1,293 @@
+// AI ORCHESTRATOR · planificador.
+//
+// Todos los agentes del registro están disponibles en cada chat. El
+// planificador decide cuáles usar (0 = responde Kairo directamente), cuántos,
+// en qué orden y con qué dependencias. Primero lo intenta un modelo (JSON
+// validado); si no devuelve un plan válido se usa un planificador por reglas.
+
+import { generate, type CallContext } from "../ai/router";
+import type { RegistryAgent } from "../agents/registry";
+import type { PlanId } from "../plans";
+
+export interface PlanStep {
+  id: string;
+  agent: string;
+  task: string;
+  depends_on: string[];
+  /** Explicación funcional de por qué se eligió (no es razonamiento interno). */
+  why?: string;
+}
+
+export interface Plan {
+  direct: boolean;
+  steps: PlanStep[];
+  reason: string;
+  planner: "llm" | "rules" | "manual";
+  task_type?: TaskType;
+}
+
+export type TaskType = "research" | "code" | "content" | "image" | "analysis" | "planning" | "general";
+
+/** Rol visual del agente en la red (derivado de su especialidad). */
+export type Role = "ORCHESTRATOR" | "RESEARCHER" | "SCANNER" | "ANALYST" | "CODER" | "WRITER" | "DESIGNER" | "PLANNER" | "SECURITY" | "ASSISTANT" | "REVIEWER";
+
+const ROLE_BY_CATEGORY: Record<string, Role> = {
+  research: "RESEARCHER", browser: "SCANNER", data: "ANALYST", finance: "ANALYST", trading: "ANALYST",
+  coding: "CODER", automation: "CODER", writing: "WRITER", social: "WRITER", marketing: "WRITER",
+  image: "DESIGNER", video: "DESIGNER", web: "DESIGNER", productivity: "PLANNER", business: "PLANNER",
+  security: "SECURITY", general: "ASSISTANT", multi: "PLANNER",
+};
+
+export function roleOf(a: RegistryAgent): Role {
+  if (a.model.capability === "reasoning") return "ANALYST";
+  return ROLE_BY_CATEGORY[a.category] ?? "ASSISTANT";
+}
+
+const TYPE_BY_ROLE: Partial<Record<Role, TaskType>> = {
+  RESEARCHER: "research", SCANNER: "research", ANALYST: "analysis", CODER: "code", WRITER: "content", DESIGNER: "image", PLANNER: "planning", SECURITY: "analysis",
+};
+
+/** Clasificación de la tarea: por el rol dominante de los agentes elegidos. */
+export function classify(steps: PlanStep[], byId: Map<string, RegistryAgent>): TaskType {
+  if (!steps.length) return "general";
+  // El tipo lo marca el entregable: los pasos finales (de los que nadie depende).
+  const sinks = steps.filter((s) => !steps.some((o) => o.depends_on.includes(s.id)));
+  const roles = sinks.map((s) => roleOf(byId.get(s.agent)!));
+  if (roles.includes("WRITER")) return "content";
+  if (roles.includes("DESIGNER")) return "image";
+  const first = roles.map((r) => TYPE_BY_ROLE[r]).find(Boolean);
+  return first ?? "general";
+}
+
+export function defaultWhy(a: RegistryAgent, extra?: string) {
+  return `${extra ? `${extra}. ` : ""}Aporta: ${a.capabilities.slice(0, 3).join(", ")}${a.tools.length ? ` · herramientas: ${a.tools.join(", ")}` : ""}.`;
+}
+
+export interface PoolAgent extends RegistryAgent {
+  locked: boolean;
+}
+
+/** Agentes utilizables por el orquestador: todos menos los flujos multiagente (ya lo es él). */
+export function orchestratorPool(agents: RegistryAgent[], plan: PlanId): PoolAgent[] {
+  return agents
+    .filter((a) => a.category !== "multi" && !a.stages.some((s) => s.kind === "agents"))
+    .map((a) => ({ ...a, locked: a.tier === "pro" && plan !== "pro" }));
+}
+
+// --- preselección por relevancia --------------------------------------------------------------
+// Con cientos de agentes no se le puede pasar el catálogo entero al planificador: se envían
+// todos los agentes propios de Kairo + los especialistas externos más relevantes para la petición.
+
+const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+const STOP = new Set("para como con una uno unos unas los las del que por mas muy este esta esto sobre desde hasta entre tengo quiero necesito hazme haz dame puedes podrias favor the and for with you your that this from into what how".split(" "));
+// Español → términos en inglés de las descripciones de los especialistas.
+const SYN: Record<string, string> = {
+  ventas: "sales deal pipeline", vender: "sales", cliente: "customer client", clientes: "customer client", diseno: "design ui ux", disenar: "design",
+  marca: "brand", juego: "game", juegos: "game", videojuego: "game", pruebas: "testing test qa", test: "testing qa", seguridad: "security",
+  soporte: "support customer", producto: "product", contabilidad: "accounting finance", finanzas: "finance financial", impuestos: "tax",
+  legal: "legal compliance", contrato: "contract legal", recursos: "hr", contratacion: "recruit hiring", empleo: "recruit", educacion: "education learning",
+  investigacion: "research", academico: "academic", tesis: "academic thesis", redes: "social media", anuncios: "ads paid", campana: "campaign ads",
+  movil: "mobile ios android", aplicacion: "app mobile", web: "web frontend", servidor: "backend server", base: "database", datos: "data",
+  nube: "cloud devops", despliegue: "deploy devops", infraestructura: "infrastructure devops", incidente: "incident", arquitectura: "architecture",
+  realidad: "xr vr ar", virtual: "vr xr", documentacion: "documentation docs", proyecto: "project", proyectos: "project", equipo: "team",
+  estrategia: "strategy", crecimiento: "growth", contenido: "content", video: "video", tiktok: "tiktok", linkedin: "linkedin", seo: "seo search",
+  ia: "ai ml", inteligencia: "ai", modelo: "model ml", salud: "health healthcare", inmobiliaria: "real estate", logistica: "supply chain logistics",
+};
+
+function terms(text: string): string[] {
+  const out: string[] = [];
+  for (const w of norm(text).split(/[^a-z0-9+#]+/)) {
+    if (w.length < 2 || STOP.has(w)) continue;
+    out.push(w);
+    if (SYN[w]) out.push(...SYN[w].split(" "));
+  }
+  return [...new Set(out)];
+}
+
+/** Relevancia aproximada de un agente para una petición (coincidencia de términos). */
+export function relevance(request: string | string[], a: RegistryAgent): number {
+  const req = Array.isArray(request) ? request : terms(request);
+  const hay = norm(`${a.name} ${a.name} ${a.description} ${a.capabilities.join(" ")} ${a.category}`);
+  const words = new Set(hay.split(/[^a-z0-9+#]+/));
+  let score = 0;
+  // Palabras cortas (ux, ui, qa, seo…) solo cuentan como palabra completa.
+  for (const w of req) if (w.length <= 3 ? words.has(w) : hay.includes(w)) score += w.length >= 6 ? 2 : 1;
+  return score;
+}
+
+/** Agentes que ve el planificador: los propios de Kairo + los `extra` especialistas más relevantes. */
+export function shortlist(request: string, agents: PoolAgent[], extra = 16): PoolAgent[] {
+  const req = terms(request);
+  const own = agents.filter((a) => a.source.type !== "external");
+  const ext = agents
+    .filter((a) => a.source.type === "external")
+    .map((a) => ({ a, s: relevance(req, a) }))
+    .filter((x) => x.s > 0)
+    .sort((x, y) => y.s - x.s)
+    .slice(0, extra)
+    .map((x) => x.a);
+  return [...own, ...ext];
+}
+
+/** 0 = análisis/investigación · 1 = producción de contenido · 2 = medios (imagen). */
+export function stageClass(a: RegistryAgent): number {
+  const tools = a.stages.filter((s) => s.kind === "tool").map((s) => (s as any).tool as string);
+  if (tools.some((t) => ["image_generate", "image_edit", "image_variation"].includes(t))) return 2;
+  if (tools.includes("vision_describe") || tools.includes("wikipedia_search") || tools.includes("web_read")) return 0;
+  if (["research", "data", "trading", "finance", "security", "browser"].includes(a.category)) return 0;
+  return 1;
+}
+
+/** Encadena por clases: cada clase depende de todos los pasos de la clase anterior no vacía. */
+export function chainByClass(steps: PlanStep[], byId: Map<string, RegistryAgent>): PlanStep[] {
+  const cls = (s: PlanStep) => stageClass(byId.get(s.agent)!);
+  const classes = [...new Set(steps.map(cls))].sort();
+  return steps.map((s) => {
+    const idx = classes.indexOf(cls(s));
+    const prev = idx > 0 ? steps.filter((x) => cls(x) === classes[idx - 1]).map((x) => x.id) : [];
+    return { ...s, depends_on: prev };
+  });
+}
+
+/** Valida un plan (ids, agentes accesibles, sin ciclos, dependencias hacia atrás). */
+export function validatePlan(raw: any, pool: Map<string, PoolAgent>, max: number, hasImages: boolean): Plan | null {
+  if (!raw || typeof raw !== "object") return null;
+  if (raw.direct === true && (!Array.isArray(raw.steps) || !raw.steps.length)) {
+    return { direct: true, steps: [], reason: String(raw.reason ?? "Respuesta directa").slice(0, 200), planner: "llm" };
+  }
+  if (!Array.isArray(raw.steps) || !raw.steps.length) return null;
+  const steps: PlanStep[] = [];
+  const seenAgents = new Set<string>();
+  const rawToId = new Map<string, string>(); // ids del modelo → ids validados (solo pasos anteriores: sin ciclos)
+  for (const s of raw.steps) {
+    if (steps.length >= max) break;
+    const a = pool.get(String(s?.agent ?? ""));
+    if (!a || a.locked || seenAgents.has(a.id)) continue;
+    if (a.input.image === "required" && !hasImages) continue;
+    const id = `s${steps.length + 1}`;
+    const deps = (Array.isArray(s.depends_on) ? s.depends_on : []).map((d: unknown) => rawToId.get(String(d))).filter(Boolean) as string[];
+    rawToId.set(String(s.id ?? id), id);
+    steps.push({
+      id,
+      agent: a.id,
+      task: String(s.task ?? "").slice(0, 400) || `Aporta tu parte como ${a.name}.`,
+      depends_on: [...new Set(deps)],
+      why: typeof s.why === "string" && s.why.trim() ? s.why.trim().slice(0, 240) : defaultWhy(a),
+    });
+    seenAgents.add(a.id);
+  }
+  if (!steps.length) return null;
+  return { direct: false, steps, reason: String(raw.reason ?? "").slice(0, 300), planner: "llm" };
+}
+
+// --- planificador por reglas (respaldo sin modelo) -------------------------------------------
+
+const RULES: [RegExp, string[]][] = [
+  [/\b(variaci[oó]n|variaciones|variante|otra versión)/i, ["image-variations"]],
+  [/\b(edita|editar|modifica|cambia (el|la|los|las)? ?(fondo|estilo|color)|conviert[ea]la|retoca)/i, ["image-editor"]],
+  [/\b(logo|logotipo|isotipo)/i, ["logo-concepts"]],
+  [/\b(post|publicaci[oó]n|instagram|tiktok|linkedin|tweet|twitter|\bx\.com|redes sociales|publicarla|publicarlo)/i, ["social-post-creator"]],
+  [/\b(imagen|image|ilustraci[oó]n|dibuja|dibujo|p[oó]ster|poster|foto de|picture|wallpaper|portada|render)/i, ["image-generator"]],
+  [/\b(traduce|traducir|translate|traducción)/i, ["translator"]],
+  [/\b(resume|resumen|resumir|summar|tl;?dr)/i, ["summarizer"]],
+  [/\b(sql|consulta a la base|query)/i, ["sql-helper"]],
+  [/\b(regex|expresi[oó]n regular)/i, ["regex-builder"]],
+  [/\b(revisa (mi|este) c[oó]digo|code review|revisi[oó]n de c[oó]digo)/i, ["code-reviewer"]],
+  [/\b(c[oó]digo|code|funci[oó]n|bug|javascript|typescript|python|script|programa|api rest|endpoint|html|css)/i, ["code-assistant"]],
+  [/\b(calcula|ecuaci[oó]n|matem[aá]tic|resuelve|probabilidad|porcentaje|inter[eé]s compuesto)/i, ["math-solver"]],
+  [/\b(verifica|es cierto|es verdad|fact.?check|bulo|desmiente)/i, ["fact-checker"]],
+  [/\b(investiga|investigaci[oó]n|research|historia de|qu[eé] es|qui[eé]n (es|fue)|expl[ií]came|fuentes)/i, ["research-agent"]],
+  [/\b(riesgo|riesgos|risk)/i, ["risk-reviewer"]],
+  [/\b(datos|csv|tabla|kpi|estad[ií]stica|m[eé]tricas)/i, ["data-analyst"]],
+  [/\b(marketing|campaña|anuncio|\bads?\b|publicidad|copy)/i, ["marketing-strategist"]],
+  [/\b(dafo|swot|foda)/i, ["swot"]],
+  [/\b(plan de negocio|business plan|startup|modelo de negocio)/i, ["business-plan"]],
+  [/\b(v[ií]deo|video|guion|youtube|reels|shorts)/i, ["video-script"]],
+  [/\b(email|correo|mail)/i, ["email-assistant"]],
+  [/\b(art[ií]culo|blog|redacta|escribe un texto)/i, ["blog-writer"]],
+  [/\b(cuento|relato|historia corta|poema)/i, ["storyteller"]],
+  [/\b(phishing|contraseña|vulnerab|seguridad)/i, ["phishing-detector"]],
+  [/\b(organiza|planifica|tareas|to-?do|agenda|pasos para)/i, ["task-planner"]],
+  [/\b(seo|posicionamiento)/i, ["seo-auditor"]],
+];
+
+export function planWithRules(request: string, pool: Map<string, PoolAgent>, max: number, hasImages: boolean): Plan {
+  const picked: string[] = [];
+  const reasons = new Map<string, string>();
+  const add = (id: string, because = "") => {
+    const a = pool.get(id);
+    if (a && !a.locked && !picked.includes(id) && (a.input.image !== "required" || hasImages)) {
+      picked.push(id);
+      reasons.set(id, because);
+    }
+  };
+  const hasUrl = /https?:\/\/\S+/.test(request);
+  if (hasImages) {
+    // Con imagen adjunta: editarla/ampliarla/variarla si se pide; si no, analizarla.
+    if (/\b(variaci[oó]n|variante|otra versión)/i.test(request)) add("image-variations", "Has adjuntado una imagen y pides una variación");
+    else if (/\b(edita|modifica|cambia|convi[eé]rte|retoca|estilo|transforma)/i.test(request)) add("image-editor", "Has adjuntado una imagen y pides modificarla");
+    else add("vision-analyst", "Has adjuntado una imagen: hay que entenderla primero");
+  }
+  if (hasUrl) add(/\b(resume|resumen)/i.test(request) ? "summarizer" : "page-reader", "La petición incluye una URL que hay que leer");
+  for (const [re, ids] of RULES) {
+    const m = re.exec(request);
+    if (m) ids.forEach((id) => add(id, `La petición menciona «${m[0].trim()}»`));
+  }
+  // Ninguna regla encaja: prueba con el especialista externo más relevante.
+  if (!picked.length) {
+    const best = shortlist(request, [...pool.values()], 1).find((a) => a.source.type === "external");
+    if (best && relevance(request, best) >= 4) add(best.id, `Especialista más cercano a tu petición: ${best.name}`);
+  }
+  // Imagen para un post: el post ya genera su imagen, no hace falta otro generador.
+  if (picked.includes("social-post-creator") && picked.includes("image-generator")) picked.splice(picked.indexOf("image-generator"), 1);
+  const byId = new Map([...pool].map(([k, v]) => [k, v as RegistryAgent]));
+  // Orden natural del flujo: análisis → producción → medios.
+  const chosen = picked.slice(0, max).sort((x, y) => stageClass(byId.get(x)!) - stageClass(byId.get(y)!));
+  const words = request.trim().split(/\s+/).length;
+  if (!chosen.length) {
+    return { direct: true, steps: [], reason: words <= 6 ? "Mensaje breve: responde Kairo directamente." : "Ningún agente especializado encaja: responde Kairo.", planner: "rules" };
+  }
+  const steps = chainByClass(
+    chosen.map((agent, i) => ({
+      id: `s${i + 1}`,
+      agent,
+      task: `Resuelve la parte de la petición que corresponde a ${pool.get(agent)!.name}.`,
+      depends_on: [],
+      why: defaultWhy(pool.get(agent)!, reasons.get(agent)),
+    })),
+    byId,
+  );
+  return { direct: false, steps, reason: "Selección por palabras clave y capacidades de cada agente.", planner: "rules", task_type: classify(steps, byId) };
+}
+
+// --- planificador con modelo ------------------------------------------------------------------
+
+export async function planWithLLM(ctx: CallContext, request: string, history: string, pool: Map<string, PoolAgent>, max: number, hasImages: boolean, project = ""): Promise<Plan | null> {
+  const catalog = shortlist(request, [...pool.values()])
+    .filter((a) => !a.locked && (a.input.image !== "required" || hasImages))
+    .map((a) => `${a.id} — ${a.name}: ${a.description}${a.tools.length ? ` [${a.tools.join(", ")}]` : ""}`)
+    .join("\n");
+  const system =
+    "[planner] Eres el orquestador de Kairo. Decides qué agentes especializados deben trabajar en la petición del usuario. " +
+    "Responde SOLO con JSON válido, sin texto adicional.";
+  const prompt =
+    `Agentes disponibles (id — nombre: descripción [herramientas]):\n${catalog}\n\n` +
+    (project ? `Contexto del proyecto:\n${project}\n\n` : "") +
+    (history ? `Contexto reciente del chat:\n${history}\n\n` : "") +
+    `${hasImages ? "El usuario ha adjuntado imagen(es).\n" : ""}Petición del usuario:\n${request}\n\n` +
+    `Reglas:\n- Usa el MENOR número de agentes que resuelva bien la petición (máximo ${max}). No uses agentes que no aporten.\n` +
+    `- Saludos, charla o preguntas simples: {"direct": true, "steps": [], "reason": "..."}.\n` +
+    `- Pasos independientes sin depends_on (se ejecutan en paralelo). Si un agente necesita el resultado de otro, pon su id en depends_on.\n` +
+    `- task = instrucción concreta para ese agente. why = una frase para el usuario: qué capacidad aporta a esta petición.\n` +
+    `Formato: {"direct": false, "reason": "por qué", "steps": [{"id": "s1", "agent": "<id>", "task": "...", "why": "...", "depends_on": []}]}`;
+  try {
+    const res = await generate(ctx, { system, messages: [{ role: "user", content: prompt }], maxTokens: 500, prefer: "free", allowFallback: true, capability: "chat", cheap: true });
+    const m = res.text.match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    const plan = validatePlan(JSON.parse(m[0]), pool, max, hasImages);
+    if (plan) plan.task_type = classify(plan.steps, new Map([...pool].map(([k, v]) => [k, v as RegistryAgent])));
+    return plan;
+  } catch {
+    return null;
+  }
+}

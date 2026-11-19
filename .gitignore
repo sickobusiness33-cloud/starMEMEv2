@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+.env
+state.json
+# Control IA: base de datos, clave local de cifrado y datos de usuarios
+data/

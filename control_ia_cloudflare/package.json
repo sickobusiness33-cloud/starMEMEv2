@@ -1,0 +1,25 @@
+{
+  "name": "control-ia",
+  "version": "1.0.0",
+  "description": "Plataforma para conectar IAs y hacer avanzar productos, desplegada en Cloudflare Workers.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply control-ia --local",
+    "db:migrate:remote": "wrangler d1 migrations apply control-ia --remote",
+    "typecheck": "tsc --noEmit",
+    "test": "python -m pytest tests/"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
+    "hono": "^4.13.10"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260928.1",
+    "three": "^0.186.1",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.143.0"
+  },
+  "private": true
+}

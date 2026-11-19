@@ -36,6 +36,7 @@ deliberadamente ligero.
 | `tweets.py` | Genera el texto del tweet a partir de plantillas. |
 | `discord_bot.py` | Conecta todo lo anterior con discord.py: comandos, tareas periódicas, botones. |
 | `main.py` | Punto de entrada (`python main.py`). |
+| `control_ia/` | Plataforma web Control IA, independiente del bot (`python -m control_ia`). Ver su sección en el README. |
 
 Si tu cambio es lógica pura (filtros, generación de texto, estado), debería
 poder testearse sin tocar Discord — mira `filters.py`, `tweets.py` y
@@ -50,8 +51,8 @@ espera respuesta.
 ## Antes de abrir un PR
 
 ```bash
-ruff check .     # estilo y errores comunes
-pytest           # tests
+ruff check .          # estilo y errores comunes
+python -m pytest      # tests (bot + control_ia)
 ```
 
 Ambos corren también en CI al abrir el PR (GitHub Actions), pero es más
